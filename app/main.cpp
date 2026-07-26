@@ -46,7 +46,9 @@
 #include "net/DeregisterClient.h"
 #include "net/NativeRegistrationClient.h"
 #include "net/NtfySubscriber.h"
+#include "net/PgpBootstrapClient.h"
 #include "net/PgpQrClient.h"
+#include "net/PgpRecipientChecker.h"
 #include "net/PushNotificationClient.h"
 #include "net/RelayMailSource.h"
 #include "stores/ContactPhotoCache.h"
@@ -466,6 +468,12 @@ int main(int argc, char* argv[])
     // PGP QR key exchange: talks to /api/pgp/qr/token and /api/pgp/qr/key --
     // see core/net/PgpQrClient.h.
     PgpQrClient pgpQrClient(httpClient);
+    // Encrypted send (client-encrypted-send Task 6): GET /api/pgp/bootstrap
+    // (compose-control custody check) and POST /api/pgp/recipients/check
+    // (inline keyless-recipient warning) -- see core/net/PgpBootstrapClient.h
+    // and core/net/PgpRecipientChecker.h.
+    PgpBootstrapClient pgpBootstrapClient(httpClient);
+    PgpRecipientChecker pgpRecipientChecker(httpClient);
 
     // 8. core/domain repositories -- the layer Tasks 32-34's QML-facing
     // controllers actually call into.
@@ -554,7 +562,7 @@ int main(int argc, char* argv[])
     // this controller blocks the GUI thread synchronously, same accepted
     // tradeoff as every other Phase 6 controller (see global constraint 2).
     MailController mailController(mailRepository, relayMailSource, keywordRepository, pairingStore,
-                                   folderRepository, settingsStore);
+                                   folderRepository, settingsStore, pgpBootstrapClient, pgpRecipientChecker);
     qmlRegisterSingletonInstance<MailController>(
         "com.urlxl.mail", 1, 0, "MailApp", &mailController);
 

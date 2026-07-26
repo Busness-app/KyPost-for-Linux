@@ -2,6 +2,7 @@
 
 #include "mail/EmailListModel.h"
 #include "models/Email.h"
+#include "net/RelayMailSource.h" // MailAttachmentUpload -- held by value in PendingSend below
 
 #include <QObject>
 #include <QString>
@@ -14,10 +15,11 @@
 class MailRepository;
 class FolderRepository;
 class SettingsStore;
-struct MailAttachmentUpload;
 class RelayMailSource;
 class KeywordRepository;
 class PairingStore;
+class PgpBootstrapClient;
+class PgpRecipientChecker;
 struct RelayAuth;
 class QUrl;
 
@@ -44,11 +46,16 @@ class MailController : public QObject
     Q_PROPERTY(QVariantList keywordTabs READ keywordTabs NOTIFY keywordTabsChanged)
     Q_PROPERTY(bool isBusy READ isBusy NOTIFY isBusyChanged)
     Q_PROPERTY(QString lastError READ lastError NOTIFY lastErrorChanged)
+    Q_PROPERTY(bool pgpCanEncrypt READ pgpCanEncrypt NOTIFY pgpComposeStateChanged)
+    Q_PROPERTY(bool pgpCanSign READ pgpCanSign NOTIFY pgpComposeStateChanged)
+    Q_PROPERTY(bool pgpHandoffToWebmail READ pgpHandoffToWebmail NOTIFY pgpComposeStateChanged)
+    Q_PROPERTY(QStringList pgpKeylessRecipients READ pgpKeylessRecipients NOTIFY pgpKeylessRecipientsChanged)
 
 public:
     MailController(MailRepository& mailRepository, RelayMailSource& relayMailSource,
                     KeywordRepository& keywordRepository, PairingStore& pairingStore,
                     FolderRepository& folderRepository, SettingsStore& settingsStore,
+                    PgpBootstrapClient& pgpBootstrapClient, PgpRecipientChecker& pgpRecipientChecker,
                     QObject* parent = nullptr);
 
     QObject* emailModel() const;
@@ -57,6 +64,10 @@ public:
     QVariantList keywordTabs() const; // [{name, count}, ...] -- "All" NOT included, see Task 38
     bool isBusy() const;
     QString lastError() const; // "" when none
+    bool pgpCanEncrypt() const;
+    bool pgpCanSign() const;
+    bool pgpHandoffToWebmail() const;
+    QStringList pgpKeylessRecipients() const;
 
 public slots:
     // Sets currentFolder, resets selectedKeyword to "", loads the on-disk
@@ -78,8 +89,12 @@ public slots:
     // enforces a 25 MB total-bytes cap across all attachments before calling
     // relayMailSource.sendMail -- returns false + sets lastError (without
     // truncating) if the cap is exceeded.
+    //
+    // sign/encrypt have no default -- Task 7 wires the real toggle states
+    // through from Compose.qml; leaving them defaulted would let a call site
+    // silently drift back to "never encrypt" instead of a compile error.
     bool sendMail(const QString& to, const QString& cc, const QString& bcc, const QString& subject,
-                  const QString& body, const QStringList& attachmentFilePaths);
+                  const QString& body, const QStringList& attachmentFilePaths, bool sign, bool encrypt);
     QVariantList listAttachments(const QString& mailbox, const QString& messageId); // [{index, name, mimeType, size}, ...]
     // Writes the downloaded bytes to QStandardPaths::DownloadLocation,
     // deduping the filename against anything already there. Returns false +
@@ -154,6 +169,32 @@ public slots:
     // (see keywordTabs()'s own doc comment).
     Q_INVOKABLE void setKeywordVisible(const QString& keyword, bool visible);
 
+    // Called once when Compose opens. Sets pgpCanEncrypt/pgpCanSign/
+    // pgpHandoffToWebmail from GET /api/pgp/bootstrap. A failed or
+    // unreachable bootstrap is never "no PGP" -- it leaves every control
+    // hidden rather than guessing a custody mode.
+    Q_INVOKABLE void refreshPgpComposeState();
+    // Inline, non-blocking recipient-key warning. Reads the user's contacts
+    // only -- a lower bound, since the send path also runs WKD/keyserver
+    // discovery -- so this never gates the send; the server's 409 is the
+    // gate. Updates pgpKeylessRecipients.
+    Q_INVOKABLE void preflightRecipients(const QString& to, const QString& cc, const QString& bcc);
+    // Re-sends the exact payload the server refused with 409 +
+    // keylessRecipients, with allowPickupFallback set. Returns false without
+    // sending when there is no pending send (nothing was refused, or it was
+    // already resolved), so a stray confirm cannot mail anything.
+    Q_INVOKABLE bool confirmPickupFallbackSend();
+    // Drops the cached pending send. Called when the user cancels the
+    // pickup-fallback confirmation dialog rather than confirming it.
+    Q_INVOKABLE void discardPendingSend();
+    // Saves the composition to Drafts, then opens webmail there in the
+    // user's system browser (never an embedded view). Returns false without
+    // opening anything if the draft did not save, or if the pairing's base
+    // URL is not https.
+    Q_INVOKABLE bool openWebmailDrafts(const QString& to, const QString& cc, const QString& bcc,
+                                        const QString& subject, const QString& body,
+                                        const QStringList& attachmentFilePaths);
+
 signals:
     void currentFolderChanged();
     void selectedKeywordChanged();
@@ -161,6 +202,16 @@ signals:
     void isBusyChanged();
     void lastErrorChanged();
     void foldersChanged();
+    // Emitted when sendMail() is refused with 409 + keylessRecipients: the
+    // server's own list of addresses with no usable PGP key, naming the
+    // pending send confirmPickupFallbackSend() would re-send.
+    void pickupFallbackRequired(const QStringList& recipients);
+    // Emitted on a 200 response carrying a non-empty warning: the message
+    // WAS sent, with partial trouble (e.g. the Sent copy failed, or a pickup
+    // link did not deliver to everyone). Never a failure signal.
+    void sendWarning(const QString& warning);
+    void pgpComposeStateChanged();
+    void pgpKeylessRecipientsChanged();
     // Task 42: forwarded straight from NotificationDispatcher::openRequested
     // (main.cpp connects the two directly -- signal-to-signal, no lambda,
     // since the shapes already match) when the user activates a
@@ -204,16 +255,48 @@ private:
                               const std::optional<QString>& targetMailbox);
     static QString dedupedFilePath(const QString& directory, const QString& fileName);
 
+    // The exact payload of a send the server refused with 409 +
+    // keylessRecipients, held so confirmPickupFallbackSend() can re-send it
+    // byte-identically with allowPickupFallback flipped. Rebuilding from the
+    // QML fields would re-read and re-base64 every attachment off disk, and
+    // any drift between the refused request and the confirmed one is a
+    // message the user did not review.
+    //
+    // Holds the composed plaintext in memory until cleared, so it is cleared
+    // on success, on cancel, and whenever a fresh send starts. Under Hostile
+    // Location Protection this never reaches disk, matching the rest of that
+    // mode.
+    struct PendingSend
+    {
+        bool valid = false;
+        QString to;
+        QString cc;
+        QString bcc;
+        QString subject;
+        QString body;
+        QString mode;
+        QVector<MailAttachmentUpload> attachments;
+        bool sign = false;
+        bool encrypt = false;
+    };
+    PendingSend m_pendingSend;
+
     MailRepository& m_mailRepository;
     FolderRepository& m_folderRepository;
     SettingsStore& m_settingsStore;
     RelayMailSource& m_relayMailSource;
     KeywordRepository& m_keywordRepository;
     PairingStore& m_pairingStore;
+    PgpBootstrapClient& m_pgpBootstrapClient;
+    PgpRecipientChecker& m_pgpRecipientChecker;
     EmailListModel* m_model; // owned, parented to this
     QVector<Email> m_currentFolderEmails; // last cachedEmails(currentFolder) result, pre-keyword-filter
     QString m_currentFolder = QStringLiteral("INBOX");
     QString m_selectedKeyword;
     bool m_isBusy = false;
     QString m_lastError;
+    bool m_pgpCanEncrypt = false;
+    bool m_pgpCanSign = false;
+    bool m_pgpHandoffToWebmail = false;
+    QStringList m_pgpKeylessRecipients;
 };

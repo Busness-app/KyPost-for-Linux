@@ -134,8 +134,11 @@ Item {
                 return
             }
             root.validationError = ""
+            // sign/encrypt are literal false, false for now -- Task 7 wires
+            // the real compose toggle states through.
             const ok = MailApp.sendMail(toField.joinedText, ccField.joinedText, bccField.joinedText,
-                                         subjectField.text, result.html, root.attachmentPaths)
+                                         subjectField.text, result.html, root.attachmentPaths,
+                                         false, false)
             if (ok)
                 root.sendSucceeded()
         })
