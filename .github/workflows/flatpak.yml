@@ -91,8 +91,16 @@ jobs:
       - name: Install flatpak tooling
         run: |
           sudo apt-get update
+          # elfutils supplies eu-strip and eu-elfcompress. flatpak-builder
+          # separates debug info out of every module it builds into a
+          # .Debug extension, and shells out to eu-strip to do it -- without
+          # it the build dies at the FIRST module that produces a shared
+          # library ("Failed to execute child process eu-strip"), which is
+          # qtkeychain, long before anything KyPost-specific is reached.
+          # Not pulled in by flatpak-builder's own dependencies, and not
+          # present on ubuntu-24.04 runners by default.
           sudo apt-get install -y --no-install-recommends \
-            flatpak flatpak-builder ostree appstream desktop-file-utils
+            flatpak flatpak-builder ostree appstream desktop-file-utils elfutils
           # Added to both installations deliberately: flatpak-builder runs
           # with --user below, but the pre-existing system-wide remote is
           # what the nightly job has been resolving --install-deps-from
