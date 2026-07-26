@@ -73,7 +73,7 @@ Carried forward verbatim (in substance) from `Linux_QT_Client_Plan.md`'s own
   present *at all*, even `0`, puts the endpoint into delta mode. A full
   snapshot requires omitting `since` entirely, which is what
   `forceFullResync` does.
-- **License: GPL-2.0** (fine with Qt LGPL / KDE).
+- **License: GPL-3.0-only** (fine with Qt LGPL / KDE).
 - **Qt5/Ubuntu Touch (Clickable) support is dropped, not merely paused.**
   Qt5 is EOL upstream, so this codebase now hard-requires Qt6 and has no
   Qt5 build path at all (previously a dual-Qt CMake toggle selected between

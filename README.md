@@ -121,4 +121,4 @@ summarizes the rules most likely to be violated by accident when making a change
 
 ## License
 
-GPL-2.0-only — see [`LICENSE.txt`](LICENSE.txt).
+GPL-3.0-only — see [`LICENSE.txt`](LICENSE.txt).

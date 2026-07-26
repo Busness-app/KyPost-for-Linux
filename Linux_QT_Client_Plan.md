@@ -114,7 +114,7 @@ fully-adaptive tree:
 - 90-second foreground refresh cadence. Full-snapshot refresh (`since=0`);
   delta/cursor mail sync stays v2.
 - Port the Mac suite's test coverage (159 tests) — it encodes every contract fix.
-- License GPL-2.0 (fine with Qt LGPL / KDE).
+- License GPL-3.0-only (fine with Qt LGPL / KDE).
 
 ## Push: the UnifiedPush contract
 
