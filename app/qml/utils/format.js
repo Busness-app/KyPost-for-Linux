@@ -32,6 +32,31 @@ function isExternallyOpenableUrl(url) {
     return externallyOpenableSchemes.indexOf(s.substring(0, colon).toLowerCase()) !== -1
 }
 
+// The IMAP keyword the server sets on mail that impersonates KyPost itself
+// (backend/internal/processor/phish_scan.go). $Phishing is the reserved RFC
+// 8621 keyword, so other mail clients understand it too.
+//
+// The message is flagged in place -- it stays in the inbox, stays unread, and
+// keeps its body. Nothing here moves or hides mail.
+//
+// Compared case-insensitively because IMAP keywords are case-insensitive: a
+// server may echo back "$phishing" for a keyword the poller set as "$Phishing",
+// and a case-sensitive check would silently drop the warning on precisely the
+// mail it exists for.
+//
+// Lives here rather than inside EmailDetail.qml for the same reason
+// isExternallyOpenableUrl does -- so it is testable without standing up the
+// whole singleton graph that file needs.
+function hasPhishingKeyword(keywords) {
+    if (!keywords)
+        return false
+    for (let i = 0; i < keywords.length; i++) {
+        if (String(keywords[i]).trim().toLowerCase() === "$phishing")
+            return true
+    }
+    return false
+}
+
 // The scheme part of a URL, lowercased, or "" -- used only to tell the user
 // which kind of link was refused.
 function urlScheme(url) {
