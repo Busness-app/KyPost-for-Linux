@@ -1,5 +1,24 @@
 # Mobile Encrypted Send — kypost-Linux / kypost-for-Mac Implementation Plan
 
+> **SUPERSEDED (2026-07-26) — DO NOT EXECUTE.**
+> Replaced by `docs/superpowers/plans/2026-07-26-client-encrypted-send.md`, written
+> against the `Client_Encrypted_Send.md` contract. This plan disagrees with the
+> contract and with the shipped code in four ways, each verified:
+>
+> 1. Its `sendGateFor()` opens the plaintext-link confirmation from the *preflight*
+>    result. The preflight reads contacts only while the send path also runs WKD
+>    discovery, so that shows the dialog for recipients who do have a discoverable
+>    key. The server's 409 must be the gate.
+> 2. Its test code targets a `FakeRelayServer` API that does not exist
+>    (`enqueue`/`baseUrl`/`httpClient`/`lastRequestBody`). The real harness takes a
+>    canned response in its constructor and serves exactly one connection.
+> 3. It requires matching `kypost-android`'s `pgpComposeStateOf`, which does not
+>    exist anywhere in that repo.
+> 4. Its `openWebmailDrafts` builds a `QUrl` with no scheme validation, bypassing
+>    the https-only check already shipped in `app/mail/PgpMessagePresentation.cpp`.
+>
+> Kept for its reasoning, which the replacement reuses. Nothing here was implemented.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Let a server-custody account send signed and encrypted mail from the desktop app, and hand a client-custody account off to webmail instead of failing.
