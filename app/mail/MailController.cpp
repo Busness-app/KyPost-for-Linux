@@ -459,11 +459,23 @@ bool MailController::sendMail(const QString& to, const QString& cc, const QStrin
     setBusy(true);
     const QString sendMode = QStringLiteral("html");
 
+    // Minted into a local, and it is this local -- never m_pendingSend.token --
+    // that the refusal below emits. sendMail can re-enter: the relay call runs
+    // a nested event loop, and Send is only disabled once setBusy(true) lands,
+    // so a second composer's Send clicked during requestSendableHtml's async
+    // round trip can start an inner sendMail that replaces m_pendingSend. An
+    // outer call reading the member back would then emit the INNER call's
+    // token beside its OWN recipient list, both instances' ownership flags
+    // would be set, and confirming would mail the other composition. Emitting
+    // the local means a superseded outer call emits a token that no longer
+    // matches, and the confirm is refused instead.
+    const quint64 pendingSendToken = m_nextPendingSendToken++;
+
     // Field order matters -- PendingSend is aggregate-initialized. Eleven
     // fields: valid, to, cc, bcc, subject, body, mode, attachments, sign,
     // encrypt, token.
     m_pendingSend = PendingSend{ true, to, cc, bcc, subject, body, sendMode, attachments, sign, encrypt,
-                                 m_nextPendingSendToken++ };
+                                 pendingSendToken };
 
     const SendMailResult result = m_relayMailSource.sendMail(
         serverBaseUrl, auth, to, cc, bcc, subject, body, sendMode, attachments,
@@ -483,7 +495,7 @@ bool MailController::sendMail(const QString& to, const QString& cc, const QStrin
         // Emitted synchronously, inside this invokable, on purpose -- that is
         // what lets a Compose instance tell "this is my send" from "this is
         // the other window's send". See the signal's declaration.
-        emit pickupFallbackRequired(m_pendingSend.token, result.keylessRecipients);
+        emit pickupFallbackRequired(pendingSendToken, result.keylessRecipients);
         return false;
     }
     if (result.clientSideNeeded) {
