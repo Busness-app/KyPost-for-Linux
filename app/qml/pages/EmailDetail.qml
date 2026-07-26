@@ -97,15 +97,11 @@ Item {
 
     // If `raw` contains "<...>", returns the content between the first '<'
     // and the matching '>'; otherwise returns `raw` trimmed as-is.
+    // Delegates to Format (utils/format.js) so the rule is testable on its own
+    // and stays identical to the webmail and Android clients -- see
+    // tests/qml/tst_AddressText.qml for why a display name must never win.
     function extractAddress(raw) {
-        const s = raw || ""
-        const lt = s.indexOf("<")
-        if (lt !== -1) {
-            const gt = s.indexOf(">", lt)
-            if (gt !== -1)
-                return s.substring(lt + 1, gt).trim()
-        }
-        return s.trim()
+        return Format.addressFromHeader(raw)
     }
 
     // Splits a comma/semicolon-joined address-list string (Email.sentTo/.cc
@@ -423,6 +419,65 @@ Item {
             font.family: Theme.fontUi
             font.pixelSize: 12
             wrapMode: Text.WordWrap
+        }
+
+        // Anti-phishing banner, above the PGP one because it is the more urgent
+        // thing to read: PGP describes how a message was protected, this says
+        // the message is trying to take over this device.
+        //
+        // Driven by the $Phishing IMAP keyword the server sets (see
+        // backend/internal/processor/phish_scan.go). Advisory only -- the actual
+        // refusal already happened locally and unconditionally, in
+        // Format.isExternallyOpenableUrl below, which is what keeps this banner
+        // from being load-bearing: if the server never flagged the message, the
+        // kypost:// link still does not open.
+        //
+        // Deliberately shaped like pgpBanner's problem state rather than
+        // extracted into a shared component: factoring the two together would
+        // mean reworking the PGP banner's neutral/problem split for no
+        // behavioural gain.
+        Rectangle {
+            id: phishingBanner
+
+            readonly property bool flagged:
+                Format.hasPhishingKeyword(root.email ? root.email.keywords : undefined)
+
+            Layout.fillWidth: true
+            visible: phishingBanner.flagged
+            implicitHeight: visible ? phishingBannerLayout.implicitHeight + 24 : 0
+            radius: Theme.shapePanel
+            color: Theme.dangerFillColor
+            border.width: 1
+            border.color: Theme.dangerBorderColor
+
+            ColumnLayout {
+                id: phishingBannerLayout
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: parent.top
+                anchors.margins: 12
+                spacing: 6
+
+                Text {
+                    Layout.fillWidth: true
+                    text: i18n("This message impersonates KyPost")
+                    color: Theme.inkStrong
+                    font.family: Theme.fontUi
+                    font.pixelSize: 13
+                    font.bold: true
+                    wrapMode: Text.WordWrap
+                }
+                Text {
+                    Layout.fillWidth: true
+                    text: i18n("Links to KyPost app addresses have been blocked. KyPost will never "
+                               + "ask you to confirm a pairing request by email — never approve "
+                               + "one you did not start yourself, on this device.")
+                    color: Theme.ink
+                    font.family: Theme.fontUi
+                    font.pixelSize: 12
+                    wrapMode: Text.WordWrap
+                }
+            }
         }
 
         // OpenPGP protection-mode banner. Every string and the decision

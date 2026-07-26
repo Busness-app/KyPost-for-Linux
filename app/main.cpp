@@ -718,6 +718,21 @@ int main(int argc, char* argv[])
     qmlRegisterSingletonInstance<PairingController>(
         "com.urlxl.mail", 1, 0, "Pairing", &pairingController);
 
+    // Keep PairingController's view of the lock current, so a
+    // kypost://native-pair link arriving while the app is locked cannot raise a
+    // confirmable pairing prompt over the PIN screen. The confirm prompt is a
+    // QQC2 Popup and therefore renders inside QQuickOverlay, above the app-lock
+    // overlay's z: 1000 -- gating in the controller makes that stacking
+    // irrelevant. Seeded once here because the app can start locked, then
+    // pushed on every transition; both the argv deep-link path and the
+    // KDBusService::activateRequested relay are covered by construction, since
+    // both funnel through pairFromDeepLink().
+    pairingController.setAppLocked(appLockManager.locked());
+    QObject::connect(&appLockManager, &AppLockManager::lockedChanged, &pairingController,
+                     [&pairingController, &appLockManager]() {
+                         pairingController.setAppLocked(appLockManager.locked());
+                     });
+
     // Task 43 review-finding fix: rotate the ntfy topic (SecureStore
     // "ntfy-topic" key, see NtfyTopicProvisioner above) on every successful
     // (re-)pair, per Linux_QT_Client_Plan.md's risk #8 ("rotated on

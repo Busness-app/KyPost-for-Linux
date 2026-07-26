@@ -490,11 +490,23 @@ Kirigami.ApplicationWindow {
             }
             Text {
                 Layout.fillWidth: true
-                text: Pairing.pendingPairHost
+                text: Pairing.pendingPairOrigin
                 color: Theme.inkStrong
                 font.family: Theme.fontMono
                 font.pixelSize: 15
                 font.weight: Font.Bold
+                wrapMode: Text.WordWrap
+            }
+            // Only reachable for loopback, but cleartext must never look the
+            // same as TLS in the one confirmation the user gets -- the pairing
+            // token and the real push device token both travel over this.
+            Text {
+                Layout.fillWidth: true
+                visible: Pairing.pendingPairInsecure
+                text: i18n("This connection is not encrypted (http).")
+                color: Theme.dangerColor
+                font.family: Theme.fontUi
+                font.pixelSize: 12
                 wrapMode: Text.WordWrap
             }
             Text {

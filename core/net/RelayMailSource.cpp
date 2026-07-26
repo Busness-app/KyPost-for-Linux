@@ -10,7 +10,8 @@
 namespace {
 
 // Maps one wire inbox item -- {messageId, sender, sentTo, cc, bcc, subject,
-// body, status, atUtc, hasAttachments, label, detail?, changeType?} -- onto
+// body, status, atUtc, hasAttachments, label, keywords, detail?, changeType?}
+// -- onto
 // InboxEmailItem. atUtc is a direct pass-through (core/models/Email::atUtc
 // already matches the wire key exactly, no casing translation). There is no
 // distinct "preview" key on the wire, so Email::preview is left empty here
@@ -31,6 +32,16 @@ InboxEmailItem inboxItemFromJson(const QJsonObject& obj)
     item.email.atUtc = obj.value(QStringLiteral("atUtc")).toString();
     item.email.hasAttachments = obj.value(QStringLiteral("hasAttachments")).toBool();
     item.email.label = obj.value(QStringLiteral("label")).toString();
+
+    // The message's real IMAP keywords. Never read before, which meant
+    // Email::keywords was always empty from the relay -- so MailController's
+    // keyword filter and the keyword pill row could never match anything a
+    // server actually set. The anti-phishing banner reads $Phishing from here.
+    // omitempty on the wire, so an absent key yields an empty list.
+    const QJsonArray keywords = obj.value(QStringLiteral("keywords")).toArray();
+    item.email.keywords.reserve(keywords.size());
+    for (const QJsonValue& keyword : keywords)
+        item.email.keywords.append(keyword.toString());
 
     // Both are `omitempty` on the wire, so absent means false/empty -- which
     // is exactly what toBool()/toString() yield for a missing key. See

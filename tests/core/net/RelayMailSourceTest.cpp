@@ -59,6 +59,7 @@ void RelayMailSourceTest::fetchInboxMapsTwoTabsWithAtUtcPassthroughAndOptionalFi
             "atUtc": "2026-07-01T12:00:00Z",
             "hasAttachments": true,
             "label": "important",
+            "keywords": ["Primary", "$Phishing"],
             "detail": "queued",
             "changeType": "updated"
           }
@@ -113,6 +114,10 @@ void RelayMailSourceTest::fetchInboxMapsTwoTabsWithAtUtcPassthroughAndOptionalFi
     QCOMPARE(item1.email.atUtc, QStringLiteral("2026-07-01T12:00:00Z"));
     QCOMPARE(item1.email.hasAttachments, true);
     QCOMPARE(item1.email.label, QStringLiteral("important"));
+    // Keywords carry the server's real IMAP keywords, including the $Phishing
+    // anti-phishing flag the warning banner reads. Never parsed before this,
+    // which also meant MailController's keyword filter could never match.
+    QCOMPARE(item1.email.keywords, QStringList({ QStringLiteral("Primary"), QStringLiteral("$Phishing") }));
     // folder is set from the enclosing byTab map key, not a wire field.
     QCOMPARE(item1.email.folder, QStringLiteral("Inbox"));
     QCOMPARE(item1.detail, QStringLiteral("queued"));
@@ -126,6 +131,7 @@ void RelayMailSourceTest::fetchInboxMapsTwoTabsWithAtUtcPassthroughAndOptionalFi
     QCOMPARE(item2.email.folder, QStringLiteral("Archive"));
     // "body"/"detail"/"changeType" absent from the wire -> nullopt/empty, not
     // a parse error.
+    QVERIFY(item2.email.keywords.isEmpty());
     QVERIFY(!item2.email.body.has_value());
     QVERIFY(item2.detail.isEmpty());
     QVERIFY(!item2.changeType.has_value());

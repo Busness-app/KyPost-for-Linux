@@ -32,6 +32,62 @@ function isExternallyOpenableUrl(url) {
     return externallyOpenableSchemes.indexOf(s.substring(0, colon).toLowerCase()) !== -1
 }
 
+// The real address out of a raw From/To/Cc header value.
+//
+// A display name is attacker-controlled and is authenticated by nothing: DKIM,
+// SPF and DMARC all validate the domain a message was sent from, never the
+// human-readable label in front of it. So this arrives intact and aligned:
+//
+//     From: "evil@attacker.tld" <bob@corp.com>
+//
+// EmailDetail's extractAddress() took the FIRST "<", which on that input still
+// happens to work but fails the mirror case, and the webmail's equivalent took
+// the first email-shaped substring anywhere -- which picked the address out of
+// the display name. Reply/Reply All/Forward all carry the quoted original, so
+// getting this wrong sends a thread to someone who never sent it.
+//
+// The rule, shared verbatim with the webmail and Android clients: the real
+// address is the LAST angle-addr, because RFC 5322 puts display-name first and
+// addr-spec last. A bare value is the address itself. Anything without an "@"
+// is not an address and yields "" rather than being passed through as a
+// pseudo-recipient.
+function addressFromHeader(raw) {
+    const s = String(raw === undefined || raw === null ? "" : raw).trim()
+    if (s.length === 0)
+        return ""
+    let candidate = s
+    const close = s.lastIndexOf(">")
+    const open = close === -1 ? -1 : s.lastIndexOf("<", close)
+    if (open !== -1 && close > open)
+        candidate = s.substring(open + 1, close).trim()
+    return candidate.indexOf("@") !== -1 ? candidate : ""
+}
+
+// The IMAP keyword the server sets on mail that impersonates KyPost itself
+// (backend/internal/processor/phish_scan.go). $Phishing is the reserved RFC
+// 8621 keyword, so other mail clients understand it too.
+//
+// The message is flagged in place -- it stays in the inbox, stays unread, and
+// keeps its body. Nothing here moves or hides mail.
+//
+// Compared case-insensitively because IMAP keywords are case-insensitive: a
+// server may echo back "$phishing" for a keyword the poller set as "$Phishing",
+// and a case-sensitive check would silently drop the warning on precisely the
+// mail it exists for.
+//
+// Lives here rather than inside EmailDetail.qml for the same reason
+// isExternallyOpenableUrl does -- so it is testable without standing up the
+// whole singleton graph that file needs.
+function hasPhishingKeyword(keywords) {
+    if (!keywords)
+        return false
+    for (let i = 0; i < keywords.length; i++) {
+        if (String(keywords[i]).trim().toLowerCase() === "$phishing")
+            return true
+    }
+    return false
+}
+
 // The scheme part of a URL, lowercased, or "" -- used only to tell the user
 // which kind of link was refused.
 function urlScheme(url) {

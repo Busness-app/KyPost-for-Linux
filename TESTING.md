@@ -123,6 +123,37 @@ default/bare User-Agent strings (see `AGENTS.md` Section 8).
       `settings.autoLoadImages: false` are both explicitly set (commit
       `f0d48c1`). Tapping a link inside the body opens it externally
       (`Qt.openUrlExternally(request.url)`), not inside the embedded view.
+- [ ] **A phishing-flagged message shows the warning banner.** Have the server
+      flag a message with the `$Phishing` IMAP keyword (send yourself mail whose
+      `text/html` part contains
+      `<a href="kypost://native-pair?sub=x&srv=https://evil.example&pt=y">`),
+      then open it. Expected: a danger-accented banner reading "This message
+      impersonates KyPost" sits **above** the PGP banner, the message is still
+      in the inbox and still unread, and clicking the link opens nothing --
+      only the "address type KyPost will not open (kypost:)" hint appears.
+      The banner is advisory: the refusal is `Format.isExternallyOpenableUrl`
+      and holds even if the server never flagged the message.
+- [ ] **An emailed `kypost://` link never reaches the pairing dialog.** With the
+      app running, open a message containing that link and click it. Expected:
+      no pairing-confirm popup appears, and `journalctl --user -f` shows
+      `routeDeepLink` never running. Then run
+      `xdg-open 'kypost://native-pair?sub=x&srv=https://evil.example&pt=y'` by
+      hand: the popup *does* appear (that path is legitimate), naming the full
+      origin -- proving the block is specific to links out of message content.
+- [ ] **A pairing link cannot be confirmed while the app is locked.** Turn on
+      Require Unlock, lock KyPost, then run
+      `xdg-open 'kypost://native-pair?sub=x&srv=https://evil.example&pt=y'`.
+      Expected: **no confirmable prompt** -- `pairingState` goes to `failed`
+      with "Unlock KyPost first, then open the pairing link again", and nothing
+      is left pending. Unlock and repeat: the prompt appears normally. Finally,
+      open a link while unlocked, then lock the app *with the dialog still on
+      screen* and press Pair: it must refuse. (The prompt is a QQC2 Popup, drawn
+      in QQuickOverlay above the app-lock overlay's z: 1000, so the gate is in
+      PairingController rather than in the z-order.)
+- [ ] **The pairing confirm dialog names the full origin.** Trigger any pairing
+      link and read the dialog. Expected: `scheme://host[:port]`, not a bare
+      hostname -- and for a loopback `http://` target, an extra red line reading
+      "This connection is not encrypted (http)".
 - [ ] **Folder navigation works.** Switching folders calls
       `MailApp.selectFolder(wireName)` with one of the locked
       `StandardFolder` wire names (`INBOX`, `Drafts`, `Junk`, `Sent`,

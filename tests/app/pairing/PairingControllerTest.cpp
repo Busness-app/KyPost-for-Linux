@@ -43,6 +43,10 @@ private slots:
     void removePairingSkipsNetworkCallWhenNoDeviceSecretStored();
     void removePairingDeregistersServerSideWhenDeviceSecretPresent();
     void resetReturnsToIdleAfterFailure();
+    void pairFromDeepLinkRefusedWhileAppLocked();
+    void confirmPendingPairRefusedWhenAppLocksAfterConfirmStateEntered();
+    void pairFromDeepLinkWorksAgainAfterUnlock();
+    void pendingPairOriginDisclosesSchemeAndPort();
 
 private:
     // Builds a kypost://native-pair?... link from a param map, letting
@@ -94,7 +98,7 @@ void PairingControllerTest::pairFromDeepLinkEntersConfirmStateWithoutNetworkCall
     QVERIFY(controller.pairFromDeepLink(buildLink(params)));
 
     QCOMPARE(controller.pairingState(), QStringLiteral("confirm"));
-    QCOMPARE(controller.pendingPairHost(), QStringLiteral("127.0.0.1"));
+    QCOMPARE(controller.pendingPairOrigin(), QStringLiteral("http://127.0.0.1:%1").arg(fake.port()));
     QVERIFY(!controller.isPaired());
     QVERIFY(fake.receivedRequest().isEmpty());
     QVERIFY(!pairingStore.load().has_value());
@@ -209,7 +213,7 @@ void PairingControllerTest::pairFromDeepLinkHappyPathPairsAndPersists()
     // any network call -- see PairingController::pairFromDeepLink's doc
     // comment.
     QCOMPARE(controller.pairingState(), QStringLiteral("confirm"));
-    QCOMPARE(controller.pendingPairHost(), QStringLiteral("127.0.0.1"));
+    QCOMPARE(controller.pendingPairOrigin(), QStringLiteral("http://127.0.0.1:%1").arg(fake.port()));
     QVERIFY(fake.receivedRequest().isEmpty());
 
     QVERIFY(controller.confirmPendingPair());
@@ -565,7 +569,7 @@ void PairingControllerTest::pairFromDeepLinkNotifiesFreshPendingPairEvenWhenStat
     // (state, error) alone, so a SECOND kypost://native-pair link arriving
     // while the confirm dialog was already open (same "confirm"/"" state)
     // silently swapped m_pendingPair to the new (attacker) link's params
-    // without ever emitting pairingStateChanged() -- pendingPairHost's
+    // without ever emitting pairingStateChanged() -- pendingPairOrigin's
     // QML binding never re-evaluated, so the dialog kept showing the FIRST
     // link's host while "Pair" would have acted on the SECOND link's data.
     FakeRelayServer fake(httpResponse(200, "OK", R"({"ok":true,"deviceId":"should-not-be-used"})"));
@@ -594,7 +598,7 @@ void PairingControllerTest::pairFromDeepLinkNotifiesFreshPendingPairEvenWhenStat
 
     QVERIFY(controller.pairFromDeepLink(buildLink(firstParams)));
     QCOMPARE(controller.pairingState(), QStringLiteral("confirm"));
-    QCOMPARE(controller.pendingPairHost(), QStringLiteral("127.0.0.1"));
+    QCOMPARE(controller.pendingPairOrigin(), QStringLiteral("http://127.0.0.1:%1").arg(fake.port()));
 
     QSignalSpy stateChangedSpy(&controller, &PairingController::pairingStateChanged);
 
@@ -606,11 +610,11 @@ void PairingControllerTest::pairFromDeepLinkNotifiesFreshPendingPairEvenWhenStat
     QVERIFY(controller.pairFromDeepLink(buildLink(secondParams)));
 
     // Still "confirm" (same label), but pairingStateChanged MUST fire again
-    // so a bound QML label re-reads pendingPairHost -- otherwise the UI
+    // so a bound QML label re-reads pendingPairOrigin -- otherwise the UI
     // shows stale (first link's) data while the pending params underneath
     // have already moved to the second link's.
     QCOMPARE(controller.pairingState(), QStringLiteral("confirm"));
-    QCOMPARE(controller.pendingPairHost(), QStringLiteral("192.0.2.1"));
+    QCOMPARE(controller.pendingPairOrigin(), QStringLiteral("https://192.0.2.1"));
     QVERIFY(stateChangedSpy.count() >= 1);
 }
 
@@ -806,6 +810,101 @@ void PairingControllerTest::resetReturnsToIdleAfterFailure()
 
     QCOMPARE(controller.pairingState(), QStringLiteral("idle"));
     QVERIFY(controller.pairingError().isEmpty());
+}
+
+// Shared graph for the app-lock tests below. Every other test in this file
+// builds this by hand on the stack; a macro keeps that shape (stack-local, no
+// hidden ownership) without a fifth verbatim copy.
+#define PAIRING_TEST_FIXTURE()                                                              \
+    FakeRelayServer fake(httpResponse(200, "OK", R"({"ok":true,"deviceId":"dev-1"})"));      \
+    QTemporaryDir secureDir;                                                                 \
+    QVERIFY(secureDir.isValid());                                                            \
+    SecureStoreFile secureStore(secureDir.path());                                           \
+    PairingStore pairingStore(secureStore);                                                  \
+    QTemporaryDir settingsDir;                                                               \
+    QVERIFY(settingsDir.isValid());                                                          \
+    SettingsStore settingsStore(settingsDir.filePath(QStringLiteral("settings.ini")));       \
+    QNetworkAccessManager manager;                                                           \
+    HttpClient http(manager);                                                                \
+    NativeRegistrationClient regClient(http);                                                \
+    DeviceRegistrationService service(regClient, pairingStore, settingsStore, http);          \
+    DeregisterClient deregisterClient(http);                                                 \
+    PairingController controller(service, pairingStore, settingsStore, deregisterClient);     \
+    QMap<QString, QString> params;                                                           \
+    params[QStringLiteral("sub")] = QStringLiteral("sub-lock");                               \
+    params[QStringLiteral("srv")] = QStringLiteral("http://127.0.0.1:%1").arg(fake.port());   \
+    params[QStringLiteral("pt")] = QStringLiteral("pair-tok-lock");
+
+// A kypost://native-pair link can arrive from anywhere on the session bus while
+// the app is locked. The confirm prompt is a QQC2 Popup, which Qt renders inside
+// QQuickOverlay -- above any z-ordered sibling, including the app-lock overlay
+// (z: 1000). Rather than depend on that stacking question, the controller
+// refuses to enter the confirm state at all while locked, so the answer does not
+// matter. Matches Android, where PushPairingActivity is a LockedActivity and
+// finishes on start, discarding the intent.
+void PairingControllerTest::pairFromDeepLinkRefusedWhileAppLocked()
+{
+    PAIRING_TEST_FIXTURE()
+
+    controller.setAppLocked(true);
+    QVERIFY(!controller.pairFromDeepLink(buildLink(params)));
+
+    QCOMPARE(controller.pairingState(), QStringLiteral("failed"));
+    // Nothing is left pending: an attacker-supplied payload must not survive
+    // across the lock waiting for a later confirm.
+    QVERIFY(controller.pendingPairOrigin().isEmpty());
+    QVERIFY(!controller.isPaired());
+    QVERIFY(fake.receivedRequest().isEmpty());
+}
+
+// The case the z-order bug actually exposes: the dialog is already open and
+// visible when the lock engages. Pressing Pair must do nothing.
+void PairingControllerTest::confirmPendingPairRefusedWhenAppLocksAfterConfirmStateEntered()
+{
+    PAIRING_TEST_FIXTURE()
+
+    QVERIFY(controller.pairFromDeepLink(buildLink(params)));
+    QCOMPARE(controller.pairingState(), QStringLiteral("confirm"));
+
+    controller.setAppLocked(true);
+    QVERIFY(!controller.confirmPendingPair());
+
+    QVERIFY(!controller.isPaired());
+    QVERIFY(fake.receivedRequest().isEmpty());
+    QVERIFY(!pairingStore.load().has_value());
+}
+
+// Refusing while locked must not be sticky -- the user re-opens the link after
+// unlocking, exactly as on Android.
+void PairingControllerTest::pairFromDeepLinkWorksAgainAfterUnlock()
+{
+    PAIRING_TEST_FIXTURE()
+
+    controller.setAppLocked(true);
+    QVERIFY(!controller.pairFromDeepLink(buildLink(params)));
+
+    controller.setAppLocked(false);
+    QVERIFY(controller.pairFromDeepLink(buildLink(params)));
+    QCOMPARE(controller.pairingState(), QStringLiteral("confirm"));
+    QCOMPARE(controller.pendingPairOrigin(), QStringLiteral("http://127.0.0.1:%1").arg(fake.port()));
+}
+
+// pendingPairHost() returned QUrl::host() only, so "http://evil.example:8443"
+// and "https://evil.example" were indistinguishable in the one confirmation the
+// user ever gets. The scheme is the difference between sending the pairing token
+// and the real push device token over TLS or in cleartext.
+void PairingControllerTest::pendingPairOriginDisclosesSchemeAndPort()
+{
+    PAIRING_TEST_FIXTURE()
+
+    QVERIFY(controller.pairFromDeepLink(buildLink(params)));
+
+    const QString origin = controller.pendingPairOrigin();
+    QVERIFY2(origin.startsWith(QStringLiteral("http://")), qPrintable(origin));
+    QVERIFY2(origin.contains(QString::number(fake.port())), qPrintable(origin));
+    // Loopback http is the one legitimate cleartext case, and it must still be
+    // announced as insecure rather than blending in with https.
+    QVERIFY(controller.pendingPairInsecure());
 }
 
 QTEST_GUILESS_MAIN(PairingControllerTest)
