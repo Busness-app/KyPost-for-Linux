@@ -56,6 +56,21 @@ Item {
     property var attachmentPaths: []
     property string validationError: ""
 
+    // Recipient fields joined into one value purely so a single change handler
+    // can debounce the PGP key preflight. Watching the three TokenFields'
+    // joinedText is enough -- every way an address enters or leaves a field
+    // (typing, Enter/Tab/comma, the address book, removing a token) ends up
+    // reflected there.
+    readonly property string recipientsSnapshot:
+        toField.joinedText + "|" + ccField.joinedText + "|" + bccField.joinedText
+
+    onRecipientsSnapshotChanged: {
+        // Only while Encrypt is on: the warning is meaningless otherwise, and
+        // this would be a network call on every keystroke for nothing.
+        if (encryptToggle.checked)
+            preflightTimer.restart()
+    }
+
     // Compose autocomplete (ContactAutocomplete.md): tracks whichever
     // TokenField most recently changed its query text, so the one shared
     // dropdown/picker below know which field to reposition under / add a
@@ -116,6 +131,28 @@ Item {
         // blockquote-wrapping it would corrupt the formatting. Reply/Forward
         // drafts are plain text and still need quotedInitialBodyHtml().
         bodyEditor.loadInitialHtml(root.initialBodyIsHtml ? root.initialBody : root.quotedInitialBodyHtml(root.initialBody))
+        // Which PGP controls may appear at all depends on the account's key
+        // custody, which only the relay knows. A failure leaves every control
+        // hidden -- "couldn't check" is never "no PGP".
+        MailApp.refreshPgpComposeState()
+    }
+
+    // Hands the composition to webmail: saves it as a draft, then opens the
+    // system browser at Drafts. Only reachable for a client-custody account,
+    // whose private key exists solely in the user's browser.
+    function tryWebmailHandoff() {
+        toField.commitInputAsToken()
+        ccField.commitInputAsToken()
+        bccField.commitInputAsToken()
+
+        bodyEditor.requestSendableHtml(function(result) {
+            root.validationError = ""
+            // Deliberately stays on the compose page on failure: the message
+            // is still here, and navigating away would lose it.
+            if (MailApp.openWebmailDrafts(toField.joinedText, ccField.joinedText, bccField.joinedText,
+                                           subjectField.text, result.html, root.attachmentPaths))
+                toast.show(i18n("Saved to Drafts — continue in your browser"))
+        })
     }
 
     function trySend() {
@@ -134,11 +171,13 @@ Item {
                 return
             }
             root.validationError = ""
-            // sign/encrypt are literal false, false for now -- Task 7 wires
-            // the real compose toggle states through.
+            // A false return is not necessarily a failure: a 409 asking for the
+            // one-time-link fallback also returns false, and arrives as
+            // MailApp.pickupFallbackRequired (see the Connections block below),
+            // which opens the confirmation instead of reporting an error.
             const ok = MailApp.sendMail(toField.joinedText, ccField.joinedText, bccField.joinedText,
                                          subjectField.text, result.html, root.attachmentPaths,
-                                         false, false)
+                                         signToggle.checked, encryptToggle.checked)
             if (ok)
                 root.sendSucceeded()
         })
@@ -335,6 +374,96 @@ Item {
             }
         }
 
+        // --- PGP controls -------------------------------------------------
+        // Which of these exist at all comes from the account's key custody
+        // (MailApp.refreshPgpComposeState above). Encrypt is offered even with
+        // no PGP identity of the user's own, because encryption targets the
+        // RECIPIENTS' public keys; only signing needs the account's own key.
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: 12
+            visible: MailApp.pgpCanEncrypt || MailApp.pgpCanSign
+
+            CheckBox {
+                id: encryptToggle
+                visible: MailApp.pgpCanEncrypt
+                text: i18n("Encrypt")
+                contentItem: Text {
+                    text: encryptToggle.text
+                    color: Theme.inkStrong
+                    font.family: Theme.fontUi
+                    font.pixelSize: 14
+                    verticalAlignment: Text.AlignVCenter
+                    leftPadding: encryptToggle.indicator.width + encryptToggle.spacing
+                }
+                // Turning it on is the first moment the preflight has any
+                // meaning, so ask then rather than waiting for the next
+                // recipient edit.
+                onCheckedChanged: if (checked) preflightTimer.restart()
+            }
+            CheckBox {
+                id: signToggle
+                visible: MailApp.pgpCanSign
+                text: i18n("Sign")
+                contentItem: Text {
+                    text: signToggle.text
+                    color: Theme.inkStrong
+                    font.family: Theme.fontUi
+                    font.pixelSize: 14
+                    verticalAlignment: Text.AlignVCenter
+                    leftPadding: signToggle.indicator.width + signToggle.spacing
+                }
+            }
+            Item { Layout.fillWidth: true }
+        }
+
+        // Inline, non-blocking. Deliberately worded as "no key on file" rather
+        // than "this will be sent as a plaintext link": the preflight reads only
+        // the user's contacts, while the send path additionally runs WKD and
+        // keyserver discovery, so this is a lower bound and must not be phrased
+        // as a prediction. The server's 409 is what actually drives the
+        // confirmation.
+        Text {
+            Layout.fillWidth: true
+            visible: encryptToggle.checked && MailApp.pgpKeylessRecipients.length > 0
+            text: i18np("We don't have a PGP key on file for %2.",
+                        "We don't have PGP keys on file for %2.",
+                        MailApp.pgpKeylessRecipients.length,
+                        MailApp.pgpKeylessRecipients.join(", "))
+            color: Theme.ink
+            font.family: Theme.fontUi
+            font.pixelSize: 12
+            wrapMode: Text.WordWrap
+        }
+
+        // Client-custody accounts get this instead of the toggles: the private
+        // key exists only in the user's browser, so no request from this app
+        // can sign or encrypt on its behalf.
+        ColumnLayout {
+            Layout.fillWidth: true
+            spacing: 6
+            visible: MailApp.pgpHandoffToWebmail
+
+            Text {
+                Layout.fillWidth: true
+                text: i18n("This account's PGP key is stored only in your browser, so this app can't encrypt on its behalf.")
+                color: Theme.ink
+                font.family: Theme.fontUi
+                font.pixelSize: 12
+                wrapMode: Text.WordWrap
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 8
+                GhostButton {
+                    text: i18n("Continue in webmail")
+                    enabled: !MailApp.isBusy
+                    onClicked: root.tryWebmailHandoff()
+                }
+                Item { Layout.fillWidth: true }
+            }
+        }
+
         Text {
             Layout.fillWidth: true
             visible: root.validationError !== "" || MailApp.lastError !== ""
@@ -405,6 +534,47 @@ Item {
         ccTokens: ccField.tokens
         bccTokens: bccField.tokens
         onContactPicked: (email, target) => root.targetField(target).addToken(email)
+    }
+
+    // Debounces the recipient key preflight so typing an address doesn't fire
+    // one request per keystroke. Restarted by recipientsSnapshot changes and by
+    // switching Encrypt on.
+    Timer {
+        id: preflightTimer
+        interval: 500
+        onTriggered: MailApp.preflightRecipients(toField.joinedText, ccField.joinedText,
+                                                  bccField.joinedText)
+    }
+
+    PickupFallbackDialog {
+        id: pickupFallbackDialog
+        z: 40
+        onConfirmed: {
+            // Re-sends the exact payload the server refused, with the opt-in
+            // set. Nothing is rebuilt here on purpose -- MailController holds
+            // the original request so the confirmed send is byte-identical.
+            if (MailApp.confirmPickupFallbackSend())
+                root.sendSucceeded()
+        }
+        onCancelled: MailApp.discardPendingSend()
+    }
+
+    Connections {
+        target: MailApp
+
+        // The relay refused an encrypted send because at least one recipient has
+        // no usable key. Nothing was delivered, so confirming is safe and cannot
+        // duplicate the message.
+        function onPickupFallbackRequired(recipients) {
+            pickupFallbackDialog.open(recipients)
+        }
+
+        // The message WAS sent, with partial trouble (the Sent copy failed, or a
+        // pickup link did not reach everyone). Shown as a notice, never as a
+        // failure, and never with a retry that would duplicate it.
+        function onSendWarning(warning) {
+            toast.show(warning)
+        }
     }
 
     Toast {

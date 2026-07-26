@@ -22,6 +22,7 @@
     <file>components/AddressBookPickerDialog.qml</file>
     <file>components/RichBodyEditor.qml</file>
     <file>components/HyperlinkDialog.qml</file>
+    <file>components/PickupFallbackDialog.qml</file>
     <file>pages/EmailDetail.qml</file>
     <file>pages/Unlock.qml</file>
     <file>pages/Compose.qml</file>

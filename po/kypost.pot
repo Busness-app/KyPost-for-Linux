@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: kypost\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-07-25 20:47-0400\n"
+"POT-Creation-Date: 2026-07-26 09:16-0400\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -23,7 +23,7 @@ msgid "Synced -- %1 pushed, %2 applied"
 msgstr ""
 
 #: app/contacts/ContactsController.cpp:243
-#: app/contacts/ContactsController.cpp:286 app/mail/MailController.cpp:133
+#: app/contacts/ContactsController.cpp:286 app/mail/MailController.cpp:159
 #: app/pairing/MfaController.cpp:41 app/pgp/PgpQrController.cpp:94
 #, kde-format
 msgid "Not paired"
@@ -72,102 +72,121 @@ msgstr ""
 msgid "Contact not found"
 msgstr ""
 
-#: app/mail/MailController.cpp:173
+#: app/mail/MailController.cpp:199
 #, kde-format
 msgid "Refresh failed"
 msgstr ""
 
-#: app/mail/MailController.cpp:196
+#: app/mail/MailController.cpp:222
 #, kde-format
 msgid "Action failed"
 msgstr ""
 
-#: app/mail/MailController.cpp:268
+#: app/mail/MailController.cpp:294
 #, kde-format
 msgid "Could not open attachment: %1"
 msgstr ""
 
-#: app/mail/MailController.cpp:274
+#: app/mail/MailController.cpp:300
 #, kde-format
 msgid "Attachments exceed the 25 MB limit"
 msgstr ""
 
-#: app/mail/MailController.cpp:344
+#: app/mail/MailController.cpp:370
 #, kde-format
 msgid "Could not create folder"
 msgstr ""
 
-#: app/mail/MailController.cpp:359
+#: app/mail/MailController.cpp:385
 #, kde-format
 msgid "Could not rename folder"
 msgstr ""
 
-#: app/mail/MailController.cpp:379
+#: app/mail/MailController.cpp:405
 #, kde-format
 msgid "Could not delete folder"
 msgstr ""
 
-#: app/mail/MailController.cpp:407
+#: app/mail/MailController.cpp:433
 #, kde-format
 msgid "Could not save draft"
 msgstr ""
 
-#: app/mail/MailController.cpp:432
+#: app/mail/MailController.cpp:478
 #, kde-format
-msgid "Send failed"
+msgid ""
+"This account's PGP key is held only in your browser, so this app cannot "
+"encrypt on its behalf. Continue in webmail to send it."
 msgstr ""
 
-#: app/mail/MailController.cpp:451
+#: app/mail/MailController.cpp:486
+#, kde-format
+msgid "Could not send message"
+msgstr ""
+
+#: app/mail/MailController.cpp:603
+#, kde-format
+msgid ""
+"This device is paired over an insecure connection, so KyPost cannot open "
+"webmail for you. Open your mail in a browser to send this message."
+msgstr ""
+
+#: app/mail/MailController.cpp:610
+#, kde-format
+msgid "Saved to Drafts, but KyPost could not open your browser."
+msgstr ""
+
+#: app/mail/MailController.cpp:628
 #, kde-format
 msgid "Could not list attachments"
 msgstr ""
 
-#: app/mail/MailController.cpp:500
+#: app/mail/MailController.cpp:677
 #, kde-format
 msgid "Download failed"
 msgstr ""
 
-#: app/mail/MailController.cpp:528
+#: app/mail/MailController.cpp:705
 #, kde-format
 msgid "Could not write attachment to %1"
 msgstr ""
 
-#: app/mail/MailController.cpp:558
+#: app/mail/MailController.cpp:735
 #, kde-format
 msgid "Could not create a temporary location for the attachment"
 msgstr ""
 
-#: app/mail/MailController.cpp:566
+#: app/mail/MailController.cpp:743
 #, kde-format
 msgid "Could not open the attachment"
 msgstr ""
 
-#: app/mail/PgpMessagePresentation.cpp:25
+#: app/mail/PgpMessagePresentation.cpp:27
 #, kde-format
 msgid "Encrypted, cannot be read in this app"
 msgstr ""
 
-#: app/mail/PgpMessagePresentation.cpp:27
+#: app/mail/PgpMessagePresentation.cpp:29
 #, kde-format
 msgid "Encrypted, could not be decrypted"
 msgstr ""
 
-#: app/mail/PgpMessagePresentation.cpp:39
+#: app/mail/PgpMessagePresentation.cpp:41
 #, kde-format
 msgid "This message is end-to-end encrypted"
 msgstr ""
 
-#: app/mail/PgpMessagePresentation.cpp:41
+#: app/mail/PgpMessagePresentation.cpp:43
 #, kde-format
 msgid "This message could not be decrypted"
 msgstr ""
 
-#: app/mail/PgpMessagePresentation.cpp:43
+#: app/mail/PgpMessagePresentation.cpp:45
 #, kde-format
 msgid "Decrypted by the server"
 msgstr ""
 
-#: app/mail/PgpMessagePresentation.cpp:57
+#: app/mail/PgpMessagePresentation.cpp:59
 #, kde-format
 msgid ""
 "Your account's PGP key is held only by you, so neither the server nor this "
@@ -175,17 +194,17 @@ msgid ""
 "unlocked, to read it."
 msgstr ""
 
-#: app/mail/PgpMessagePresentation.cpp:62
+#: app/mail/PgpMessagePresentation.cpp:64
 #, kde-format
 msgid "The server tried to decrypt this message and failed."
 msgstr ""
 
-#: app/mail/PgpMessagePresentation.cpp:63
+#: app/mail/PgpMessagePresentation.cpp:65
 #, kde-format
 msgid "The server tried to decrypt this message and failed: %1"
 msgstr ""
 
-#: app/mail/PgpMessagePresentation.cpp:65
+#: app/mail/PgpMessagePresentation.cpp:67
 #, kde-format
 msgid ""
 "This message arrived encrypted. The server decrypted it to show it here, "
@@ -288,7 +307,7 @@ msgid "View"
 msgstr ""
 
 #: app/qml/components/AddressBookPickerDialog.qml:86
-#: app/qml/pages/Compose.qml:245
+#: app/qml/pages/Compose.qml:287
 msgid "Address Book"
 msgstr ""
 
@@ -311,7 +330,7 @@ msgid "✓ To"
 msgstr ""
 
 #: app/qml/components/AddressBookPickerDialog.qml:172
-#: app/qml/pages/Compose.qml:239
+#: app/qml/pages/Compose.qml:281
 msgid "To"
 msgstr ""
 
@@ -320,7 +339,7 @@ msgid "✓ Cc"
 msgstr ""
 
 #: app/qml/components/AddressBookPickerDialog.qml:176
-#: app/qml/pages/Compose.qml:252
+#: app/qml/pages/Compose.qml:294
 msgid "Cc"
 msgstr ""
 
@@ -329,7 +348,7 @@ msgid "✓ Bcc"
 msgstr ""
 
 #: app/qml/components/AddressBookPickerDialog.qml:180
-#: app/qml/pages/Compose.qml:260
+#: app/qml/pages/Compose.qml:302
 msgid "Bcc"
 msgstr ""
 
@@ -362,7 +381,8 @@ msgstr ""
 msgid "Style as button"
 msgstr ""
 
-#: app/qml/components/HyperlinkDialog.qml:130 app/qml/DesktopRoot.qml:356
+#: app/qml/components/HyperlinkDialog.qml:130
+#: app/qml/components/PickupFallbackDialog.qml:116 app/qml/DesktopRoot.qml:356
 #: app/qml/DesktopRoot.qml:430 app/qml/DesktopRoot.qml:513
 #: app/qml/pages/ContactDetail.qml:724 app/qml/pages/Pairing.qml:160
 #: app/qml/pages/Settings.qml:811
@@ -371,6 +391,31 @@ msgstr ""
 
 #: app/qml/components/HyperlinkDialog.qml:134
 msgid "Insert"
+msgstr ""
+
+#: app/qml/components/PickupFallbackDialog.qml:85
+msgid "Send an unencrypted link?"
+msgstr ""
+
+#: app/qml/components/PickupFallbackDialog.qml:93
+msgid ""
+"We don't have a PGP key for %2. They'll get an email with a one-time link "
+"instead."
+msgid_plural ""
+"We don't have PGP keys for %2. They'll get an email with a one-time link "
+"instead."
+msgstr[0] ""
+msgstr[1] ""
+
+#: app/qml/components/PickupFallbackDialog.qml:105
+msgid ""
+"To make that work, this message's contents are stored on your KyPost server "
+"— unencrypted — for up to 7 days or until the link is opened. Everyone else "
+"on this message still gets it encrypted."
+msgstr ""
+
+#: app/qml/components/PickupFallbackDialog.qml:120
+msgid "Send link anyway"
 msgstr ""
 
 #: app/qml/components/RepeaterField.qml:190
@@ -553,41 +598,69 @@ msgstr ""
 msgid "Archive"
 msgstr ""
 
-#: app/qml/pages/Compose.qml:133
+#: app/qml/pages/Compose.qml:154
+msgid "Saved to Drafts — continue in your browser"
+msgstr ""
+
+#: app/qml/pages/Compose.qml:170
 msgid "Please fill in all fields"
 msgstr ""
 
-#: app/qml/pages/Compose.qml:159
+#: app/qml/pages/Compose.qml:201
 msgid "Draft saved"
 msgstr ""
 
-#: app/qml/pages/Compose.qml:223 app/qml/pages/ContactDetail.qml:353
+#: app/qml/pages/Compose.qml:265 app/qml/pages/ContactDetail.qml:353
 #: app/qml/pages/EmailDetail.qml:381
 msgid "Open in New Window"
 msgstr ""
 
-#: app/qml/pages/Compose.qml:242 app/qml/pages/Compose.qml:255
-#: app/qml/pages/Compose.qml:263
+#: app/qml/pages/Compose.qml:284 app/qml/pages/Compose.qml:297
+#: app/qml/pages/Compose.qml:305
 msgid "%1 is already added"
 msgstr ""
 
-#: app/qml/pages/Compose.qml:268
+#: app/qml/pages/Compose.qml:310
 msgid "Subject"
 msgstr ""
 
-#: app/qml/pages/Compose.qml:284 app/qml/pages/Compose.qml:372
+#: app/qml/pages/Compose.qml:326 app/qml/pages/Compose.qml:504
 msgid "Attach files"
 msgstr ""
 
-#: app/qml/pages/Compose.qml:351
+#: app/qml/pages/Compose.qml:390
+msgid "Encrypt"
+msgstr ""
+
+#: app/qml/pages/Compose.qml:407
+msgid "Sign"
+msgstr ""
+
+#: app/qml/pages/Compose.qml:429
+msgid "We don't have a PGP key on file for %2."
+msgid_plural "We don't have PGP keys on file for %2."
+msgstr[0] ""
+msgstr[1] ""
+
+#: app/qml/pages/Compose.qml:449
+msgid ""
+"This account's PGP key is stored only in your browser, so this app can't "
+"encrypt on its behalf."
+msgstr ""
+
+#: app/qml/pages/Compose.qml:459
+msgid "Continue in webmail"
+msgstr ""
+
+#: app/qml/pages/Compose.qml:483
 msgid "Sending…"
 msgstr ""
 
-#: app/qml/pages/Compose.qml:358
+#: app/qml/pages/Compose.qml:490
 msgid "Save Draft"
 msgstr ""
 
-#: app/qml/pages/Compose.qml:363
+#: app/qml/pages/Compose.qml:495
 msgid "Send"
 msgstr ""
 
