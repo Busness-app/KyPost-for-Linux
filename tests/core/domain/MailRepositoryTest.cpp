@@ -1,5 +1,7 @@
 #include "domain/MailRepository.h"
 
+#include "domain/PgpMessageState.h"
+
 #include "db/Database.h"
 #include "db/EmailDao.h"
 #include "domain/DevicePairing.h"
@@ -28,6 +30,9 @@ private slots:
     void refreshFolderNotPairedReturnsNotPairedWithNoRequest();
     void refreshFolderForceFullResyncOmitsSinceAndReplacesFolderCache();
     void findCachedEmailReturnsValueWhenPresentAndNulloptWhenMissing();
+    void refreshFolderUpdatedDeltaKeepsCachedBody();
+    void refreshFolderUpdatedDeltaDoesNotTurnDecryptedMailIntoClientProtected();
+    void refreshFolderNewDeltaWithNoBodyStaysClientProtected();
 
 private:
     static void savePairing(PairingStore& pairingStore, quint16 port);
@@ -438,6 +443,193 @@ void MailRepositoryTest::findCachedEmailReturnsValueWhenPresentAndNulloptWhenMis
     QCOMPARE(found->sender, QStringLiteral("Alice <alice@example.com>"));
 
     QVERIFY(!repository.findCachedEmail(QStringLiteral("no-such-id")).has_value());
+}
+
+// Regression: the backend documents that changeType == "updated" carries an
+// intentionally empty Body ("the client already has it cached"). Upserting
+// that row verbatim wiped the cached body, so any flag/label change blanked
+// an already-opened message.
+void MailRepositoryTest::refreshFolderUpdatedDeltaKeepsCachedBody()
+{
+    Database db;
+    QVERIFY(db.open(QStringLiteral(":memory:")));
+    EmailDao emailDao(db.handle());
+
+    Email seed;
+    seed.messageId = QStringLiteral("m-updated");
+    seed.folder = QStringLiteral("INBOX");
+    seed.subject = QStringLiteral("Old subject");
+    seed.preview = QStringLiteral("Old preview");
+    seed.body = QStringLiteral("<p>The real body</p>");
+    seed.status = QStringLiteral("unread");
+    seed.atUtc = QStringLiteral("2026-01-01T00:00:00Z");
+    QVERIFY(emailDao.insertOrReplace(seed));
+
+    const QByteArray body = R"(
+    {
+      "tabs": ["Inbox"],
+      "byTab": {
+        "Inbox": [
+          {
+            "messageId": "m-updated",
+            "sender": "erin@example.com",
+            "subject": "New subject",
+            "status": "read",
+            "atUtc": "2026-07-06T00:00:00Z",
+            "changeType": "updated"
+          }
+        ]
+      },
+      "delta": true,
+      "cursor": 99,
+      "removed": []
+    }
+    )";
+    FakeRelayServer fake(httpResponse(200, "OK", body));
+
+    QTemporaryDir secureDir;
+    QVERIFY(secureDir.isValid());
+    SecureStoreFile secureStore(secureDir.path());
+    PairingStore pairingStore(secureStore);
+    savePairing(pairingStore, fake.port());
+
+    QTemporaryDir cursorDir;
+    QVERIFY(cursorDir.isValid());
+    CursorStore cursorStore(cursorDir.filePath(QStringLiteral("cursor.ini")));
+
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    RelayMailSource source(http);
+    MailRepository repository(source, emailDao, pairingStore, cursorStore);
+
+    QCOMPARE(repository.refreshFolder(QStringLiteral("INBOX")).outcome, MailRepositoryOutcome::Success);
+
+    const std::optional<Email> stored = emailDao.findById(QStringLiteral("m-updated"));
+    QVERIFY(stored.has_value());
+    // The metadata the delta *did* carry must still win...
+    QCOMPARE(stored->subject, QStringLiteral("New subject"));
+    QCOMPARE(stored->status, QStringLiteral("read"));
+    // ...while the body it deliberately omitted survives.
+    QVERIFY(stored->body.has_value());
+    QCOMPARE(*stored->body, QStringLiteral("<p>The real body</p>"));
+    QCOMPARE(stored->preview, QStringLiteral("Old preview"));
+}
+
+// The same wipe, but on an encrypted message, is worse than a blank body:
+// pgpEncrypted + no body + no error is the exact wire signature of a
+// client-protected message, so it would tell a server-mode user their own
+// readable mail is unreadable.
+void MailRepositoryTest::refreshFolderUpdatedDeltaDoesNotTurnDecryptedMailIntoClientProtected()
+{
+    Database db;
+    QVERIFY(db.open(QStringLiteral(":memory:")));
+    EmailDao emailDao(db.handle());
+
+    Email seed;
+    seed.messageId = QStringLiteral("m-pgp");
+    seed.folder = QStringLiteral("INBOX");
+    seed.body = QStringLiteral("decrypted by the server, readable");
+    seed.pgpEncrypted = true;
+    seed.atUtc = QStringLiteral("2026-01-01T00:00:00Z");
+    QVERIFY(emailDao.insertOrReplace(seed));
+    QCOMPARE(pgpMessageStateOf(*emailDao.findById(QStringLiteral("m-pgp"))),
+             PgpMessageState::DecryptedByServer);
+
+    const QByteArray body = R"(
+    {
+      "tabs": ["Inbox"],
+      "byTab": {
+        "Inbox": [
+          {
+            "messageId": "m-pgp",
+            "status": "read",
+            "atUtc": "2026-07-06T00:00:00Z",
+            "pgpEncrypted": true,
+            "changeType": "updated"
+          }
+        ]
+      },
+      "delta": true,
+      "cursor": 100,
+      "removed": []
+    }
+    )";
+    FakeRelayServer fake(httpResponse(200, "OK", body));
+
+    QTemporaryDir secureDir;
+    QVERIFY(secureDir.isValid());
+    SecureStoreFile secureStore(secureDir.path());
+    PairingStore pairingStore(secureStore);
+    savePairing(pairingStore, fake.port());
+
+    QTemporaryDir cursorDir;
+    QVERIFY(cursorDir.isValid());
+    CursorStore cursorStore(cursorDir.filePath(QStringLiteral("cursor.ini")));
+
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    RelayMailSource source(http);
+    MailRepository repository(source, emailDao, pairingStore, cursorStore);
+
+    QCOMPARE(repository.refreshFolder(QStringLiteral("INBOX")).outcome, MailRepositoryOutcome::Success);
+
+    const std::optional<Email> stored = emailDao.findById(QStringLiteral("m-pgp"));
+    QVERIFY(stored.has_value());
+    QCOMPARE(pgpMessageStateOf(*stored), PgpMessageState::DecryptedByServer);
+}
+
+// The mirror image: a genuinely client-protected message has no cached body
+// to restore, so preservation must not invent one and must leave the
+// classification alone.
+void MailRepositoryTest::refreshFolderNewDeltaWithNoBodyStaysClientProtected()
+{
+    Database db;
+    QVERIFY(db.open(QStringLiteral(":memory:")));
+    EmailDao emailDao(db.handle());
+
+    const QByteArray body = R"(
+    {
+      "tabs": ["Inbox"],
+      "byTab": {
+        "Inbox": [
+          {
+            "messageId": "m-sealed",
+            "sender": "alice@example.com",
+            "subject": "Sealed",
+            "status": "unread",
+            "atUtc": "2026-07-06T00:00:00Z",
+            "pgpEncrypted": true,
+            "changeType": "new"
+          }
+        ]
+      },
+      "delta": true,
+      "cursor": 101,
+      "removed": []
+    }
+    )";
+    FakeRelayServer fake(httpResponse(200, "OK", body));
+
+    QTemporaryDir secureDir;
+    QVERIFY(secureDir.isValid());
+    SecureStoreFile secureStore(secureDir.path());
+    PairingStore pairingStore(secureStore);
+    savePairing(pairingStore, fake.port());
+
+    QTemporaryDir cursorDir;
+    QVERIFY(cursorDir.isValid());
+    CursorStore cursorStore(cursorDir.filePath(QStringLiteral("cursor.ini")));
+
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    RelayMailSource source(http);
+    MailRepository repository(source, emailDao, pairingStore, cursorStore);
+
+    QCOMPARE(repository.refreshFolder(QStringLiteral("INBOX")).outcome, MailRepositoryOutcome::Success);
+
+    const std::optional<Email> stored = emailDao.findById(QStringLiteral("m-sealed"));
+    QVERIFY(stored.has_value());
+    QCOMPARE(pgpMessageStateOf(*stored), PgpMessageState::ClientProtected);
 }
 
 QTEST_GUILESS_MAIN(MailRepositoryTest)

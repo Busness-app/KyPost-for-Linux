@@ -8,6 +8,7 @@ add_library(kypostcore STATIC
   models/MfaChallenge.h
   models/PushNotification.h
   models/Group.h
+  models/MailFolder.h
   domain/DevicePairing.h
   domain/PairingStore.cpp
   domain/PairingStore.h
@@ -15,6 +16,10 @@ add_library(kypostcore STATIC
   domain/DeviceRegistrationService.h
   domain/MailRepository.cpp
   domain/MailRepository.h
+  domain/FolderRepository.cpp
+  domain/FolderRepository.h
+  domain/PgpMessageState.cpp
+  domain/PgpMessageState.h
   domain/KeywordRepository.cpp
   domain/KeywordRepository.h
   domain/ContactSyncReconciliation.cpp
@@ -49,7 +54,15 @@ add_library(kypostcore STATIC
   db/PendingContactChangeDao.h
   db/NativeContactLinkDao.cpp
   db/NativeContactLinkDao.h
+  db/SecurityWipe.cpp
+  db/SecurityWipe.h
   db/SqlUtil.h
+  security/AppLockStore.cpp
+  security/AppLockStore.h
+  security/CredentialCipher.cpp
+  security/CredentialCipher.h
+  security/LockoutPolicy.cpp
+  security/LockoutPolicy.h
   stores/SettingsStore.cpp
   stores/SettingsStore.h
   stores/CursorStore.cpp
@@ -74,6 +87,8 @@ add_library(kypostcore STATIC
   net/DeregisterClient.h
   net/ContactSyncClient.cpp
   net/ContactSyncClient.h
+  net/FolderClient.cpp
+  net/FolderClient.h
   net/GroupsClient.cpp
   net/GroupsClient.h
   net/ContactPhotoClient.cpp
@@ -129,8 +144,21 @@ configure_file(db/MigrationSql.h.in ${CMAKE_CURRENT_BINARY_DIR}/generated/Migrat
 target_include_directories(kypostcore PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_include_directories(kypostcore PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
 
+# core/security/CredentialCipher.cpp needs AES-256-GCM, which Qt does not
+# expose anywhere in its public API. libcrypto is what Qt itself links for
+# TLS, is in org.kde.Platform, and is on every target distro -- see that
+# file's header comment. PRIVATE: nothing in kypostcore's public headers
+# mentions an OpenSSL type, so consumers don't inherit the include path.
+find_package(OpenSSL REQUIRED)
+
 target_link_libraries(kypostcore PUBLIC
   Qt6::Core
   Qt6::Network
   Qt6::Sql
 )
+
+target_link_libraries(kypostcore PRIVATE OpenSSL::Crypto)
+
+# Surfaces the root project(VERSION) to C++. PUBLIC so test binaries that
+# link kypostcore see the same value the library was built with.
+target_compile_definitions(kypostcore PUBLIC KYPOST_VERSION="${PROJECT_VERSION}")

@@ -1,5 +1,7 @@
 #include "mail/EmailListModel.h"
 
+#include "mail/PgpMessagePresentation.h"
+
 EmailListModel::EmailListModel(QObject* parent)
     : QAbstractListModel(parent)
 {
@@ -49,6 +51,10 @@ QVariant EmailListModel::data(const QModelIndex& index, int role) const
         return email.hasAttachments;
     case SourceModeRole:
         return email.sourceMode;
+    case PgpMarkerRole:
+        return pgpRowMarker(pgpMessageStateOf(email));
+    case PgpMarkerAccessibleNameRole:
+        return pgpRowMarkerAccessibleName(pgpMessageStateOf(email));
     default:
         return QVariant();
     }
@@ -72,6 +78,8 @@ QHash<int, QByteArray> EmailListModel::roleNames() const
         { AtUtcRole, "atUtc" },
         { HasAttachmentsRole, "hasAttachments" },
         { SourceModeRole, "sourceMode" },
+        { PgpMarkerRole, "pgpMarker" },
+        { PgpMarkerAccessibleNameRole, "pgpMarkerAccessibleName" },
     };
 }
 

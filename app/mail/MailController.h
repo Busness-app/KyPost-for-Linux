@@ -12,6 +12,9 @@
 #include <optional>
 
 class MailRepository;
+class FolderRepository;
+class SettingsStore;
+struct MailAttachmentUpload;
 class RelayMailSource;
 class KeywordRepository;
 class PairingStore;
@@ -44,7 +47,9 @@ class MailController : public QObject
 
 public:
     MailController(MailRepository& mailRepository, RelayMailSource& relayMailSource,
-                    KeywordRepository& keywordRepository, PairingStore& pairingStore, QObject* parent = nullptr);
+                    KeywordRepository& keywordRepository, PairingStore& pairingStore,
+                    FolderRepository& folderRepository, SettingsStore& settingsStore,
+                    QObject* parent = nullptr);
 
     QObject* emailModel() const;
     QString currentFolder() const;
@@ -105,6 +110,43 @@ public slots:
     // repository method this task doesn't add (Global Constraint 7). Result
     // shape: [{keyword, visible}, ...], alphabetical (case-insensitive),
     // same ordering as keywordTabs()/allSettings() itself.
+    // Sidebar folder list: the six standard mailboxes in their fixed order,
+    // with any server-side subfolders nested under their parent. Each entry
+    // is {wireName, displayName, depth, deletable, isStandard} -- a
+    // superset of standardFolders()'s shape, so the QML delegate binds the
+    // same way and simply indents by `depth`.
+    //
+    // Reads the local cache only; call refreshFolders() to go to the
+    // network. Standard folders are always present even when unpaired or
+    // the fetch failed, so the sidebar never empties out on a bad
+    // connection.
+    Q_INVOKABLE QVariantList mailFolders() const;
+
+    // Fetches subfolders for the parents worth expanding and emits
+    // foldersChanged(). Currently just Archive, matching Android's folder
+    // picker -- the other five standard mailboxes have no subfolder UI.
+    Q_INVOKABLE void refreshFolders();
+
+    // Each returns true on success and emits foldersChanged(); on failure
+    // sets lastError and returns false. The backend refuses to rename or
+    // delete a built-in mailbox or any top-level folder, so entries with
+    // deletable == false must not offer the action.
+    Q_INVOKABLE bool createFolder(const QString& parent, const QString& name);
+    Q_INVOKABLE bool renameFolder(const QString& folder, const QString& name);
+    Q_INVOKABLE bool deleteFolder(const QString& folder);
+
+    // Saves the current composition to the Drafts mailbox via
+    // POST /api/mail/draft. Same arguments as sendMail() so Compose.qml can
+    // call either with the same expression.
+    Q_INVOKABLE bool saveDraft(const QString& to, const QString& cc, const QString& bcc,
+                                const QString& subject, const QString& body,
+                                const QStringList& attachmentFilePaths);
+
+    // Deletes every ephemeral attachment still on disk. Called on shutdown
+    // so a clean quit leaves nothing behind, rather than waiting for timers
+    // that will never fire.
+    Q_INVOKABLE void clearEphemeralAttachments();
+
     Q_INVOKABLE QVariantList allKeywordSettings() const;
     // Task 39: KeywordRepository::setVisible() -- also re-emits
     // keywordTabsChanged() since toggling a keyword's visibility can change
@@ -118,6 +160,7 @@ signals:
     void keywordTabsChanged();
     void isBusyChanged();
     void lastErrorChanged();
+    void foldersChanged();
     // Task 42: forwarded straight from NotificationDispatcher::openRequested
     // (main.cpp connects the two directly -- signal-to-signal, no lambda,
     // since the shapes already match) when the user activates a
@@ -140,12 +183,30 @@ private:
     // either out-param when there is no saved pairing -- every network-
     // calling method below short-circuits on this before making a request.
     bool requirePairing(QUrl& serverBaseUrl, RelayAuth& auth);
+    // Shared by sendMail() and saveDraft() -- see the .cpp.
+    bool readAttachments(const QStringList& paths, QVector<MailAttachmentUpload>& out);
+
+    // Hostile Location Protection's replacement for save-to-Downloads: a
+    // tmpfs-backed temporary file, opened with the OS handler and removed
+    // shortly after. See the .cpp for the honest limits of the guarantee.
+    bool openAttachmentEphemerally(const QString& name, const QByteArray& data);
+
+    // How long an ephemeral attachment survives before it is deleted. Long
+    // enough for a viewer to open and read it, short enough not to linger.
+    static constexpr int kEphemeralAttachmentLifetimeMs = 5 * 60 * 1000;
+
+    QStringList m_ephemeralAttachments;
+    // Base URL for webmail deep links, or an empty QUrl when unpaired. See
+    // the .cpp for why this is separate from requirePairing().
+    QUrl webmailBaseUrl() const;
     // Shared body of archiveEmails/deleteEmails/markSpam/moveEmails.
     bool performActionCommon(const QStringList& messageIds, const QString& action,
                               const std::optional<QString>& targetMailbox);
     static QString dedupedFilePath(const QString& directory, const QString& fileName);
 
     MailRepository& m_mailRepository;
+    FolderRepository& m_folderRepository;
+    SettingsStore& m_settingsStore;
     RelayMailSource& m_relayMailSource;
     KeywordRepository& m_keywordRepository;
     PairingStore& m_pairingStore;

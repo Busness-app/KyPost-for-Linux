@@ -288,34 +288,157 @@ accounts) to exercise the full handshake.
       generic QR scanner (phone camera app, etc.) should produce a working
       URL that, when opened, returns the same JSON contract directly.
 
-### MFA
+### MFA — removed, and why
 
-- [ ] **`Mfa.respond(challengeId, approve)` round-trips against the real
-      backend** (`/api/mfa/push/respond`, via `MfaResponseClient`) —
-      exercised directly against `MfaApproval.qml`'s controller during
-      Task 37's live verification, both Approve and Deny, including the
-      "already resolved" branch when a challenge was answered twice.
-      **Caveat, read before testing:** as of this phase, `MfaApproval.qml`
-      has **no live entry point** in the shipped app — neither
-      `MobileRoot.qml` nor `DesktopRoot.qml` routes anything to it (unlike
-      `EmailDetail`, which the notification tap-through wiring in
-      `main.cpp` — `NotificationDispatcher::openRequested` →
-      `MailController::openEmailRequested` — does reach). Task 37's own
-      manual-verification harness that made the page reachable was fully
-      reverted before that commit landed. To manually verify the page
-      itself today you must temporarily push it onto a page stack /
-      instantiate it with a real `challengeId` yourself (as Task 37 did),
-      then revert the change — it is not something you can reach by
-      normal navigation in a built app.
-- [ ] **Confirm MFA is polling-only** — this is a locked Phase 7 design
-      constraint, worth restating here as something to explicitly **not**
-      expect: no push payload ever triggers MFA UI. `main.cpp`'s only
-      `NotificationDispatcher::openRequested` connection targets
-      `MailController::openEmailRequested`; there is no equivalent
-      connection anywhere targeting `Mfa`/`MfaApproval`. A real MFA
-      challenge must be discovered by the user through some other means
-      (the web app, or a future polling surface) — it will never arrive as
-      a tap-through from a KNotification in this client.
+There is nothing to test here, deliberately.
+
+`app/qml/pages/MfaApproval.qml` was **deleted on 2026-07-25**. It could never
+run: kypost-server derives `transport: "unifiedpush"` from `platform: "linux"`
+(`internal/api/server.go`), and `push_mfa_handlers.go` filters unifiedpush
+devices out of every MFA challenge before dispatch. A Linux device is
+therefore never notified of a challenge, in push *or* pull mode — so the
+screen had no reachable entry point and could not acquire a `challengeId` to
+act on.
+
+`MfaController` and `MfaResponseClient` are deliberately kept. The server-side
+filter is explicitly temporary ("until encryption is added" — the RFC 8291
+UnifiedPush encryption plan is unimplemented server-side), and
+`POST /api/mfa/push/respond` remains a valid, device-authenticated endpoint.
+
+- [ ] **Do NOT expect MFA UI anywhere.** No push payload triggers it;
+      `main.cpp`'s only `NotificationDispatcher::openRequested` connection
+      targets `MailController::openEmailRequested`. A challenge must be
+      answered from the web app.
+- [ ] **Before rebuilding any MFA screen**, confirm the backend filter is
+      gone. Wiring one while the filter stands produces dead code again.
+
+## App lock, credential gate, certificate pinning
+
+- [ ] **Set a PIN.** Settings > Security > "Require Unlock to Open" > On.
+      Restart the app: the PIN screen must appear before any mail, subject
+      line or contact is visible.
+- [ ] **Hiding the window re-locks.** Minimise, or close to tray with
+      minimise-to-tray enabled, then restore. The PIN screen must be up
+      again. On Mobile, backgrounding the app does the same.
+- [ ] **Turning the lock OFF requires the PIN.** Confirm a wrong PIN is
+      refused — a lock anyone with the window open can switch off protects
+      nothing.
+- [ ] **Change PIN** works, and the old PIN stops working afterwards.
+- [ ] **Backoff.** Enter a wrong PIN 4 times: the 4th must start a 30s
+      countdown during which even the *correct* PIN is refused. Confirm the
+      countdown ticks down and input is accepted again afterwards.
+- [ ] **Wipe.** On a throwaway pairing only: fail 10 times. All cached mail
+      and contacts, the pairing, and the PIN itself must be gone.
+- [ ] **Credential gate.** Settings > Security > "Require unlock to receive
+      push and MFA" > On (needs the PIN). Then restart and, *without*
+      unlocking, confirm mail refuses to sync. Unlock and confirm it
+      recovers.
+- [ ] **The gate survives a restart in the sealed state.** After unlocking
+      once, restart again: it must be sealed again, not permanently open.
+      (The unsealed secret is session-memory only, never written back.)
+- [ ] **Turning the gate off, or the lock off entirely, keeps the pairing
+      working after a restart.** This is the failure mode to watch: an
+      unseal that isn't made permanent strands the pairing behind a deleted
+      PIN and forces a re-pair.
+- [ ] **The push-leak warning is visible** in Settings > Security and cannot
+      be dismissed.
+- [ ] **Certificate pinning.** Pair against the real server, then point the
+      client at a proxy presenting a different certificate. Expect a distinct
+      "certificate does not match" failure, not a generic network error, and
+      confirm no request body was sent to the impostor.
+
+## Hostile Location Protection
+
+Requires the app lock to be on (the toggle is inert otherwise).
+
+- [ ] **Turning it on erases and restarts.** Settings > Security > "Keep
+      nothing on this device" > On, enter the PIN. The app must restart by
+      itself. Afterwards `~/.local/share/KyPost/kypost.db` (and any
+      `-journal`/`-wal`/`-shm` sibling) must be **gone**, and the
+      `contact-photos` cache empty.
+- [ ] **Mail still works after the restart**, served entirely from memory —
+      the roots' existing startup refresh repopulates it.
+- [ ] **Nothing is written back.** With the mode on, use the app normally,
+      then quit and confirm no `kypost.db` reappeared.
+- [ ] **Attachments open temporarily.** Opening an attachment must show
+      "Opened temporarily — not saved", launch the OS handler, and write to
+      `$XDG_RUNTIME_DIR/kypost-attachments/` (tmpfs) rather than Downloads.
+      Confirm the file disappears within ~5 minutes, and immediately on
+      quitting the app.
+- [ ] **Turning it off restarts and rebuilds.** The database file must
+      reappear and refill from the server on the next launch.
+- [ ] **The relaunch actually works** rather than leaving a dead app. This is
+      the one to watch: `KDBusService(Unique)` owns `com.urlxl.mail`, and the
+      replacement process is deliberately spawned only after the event loop
+      exits so it can claim that name. If the app ever fails to come back,
+      that ordering is the first thing to check.
+- [ ] **Lockout wipe also restarts** into an empty, unpaired app (10 failed
+      PIN attempts, throwaway pairing only).
+
+## Folders and drafts
+
+- [ ] **Archive subfolders appear nested.** Create a subfolder under Archive in
+      webmail, then restart the client (or use the sidebar context menu's
+      refresh path). Expect it indented directly beneath Archive in the
+      Desktop sidebar and in the Mobile folder popup. Selecting it lists that
+      mailbox's messages.
+- [ ] **Create.** Right-click any folder in the Desktop sidebar > "New
+      Subfolder…", enter a name. It appears nested under its parent and
+      exists in webmail.
+- [ ] **Rename and Delete are offered only where the server allows them.**
+      Both items must be greyed out on the six built-in mailboxes (Inbox,
+      Drafts, Junk, Sent, Trash, Archive) and on any top-level folder — the
+      backend refuses those outright, so the UI must not offer them.
+- [ ] **Renaming the folder you are viewing does not strand you.** Select a
+      subfolder, rename it, and confirm the client follows the new name
+      rather than showing an empty mailbox.
+- [ ] **Deleting the folder you are viewing falls back to Inbox.**
+- [ ] **A folder deleted in webmail disappears here after a refresh** (the
+      cache is replaced, not merged, so absence propagates).
+- [ ] **A failed folder refresh is silent and harmless.** Kill network
+      connectivity and restart: the six standard mailboxes must still be
+      listed and selectable, with no error popup.
+- [ ] **Save Draft.** Compose a message and press "Save Draft". Expect a
+      "Draft saved" toast, the composer to stay open, and the message to
+      appear in the Drafts mailbox in webmail with To/Cc/Bcc/Subject/body and
+      attachments intact.
+- [ ] **A half-written draft still saves.** Unlike Send, Save Draft
+      deliberately does not require To/Subject/body — saving an incomplete
+      draft is the normal case.
+
+## Encrypted mail the client cannot read (PGP protection modes)
+
+Needs a backend account whose PGP key is **client-held** (end-to-end
+protected), i.e. `PGPProtection() == client`. A server-mode account exercises
+only the last two checks.
+
+- [ ] **A client-protected message shows a banner, not a blank page.** Open
+      one from the inbox. Expect the warning-accented banner "This message is
+      end-to-end encrypted" above the body area, explaining that neither the
+      server nor this app can decrypt it. The body area itself is empty —
+      that is correct, there is nothing to render.
+- [ ] **"Open in webmail" opens the right message.** The button appears only
+      on client-protected messages. It must open the default browser at
+      `https://<paired server>/read?mailbox=<folder>&message=<id>` and land
+      on that specific message once the browser session unlocks the key.
+- [ ] **Inbox rows are marked.** A client-protected row shows 🔒 before the
+      subject; a message the server failed to decrypt shows ⚠. Verify in both
+      Desktop and Mobile roots (`General` > Interface Mode).
+- [ ] **Server-decrypted mail is NOT marked in the list** but does disclose
+      itself in the detail view ("Decrypted by the server"). This asymmetry is
+      deliberate: a glyph on nearly every row of a server-mode mailbox would
+      carry no actionable information, while the disclosure still matters.
+- [ ] **A decrypt failure shows the server's reason.** Expect "The server
+      tried to decrypt this message and failed: <reason>", not a bare generic
+      message, and no "Open in webmail" button (webmail will fail too).
+- [ ] **Flag changes do not blank an open message.** Open a message so its
+      body is cached, then mark it read/unread from webmail and let the client
+      delta-sync (or hit refresh). The body must still be there afterwards.
+      This is the `changeType: "updated"` path — the backend deliberately
+      sends an empty body on those rows, and overwriting the cache with it
+      used to blank the message. On an *encrypted* server-decrypted message
+      the same bug additionally flipped the banner to "end-to-end encrypted";
+      confirm it still reads normally.
 
 ## Push/notifications
 

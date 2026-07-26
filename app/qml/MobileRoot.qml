@@ -443,10 +443,15 @@ Kirigami.ApplicationWindow {
         // user taps something. currentFolder already defaults to "INBOX"
         // in MailController's constructor, so a plain refresh() (not
         // selectFolder) is enough here.
-        Component.onCompleted: MailApp.refresh()
+        Component.onCompleted: {
+            MailApp.refresh()
+            // Populates the folder popup's Archive subfolders. Quiet on
+            // failure -- see MailController::refreshFolders.
+            MailApp.refreshFolders()
+        }
 
         function currentFolderDisplayName() {
-            return Format.folderDisplayName(MailApp.standardFolders(), MailApp.currentFolder)
+            return Format.folderDisplayName(MailApp.mailFolders(), MailApp.currentFolder)
         }
 
         // Same "reasonable initials logic" shape as EmailDetail.qml's own
@@ -633,13 +638,34 @@ Kirigami.ApplicationWindow {
                                     font.pixelSize: 11
                                 }
                             }
-                            Text {
+                            // Subject preceded by the OpenPGP marker, when there is
+                            // one. Both the glyph and its spoken equivalent come from
+                            // EmailListModel roles (app/mail/PgpMessagePresentation.h);
+                            // only ClientProtected and DecryptFailed are marked, so
+                            // most rows show nothing here.
+                            RowLayout {
                                 Layout.fillWidth: true
-                                text: model.subject
-                                color: Theme.inkStrong
-                                font.family: Theme.fontUi
-                                font.pixelSize: 13
-                                elide: Text.ElideRight
+                                spacing: 6
+
+                                Text {
+                                    visible: !!model.pgpMarker
+                                    text: model.pgpMarker || ""
+                                    color: Theme.inkStrong
+                                    font.family: Theme.fontUi
+                                    font.pixelSize: 13
+                                    // The glyph alone is announced inconsistently (or
+                                    // not at all) across AT stacks, so carry the words.
+                                    Accessible.role: Accessible.StaticText
+                                    Accessible.name: model.pgpMarkerAccessibleName || ""
+                                }
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: model.subject
+                                    color: Theme.inkStrong
+                                    font.family: Theme.fontUi
+                                    font.pixelSize: 13
+                                    elide: Text.ElideRight
+                                }
                             }
                             Text {
                                 Layout.fillWidth: true
@@ -762,7 +788,18 @@ Kirigami.ApplicationWindow {
                 spacing: 4
 
                 Repeater {
-                    model: MailApp.standardFolders()
+                    id: mobileFolderRepeater
+                    // Server subfolders (Archive/...) nested under their
+                    // parent -- see MailController::mailFolders().
+                    model: MailApp.mailFolders()
+
+                    Connections {
+                        target: MailApp
+                        function onFoldersChanged() {
+                            mobileFolderRepeater.model = MailApp.mailFolders()
+                        }
+                    }
+
                     delegate: Rectangle {
                         Layout.fillWidth: true
                         implicitWidth: 200
@@ -774,7 +811,7 @@ Kirigami.ApplicationWindow {
                             id: folderLabel
                             anchors.verticalCenter: parent.verticalCenter
                             anchors.left: parent.left
-                            anchors.leftMargin: 10
+                            anchors.leftMargin: 10 + (modelData.depth || 0) * 14
                             text: modelData.displayName
                             color: Theme.inkStrong
                             font.family: Theme.fontUi
@@ -792,5 +829,29 @@ Kirigami.ApplicationWindow {
                 }
             }
         }
+    }
+    // ---- app lock -----------------------------------------------------
+    // Highest z in the window and anchored over everything, so no mail,
+    // subject line or contact is readable behind it. Loader, so the PIN
+    // screen doesn't exist at all when the lock is off.
+    // A mobile session genuinely gets backgrounded/suspended the way
+    // Android's does, so application state is the right trigger here --
+    // unlike Desktop, where it fires constantly on focus changes and would
+    // make the lock unusable.
+    Connections {
+        target: Qt.application
+        function onStateChanged() {
+            if (Qt.application.state !== Qt.ApplicationActive)
+                AppLock.lockNow()
+        }
+    }
+
+    Loader {
+        id: unlockOverlay
+        anchors.fill: parent
+        z: 1000
+        active: AppLock.locked
+        visible: active
+        source: "pages/Unlock.qml"
     }
 }

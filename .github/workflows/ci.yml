@@ -140,6 +140,14 @@ jobs:
       # Full dependency list cross-checked against this repo's own
       # CMakeLists.txt (root, app/, core/, tests/) -- see the file-level
       # comment above for the per-package provenance/verification notes.
+      #
+      # libssl-dev backs core/CMakeLists.txt's find_package(OpenSSL REQUIRED),
+      # added for core/security/CredentialCipher.cpp's AES-256-GCM (Qt has no
+      # AEAD). Listed here in the same commit as that find_package on purpose:
+      # AGENTS.md section 8 records three separate CI breaks caused by a new
+      # find_package landing without its apt line, because the dev machine
+      # already had the package. The Flatpak needs no matching module --
+      # org.kde.Platform already ships OpenSSL.
       - name: Install build dependencies
         run: |
           sudo apt-get update
@@ -158,7 +166,8 @@ jobs:
             libkf6i18n-dev \
             kf6-kstatusnotifieritem-dev \
             qtkeychain-qt6-dev \
-            kunifiedpush-dev
+            kunifiedpush-dev \
+            libssl-dev
 
       # ZXing (zxing-cpp) backs the PGP QR key exchange feature's
       # encode/decode (app/pgp/PgpQrController.cpp, app/pgp/PgpQrScanner.cpp

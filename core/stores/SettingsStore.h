@@ -32,6 +32,19 @@ public:
     bool minimizeToTrayOnClose() const;
     void setMinimizeToTrayOnClose(bool enabled);
 
+    // Hostile Location Protection: no mail, contacts, folders or attachments
+    // cached on disk. Deliberately an ordinary preference here rather than a
+    // SecureStore field (unlike the app lock's own flags, see
+    // core/security/AppLockStore.h): the UI only lets it be toggled behind an
+    // already-enabled, SecureStore-protected PIN, so an attacker who can edit
+    // settings.ini still cannot reach anything this would have protected.
+    //
+    // Read by main.cpp BEFORE Database is constructed -- it decides whether
+    // the database opens ":memory:" or the real file -- so changing it takes
+    // effect only on the next launch, which is why toggling it relaunches.
+    bool hostileLocationProtectionEnabled() const;
+    void setHostileLocationProtectionEnabled(bool enabled);
+
     // Notifications
     QString pushServerBaseUrl() const;
     void setPushServerBaseUrl(const QString& baseUrl);

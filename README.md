@@ -24,21 +24,43 @@ Go relay backend.
 
 ## Features
 
-- **Inbox, message detail, and a plain-text composer** — reply, reply-all, forward, and send,
-  with HTML email bodies rendered via a sandboxed `WebEngineView` (JS and remote images
-  disabled).
+- **Inbox, message detail, and an HTML composer** — reply, reply-all, forward, and send with
+  attachments and drafts, with email bodies rendered via a sandboxed `WebEngineView` (JS and
+  remote images disabled).
+- **Server-side folders** — the standard mailboxes plus any subfolders, which can be created,
+  renamed and deleted from the client.
 - **Contacts** — synced list/detail views, local create/edit with offline queueing, group
   membership, and dedupe.
-- **PGP key exchange over QR** — scan or share a PGP public key via camera, with out-of-band
-  fingerprint confirmation before it's saved to a contact.
+- **PGP-aware** — key exchange over QR (scan or share a public key via camera, with
+  out-of-band fingerprint confirmation), and clear handling of end-to-end encrypted mail this
+  client cannot read, with a route to open it in webmail. No private key is ever held here.
 - **Compose autocomplete** — type a name or address in Compose and pick from synced contacts.
 - **Push notifications over [UnifiedPush](https://unifiedpush.org/)** — a three-tier fallback
   (system distributor → embedded `ntfy` subscriber → 90s polling), so mail arrives promptly
   whether or not a UnifiedPush distributor is installed.
-- **13 themes**, transcribed byte-for-byte from the design system shared across every sibling
+- **Security** — an optional PIN lock with lockout and wipe-on-repeated-failure, an option to
+  encrypt the pairing credential behind that PIN, trust-on-first-use TLS certificate pinning,
+  and Hostile Location Protection (nothing cached on disk at all).
+- **15 themes**, transcribed byte-for-byte from the design system shared across every sibling
   client.
-- **Device pairing** via a pasted or `kypost://` deep link, plus push-based MFA approval.
+- **Device pairing** via a pasted or `kypost://` deep link.
 - **Localized** — every user-facing string is wrapped for translation (`po/`).
+
+## Installing
+
+KyPost is distributed from its own signed Flatpak remote:
+
+```sh
+flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+flatpak remote-add --if-not-exists kypost https://yoshiofthewire.github.io/KyPost-for-Linux/kypost.flatpakrepo
+flatpak install kypost com.urlxl.mail
+```
+
+Updates then come through `flatpak update` as normal. The Flathub remote supplies the
+`org.kde.Platform` runtime; KyPost itself is not on Flathub and never will be — Flathub bans
+applications that use AI, and KyPost's backend does. Single-file `.flatpak` bundles are also
+attached to each [release](https://github.com/Yoshiofthewire/KyPost-for-Linux/releases), but
+installing one gives you no automatic updates. See [`docs/DISTRIBUTION.md`](docs/DISTRIBUTION.md).
 
 ## Building
 
@@ -67,6 +89,11 @@ flatpak-builder --run build-flatpak packaging/flatpak/com.urlxl.mail.yaml kypost
 This is the packaging target for both Linux Desktop and Plasma Mobile. Click/Ubuntu Touch
 packaging (`packaging/click/`) is an intentionally empty placeholder until UBports ships a
 Qt6/KF6 track.
+
+CI builds this manifest on every PR and publishes a signed OSTree repository to the
+`gh-pages` branch on every push to `main`
+([`.github/workflows/flatpak.yml`](.github/workflows/flatpak.yml)); that published repo is
+what the `flatpak remote-add` above points at.
 
 ## Architecture
 

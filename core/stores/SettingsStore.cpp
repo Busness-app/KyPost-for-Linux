@@ -5,6 +5,7 @@ constexpr auto kThemeIdKey = "appearance/themeId";
 constexpr auto kPreferredModeKey = "interface/preferredMode";
 constexpr auto kTrayIconEnabledKey = "general/trayIconEnabled";
 constexpr auto kMinimizeToTrayOnCloseKey = "general/minimizeToTrayOnClose";
+constexpr auto kHostileLocationKey = "security/hostileLocationProtection";
 constexpr auto kPushServerBaseUrlKey = "notifications/pushServerBaseUrl";
 constexpr auto kDeliveryModeKey = "push/deliveryMode";
 constexpr auto kPullEndpointKey = "push/pullEndpoint";
@@ -63,6 +64,19 @@ bool SettingsStore::minimizeToTrayOnClose() const
 void SettingsStore::setMinimizeToTrayOnClose(bool enabled)
 {
     m_settings.setValue(kMinimizeToTrayOnCloseKey, enabled);
+}
+
+bool SettingsStore::hostileLocationProtectionEnabled() const
+{
+    return m_settings.value(kHostileLocationKey, false).toBool();
+}
+
+void SettingsStore::setHostileLocationProtectionEnabled(bool enabled)
+{
+    m_settings.setValue(kHostileLocationKey, enabled);
+    // Flushed immediately: the caller's very next act is to relaunch the
+    // process, and QSettings' lazy write would otherwise be lost.
+    m_settings.sync();
 }
 
 QString SettingsStore::pushServerBaseUrl() const

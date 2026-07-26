@@ -2,17 +2,25 @@
 
 #include "domain/DevicePairing.h"
 #include "domain/KeywordRepository.h"
+#include "domain/FolderRepository.h"
 #include "domain/MailRepository.h"
+#include "stores/SettingsStore.h"
 #include "domain/PairingStore.h"
 #include "models/KeywordSettings.h"
 #include "models/StandardFolder.h"
 #include "net/RelayAuth.h"
+#include "models/MailFolder.h"
+#include "net/FolderClient.h"
 #include "net/RelayMailSource.h"
+
+#include "mail/PgpMessagePresentation.h"
 
 #include <KLocalizedString>
 
+#include <QDesktopServices>
 #include <QDir>
 #include <QFile>
+#include <QTimer>
 #include <QFileInfo>
 #include <QMimeDatabase>
 #include <QMimeType>
@@ -23,9 +31,13 @@
 #include <algorithm>
 
 MailController::MailController(MailRepository& mailRepository, RelayMailSource& relayMailSource,
-                                KeywordRepository& keywordRepository, PairingStore& pairingStore, QObject* parent)
+                                KeywordRepository& keywordRepository, PairingStore& pairingStore,
+                                FolderRepository& folderRepository, SettingsStore& settingsStore,
+                                QObject* parent)
     : QObject(parent)
     , m_mailRepository(mailRepository)
+    , m_folderRepository(folderRepository)
+    , m_settingsStore(settingsStore)
     , m_relayMailSource(relayMailSource)
     , m_keywordRepository(keywordRepository)
     , m_pairingStore(pairingStore)
@@ -100,6 +112,18 @@ void MailController::applyFilter()
             filtered.append(email);
     }
     m_model->setEmails(filtered);
+}
+
+// Read-only pairing lookup for link building. Unlike requirePairing() below
+// it sets no lastError and emits nothing: an unpaired client simply has no
+// webmail URL to offer, which the caller renders as "no button", not as a
+// failure.
+QUrl MailController::webmailBaseUrl() const
+{
+    const std::optional<DevicePairing> pairing = m_pairingStore.load();
+    if (!pairing.has_value())
+        return {};
+    return QUrl(pairing->serverBaseUrl);
 }
 
 bool MailController::requirePairing(QUrl& serverBaseUrl, RelayAuth& auth)
@@ -225,22 +249,20 @@ bool MailController::moveEmails(const QStringList& messageIds, const QString& ta
     return performActionCommon(messageIds, QStringLiteral("move"), targetFolder);
 }
 
-bool MailController::sendMail(const QString& to, const QString& cc, const QString& bcc, const QString& subject,
-                               const QString& body, const QStringList& attachmentFilePaths)
+// Shared by sendMail() and saveDraft(): both post the identical request
+// body, so reading/encoding attachments must not diverge between them.
+// Returns false and sets lastError on the first unreadable file or once the
+// running total passes the cap.
+bool MailController::readAttachments(const QStringList& paths, QVector<MailAttachmentUpload>& out)
 {
-    QUrl serverBaseUrl;
-    RelayAuth auth;
-    if (!requirePairing(serverBaseUrl, auth))
-        return false;
-
     // Matches Android's MAX_ATTACHMENT_BYTES / the backend's own cap.
     static constexpr qint64 kMaxAttachmentBytes = 25LL * 1024 * 1024;
 
     QMimeDatabase mimeDb;
-    QVector<MailAttachmentUpload> attachments;
-    attachments.reserve(attachmentFilePaths.size());
+    out.clear();
+    out.reserve(paths.size());
     qint64 totalBytes = 0;
-    for (const QString& path : attachmentFilePaths) {
+    for (const QString& path : paths) {
         QFile file(path);
         if (!file.open(QIODevice::ReadOnly)) {
             setLastError(i18n("Could not open attachment: %1", path));
@@ -256,8 +278,150 @@ bool MailController::sendMail(const QString& to, const QString& cc, const QStrin
         upload.name = QFileInfo(path).fileName();
         upload.mimeType = mimeDb.mimeTypeForFile(path).name();
         upload.data = data;
-        attachments.append(upload);
+        out.append(upload);
     }
+    return true;
+}
+
+QVariantList MailController::mailFolders() const
+{
+    static constexpr StandardFolder kFolders[] = {
+        StandardFolder::Inbox, StandardFolder::Drafts, StandardFolder::Junk,
+        StandardFolder::Sent,  StandardFolder::Trash,  StandardFolder::Archive,
+    };
+
+    const auto entry = [](const QString& wireName, int depth, bool deletable, bool isStandard) {
+        QVariantMap map;
+        map[QStringLiteral("wireName")] = wireName;
+        map[QStringLiteral("displayName")] = standardFolderDisplayName(wireName);
+        map[QStringLiteral("depth")] = depth;
+        map[QStringLiteral("deletable")] = deletable;
+        map[QStringLiteral("isStandard")] = isStandard;
+        return QVariant::fromValue(map);
+    };
+
+    QVariantList list;
+    for (StandardFolder folder : kFolders) {
+        const QString wireName = standardFolderWireName(folder);
+        // Standard mailboxes are never deletable -- the backend rejects it
+        // outright (isBuiltinMailbox), so don't offer it.
+        list.append(entry(wireName, 0, /*deletable=*/false, /*isStandard=*/true));
+
+        // Children come straight after their parent so the flat list reads
+        // as a tree once the delegate indents by `depth`.
+        for (const MailFolder& child : m_folderRepository.cachedFolders(wireName))
+            list.append(entry(child.path, 1, child.deletable, /*isStandard=*/false));
+    }
+    return list;
+}
+
+void MailController::refreshFolders()
+{
+    // Only Archive today, matching Android's folder picker: the other five
+    // standard mailboxes have no subfolder UI, so listing them would be
+    // five extra synchronous round-trips (this call blocks the GUI thread --
+    // Phase 6 global constraint 2) for nothing to render.
+    const MailFetchOutcome outcome = m_folderRepository.refresh(standardFolderWireName(StandardFolder::Archive));
+
+    // A failure here is deliberately quiet: the sidebar still shows all six
+    // standard mailboxes, so the app stays fully usable and there is nothing
+    // for the user to act on. NotPaired especially is an ordinary state at
+    // startup, not an error worth a toast.
+    if (outcome.outcome != MailRepositoryOutcome::Success
+        && outcome.outcome != MailRepositoryOutcome::NotPaired) {
+        qWarning("Folder refresh failed: %s", qUtf8Printable(outcome.detail));
+    }
+    emit foldersChanged();
+}
+
+bool MailController::createFolder(const QString& parent, const QString& name)
+{
+    setBusy(true);
+    const FolderRepository::FolderMutationOutcome outcome = m_folderRepository.create(parent, name);
+    setBusy(false);
+
+    if (outcome.outcome != MailRepositoryOutcome::Success) {
+        setLastError(outcome.detail.isEmpty() ? i18n("Could not create folder") : outcome.detail);
+        return false;
+    }
+    setLastError(QString());
+    emit foldersChanged();
+    return true;
+}
+
+bool MailController::renameFolder(const QString& folder, const QString& name)
+{
+    setBusy(true);
+    const FolderRepository::FolderMutationOutcome outcome = m_folderRepository.rename(folder, name);
+    setBusy(false);
+
+    if (outcome.outcome != MailRepositoryOutcome::Success) {
+        setLastError(outcome.detail.isEmpty() ? i18n("Could not rename folder") : outcome.detail);
+        return false;
+    }
+    setLastError(QString());
+    // Selecting a folder that no longer exists under its old name would
+    // fetch an empty mailbox, so fall back to Inbox when the current
+    // selection was the one renamed.
+    if (m_currentFolder == folder)
+        selectFolder(outcome.folder.isEmpty() ? standardFolderWireName(StandardFolder::Inbox) : outcome.folder);
+    emit foldersChanged();
+    return true;
+}
+
+bool MailController::deleteFolder(const QString& folder)
+{
+    setBusy(true);
+    const FolderRepository::FolderMutationOutcome outcome = m_folderRepository.remove(folder);
+    setBusy(false);
+
+    if (outcome.outcome != MailRepositoryOutcome::Success) {
+        setLastError(outcome.detail.isEmpty() ? i18n("Could not delete folder") : outcome.detail);
+        return false;
+    }
+    setLastError(QString());
+    if (m_currentFolder == folder)
+        selectFolder(standardFolderWireName(StandardFolder::Inbox));
+    emit foldersChanged();
+    return true;
+}
+
+bool MailController::saveDraft(const QString& to, const QString& cc, const QString& bcc, const QString& subject,
+                                const QString& body, const QStringList& attachmentFilePaths)
+{
+    QUrl serverBaseUrl;
+    RelayAuth auth;
+    if (!requirePairing(serverBaseUrl, auth))
+        return false;
+
+    QVector<MailAttachmentUpload> attachments;
+    if (!readAttachments(attachmentFilePaths, attachments))
+        return false;
+
+    setBusy(true);
+    const SaveDraftResult result = m_relayMailSource.saveDraft(serverBaseUrl, auth, to, cc, bcc, subject, body,
+                                                                QStringLiteral("html"), attachments);
+    setBusy(false);
+
+    if (result.error.has_value() || !result.ok) {
+        setLastError(result.detail.isEmpty() ? i18n("Could not save draft") : result.detail);
+        return false;
+    }
+    setLastError(QString());
+    return true;
+}
+
+bool MailController::sendMail(const QString& to, const QString& cc, const QString& bcc, const QString& subject,
+                               const QString& body, const QStringList& attachmentFilePaths)
+{
+    QUrl serverBaseUrl;
+    RelayAuth auth;
+    if (!requirePairing(serverBaseUrl, auth))
+        return false;
+
+    QVector<MailAttachmentUpload> attachments;
+    if (!readAttachments(attachmentFilePaths, attachments))
+        return false;
 
     setBusy(true);
     const SendMailResult result = m_relayMailSource.sendMail(serverBaseUrl, auth, to, cc, bcc, subject, body,
@@ -352,6 +516,9 @@ bool MailController::downloadAttachment(const QString& mailbox, const QString& m
     if (name.isEmpty() || name == QStringLiteral(".") || name == QStringLiteral(".."))
         name = QStringLiteral("attachment");
 
+    if (m_settingsStore.hostileLocationProtectionEnabled())
+        return openAttachmentEphemerally(name, result.data);
+
     const QString downloadDir = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
     QDir().mkpath(downloadDir);
     const QString targetPath = dedupedFilePath(downloadDir, name);
@@ -366,6 +533,67 @@ bool MailController::downloadAttachment(const QString& mailbox, const QString& m
 
     setLastError(QString());
     return true;
+}
+
+// Hostile Location Protection: never write an attachment to Downloads.
+//
+// The nearest Linux equivalent to Android's disk-free ContentProvider pipe
+// is a file in XDG_RUNTIME_DIR, which on essentially every current distro is
+// a tmpfs mount -- so the bytes stay in RAM rather than reaching persistent
+// storage. This is a real improvement but NOT identical to "never touches
+// disk": tmpfs pages can be swapped, and a distro that backs
+// XDG_RUNTIME_DIR differently would lose the property entirely. The UI says
+// "View (temporary)" rather than "Save" so the weaker guarantee is not
+// oversold.
+bool MailController::openAttachmentEphemerally(const QString& name, const QByteArray& data)
+{
+    // Prefer XDG_RUNTIME_DIR (tmpfs, 0700, per-user) over TempLocation,
+    // which is usually /tmp and usually disk-backed and world-traversable.
+    QString baseDir = qEnvironmentVariable("XDG_RUNTIME_DIR");
+    if (baseDir.isEmpty())
+        baseDir = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
+
+    const QString dir = baseDir + QStringLiteral("/kypost-attachments");
+    if (!QDir().mkpath(dir)) {
+        setLastError(i18n("Could not create a temporary location for the attachment"));
+        return false;
+    }
+    QFile::setPermissions(dir, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
+
+    const QString path = dedupedFilePath(dir, name);
+    QFile outFile(path);
+    if (!outFile.open(QIODevice::WriteOnly)) {
+        setLastError(i18n("Could not open the attachment"));
+        return false;
+    }
+    // Owner-only before any bytes are written, so the content is never
+    // briefly readable by other local users.
+    outFile.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+    outFile.write(data);
+    outFile.close();
+
+    m_ephemeralAttachments.append(path);
+    QDesktopServices::openUrl(QUrl::fromLocalFile(path));
+
+    // There is no reliable signal for "the external viewer closed" -- the
+    // handler may be a long-running process that was already open. A timer
+    // is the honest fallback: long enough for the viewer to read the file,
+    // short enough that it does not linger. It is also deleted on exit (see
+    // clearEphemeralAttachments) so a crash-free quit leaves nothing.
+    QTimer::singleShot(kEphemeralAttachmentLifetimeMs, this, [this, path]() {
+        QFile::remove(path);
+        m_ephemeralAttachments.removeAll(path);
+    });
+
+    setLastError(QString());
+    return true;
+}
+
+void MailController::clearEphemeralAttachments()
+{
+    for (const QString& path : m_ephemeralAttachments)
+        QFile::remove(path);
+    m_ephemeralAttachments.clear();
 }
 
 QVariantMap MailController::findByMessageId(const QString& messageId) const
@@ -390,6 +618,20 @@ QVariantMap MailController::findByMessageId(const QString& messageId) const
     map[QStringLiteral("atUtc")] = email->atUtc;
     map[QStringLiteral("hasAttachments")] = email->hasAttachments;
     map[QStringLiteral("sourceMode")] = email->sourceMode;
+
+    // Everything EmailDetail.qml needs to render the PGP banner without
+    // re-deriving the rule. `pgpState` is the raw enum value so QML can
+    // switch on it; the two strings are the localized copy for that state.
+    const PgpMessageState pgpState = pgpMessageStateOf(*email);
+    map[QStringLiteral("pgpState")] = static_cast<int>(pgpState);
+    map[QStringLiteral("pgpBannerTitle")] = pgpBannerTitle(pgpState);
+    map[QStringLiteral("pgpBannerBody")] = pgpBannerBody(pgpState, email->pgpDecryptError);
+    // Empty unless the message is unreadable here AND the pairing has a
+    // usable https base URL, so QML can just test for emptiness rather than
+    // duplicating the safety rules.
+    map[QStringLiteral("webmailUrl")] = pgpState == PgpMessageState::ClientProtected
+        ? webmailReadUrl(webmailBaseUrl(), email->folder, email->messageId).toString()
+        : QString();
     return map;
 }
 

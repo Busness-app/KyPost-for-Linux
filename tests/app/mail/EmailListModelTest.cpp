@@ -11,6 +11,7 @@ class EmailListModelTest : public QObject
 private slots:
     void rowCountAndEmailAtReflectSetEmails();
     void dataRoundTripsEveryRoleForAPopulatedRow();
+    void pgpMarkerRolesReflectMessageState();
     void emailAtOutOfRangeReturnsDefaultConstructedEmail();
     void dataOutOfRangeReturnsInvalidVariant();
 
@@ -76,14 +77,55 @@ void EmailListModelTest::dataRoundTripsEveryRoleForAPopulatedRow()
     QCOMPARE(model.data(index, EmailListModel::AtUtcRole).toString(), QStringLiteral("2026-07-01T12:00:00Z"));
     QCOMPARE(model.data(index, EmailListModel::HasAttachmentsRole).toBool(), true);
     QCOMPARE(model.data(index, EmailListModel::SourceModeRole).toString(), QStringLiteral("plain"));
+    // sampleEmail() carries no PGP content, so both marker roles are empty.
+    QVERIFY(model.data(index, EmailListModel::PgpMarkerRole).toString().isEmpty());
+    QVERIFY(model.data(index, EmailListModel::PgpMarkerAccessibleNameRole).toString().isEmpty());
 
-    // roleNames() must expose exactly these 15 role-name strings for QML.
+    // roleNames() must expose exactly these 17 role-name strings for QML.
     const QHash<int, QByteArray> roles = model.roleNames();
-    QCOMPARE(roles.size(), 15);
+    QCOMPARE(roles.size(), 17);
     QCOMPARE(roles.value(EmailListModel::MessageIdRole), QByteArrayLiteral("messageId"));
     QCOMPARE(roles.value(EmailListModel::KeywordsRole), QByteArrayLiteral("keywords"));
     QCOMPARE(roles.value(EmailListModel::HasAttachmentsRole), QByteArrayLiteral("hasAttachments"));
     QCOMPARE(roles.value(EmailListModel::SourceModeRole), QByteArrayLiteral("sourceMode"));
+    QCOMPARE(roles.value(EmailListModel::PgpMarkerRole), QByteArrayLiteral("pgpMarker"));
+    QCOMPARE(roles.value(EmailListModel::PgpMarkerAccessibleNameRole),
+             QByteArrayLiteral("pgpMarkerAccessibleName"));
+}
+
+void EmailListModelTest::pgpMarkerRolesReflectMessageState()
+{
+    Email clientProtected = sampleEmail();
+    clientProtected.pgpEncrypted = true;
+    clientProtected.body = std::nullopt;
+
+    Email decryptFailed = sampleEmail();
+    decryptFailed.pgpEncrypted = true;
+    decryptFailed.body = std::nullopt;
+    decryptFailed.pgpDecryptError = QStringLiteral("no secret key");
+
+    Email serverDecrypted = sampleEmail();
+    serverDecrypted.pgpEncrypted = true;
+    serverDecrypted.body = QStringLiteral("readable");
+
+    EmailListModel model;
+    model.setEmails({ clientProtected, decryptFailed, serverDecrypted });
+
+    const auto marker = [&model](int row) {
+        return model.data(model.index(row, 0), EmailListModel::PgpMarkerRole).toString();
+    };
+    const auto spoken = [&model](int row) {
+        return model.data(model.index(row, 0), EmailListModel::PgpMarkerAccessibleNameRole).toString();
+    };
+
+    QCOMPARE(marker(0), QStringLiteral("\U0001F512"));
+    QCOMPARE(marker(1), QStringLiteral("\u26A0"));
+    // Server-decrypted rows read normally, so they are deliberately unmarked.
+    QVERIFY(marker(2).isEmpty());
+
+    QVERIFY(!spoken(0).isEmpty());
+    QVERIFY(!spoken(1).isEmpty());
+    QVERIFY(spoken(2).isEmpty());
 }
 
 void EmailListModelTest::emailAtOutOfRangeReturnsDefaultConstructedEmail()

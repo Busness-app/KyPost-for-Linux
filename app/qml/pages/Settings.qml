@@ -53,8 +53,8 @@ Item {
     implicitWidth: 480
     implicitHeight: 560
 
-    property int currentPane: 0 // 0 Connection, 1 Appearance, 2 Keywords, 3 Contacts, 4 Notifications, 5 General
-    readonly property var paneNames: [i18n("Connection"), i18n("Appearance"), i18n("Keywords"), i18n("Contacts"), i18n("Notifications"), i18n("General")]
+    property int currentPane: 0 // 0 Connection, 1 Appearance, 2 Keywords, 3 Contacts, 4 Notifications, 5 General, 6 Security
+    readonly property var paneNames: [i18n("Connection"), i18n("Appearance"), i18n("Keywords"), i18n("Contacts"), i18n("Notifications"), i18n("General"), i18n("Security")]
 
     // MailApp.allKeywordSettings() is a Q_INVOKABLE snapshot, not a
     // NOTIFY-bound property (see MailController.h's doc comment on why) --
@@ -560,6 +560,293 @@ Item {
                     }
                 }
             }
+
+            // ---- 7. Security --------------------------------------------
+            // Every toggle here needs the current PIN, including turning
+            // things OFF: a lock that can be removed by whoever already has
+            // the window open protects nothing.
+            Flickable {
+                contentWidth: width
+                contentHeight: securityColumn.implicitHeight
+                clip: true
+                boundsBehavior: Flickable.StopAtBounds
+                ScrollBar.vertical: ThemedScrollBar {}
+
+                ColumnLayout {
+                    id: securityColumn
+                    width: parent.width
+                    spacing: 16
+
+                    SectionLabel { text: i18n("App Lock") }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
+                        Text {
+                            Layout.fillWidth: true
+                            text: i18n("Require Unlock to Open")
+                            color: Theme.inkStrong
+                            font.family: Theme.fontUi
+                            font.pixelSize: 14
+                        }
+                        PillTab {
+                            text: AppLock.lockEnabled ? i18n("On") : i18n("Off")
+                            selected: AppLock.lockEnabled
+                            onClicked: {
+                                if (AppLock.lockEnabled)
+                                    securityPrompt.begin("disableLock", i18n("Enter your PIN to turn off the lock"))
+                                else
+                                    securityPrompt.begin("setPin", i18n("Choose a PIN"))
+                            }
+                        }
+                    }
+
+                    MutedHint {
+                        Layout.fillWidth: true
+                        text: i18n("A PIN is required every time KyPost starts, and whenever the window is hidden or minimised. After 10 failed attempts all local data is erased.")
+                    }
+
+                    GhostButton {
+                        visible: AppLock.lockEnabled
+                        text: i18n("Change PIN…")
+                        onClicked: securityPrompt.begin("changePin", i18n("Enter your current PIN, then a new one"))
+                    }
+
+                    Item { Layout.preferredHeight: 4 }
+
+                    SectionLabel { text: i18n("Hostile Location Protection") }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
+                        // Same dependency as the credential gate: only
+                        // meaningful alongside a PIN.
+                        enabled: AppLock.lockEnabled
+                        opacity: enabled ? 1.0 : 0.5
+                        Text {
+                            Layout.fillWidth: true
+                            text: i18n("Keep nothing on this device")
+                            color: Theme.inkStrong
+                            font.family: Theme.fontUi
+                            font.pixelSize: 14
+                        }
+                        PillTab {
+                            text: AppLock.hostileLocationEnabled ? i18n("On") : i18n("Off")
+                            selected: AppLock.hostileLocationEnabled
+                            onClicked: securityPrompt.begin(
+                                AppLock.hostileLocationEnabled ? "hlpOff" : "hlpOn",
+                                AppLock.hostileLocationEnabled
+                                    ? i18n("Enter your PIN to turn this off. KyPost will restart.")
+                                    : i18n("Enter your PIN. KyPost will erase its local data and restart."))
+                        }
+                    }
+
+                    MutedHint {
+                        Layout.fillWidth: true
+                        text: i18n("Mail, contacts and folders are held in memory only and are gone when KyPost closes. Turning this on erases what is already stored and restarts the app. Attachments open in a temporary location instead of being saved to Downloads.")
+                    }
+
+                    Item { Layout.preferredHeight: 4 }
+
+                    SectionLabel { text: i18n("Push and MFA") }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
+                        // Meaningless without a PIN to gate on, so the whole
+                        // row is inert until the lock is enabled.
+                        enabled: AppLock.lockEnabled
+                        opacity: enabled ? 1.0 : 0.5
+                        Text {
+                            Layout.fillWidth: true
+                            text: i18n("Require unlock to receive push and MFA")
+                            color: Theme.inkStrong
+                            font.family: Theme.fontUi
+                            font.pixelSize: 14
+                        }
+                        PillTab {
+                            text: AppLock.credentialPinGateEnabled ? i18n("On") : i18n("Off")
+                            selected: AppLock.credentialPinGateEnabled
+                            onClicked: securityPrompt.begin(
+                                AppLock.credentialPinGateEnabled ? "gateOff" : "gateOn",
+                                i18n("Enter your PIN"))
+                        }
+                    }
+
+                    MutedHint {
+                        Layout.fillWidth: true
+                        text: i18n("When on, the pairing credential is encrypted with your PIN. Mail, push and MFA stop working until you unlock the app — that is the point, and it is a real tradeoff.")
+                    }
+
+                    // Permanently visible, not a one-time dialog: this is
+                    // true whatever the settings above are set to, and a
+                    // warning the user has dismissed is a warning they no
+                    // longer have.
+                    Rectangle {
+                        Layout.fillWidth: true
+                        implicitHeight: pushWarningText.implicitHeight + 24
+                        radius: Theme.shapePanel
+                        color: Theme.dangerFillColor
+                        border.width: 1
+                        border.color: Theme.dangerBorderColor
+
+                        Text {
+                            id: pushWarningText
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            anchors.margins: 12
+                            text: i18n("Push notifications send the sender and subject through a relay server (UnifiedPush/ntfy), in the clear, even with the settings above enabled. For zero leakage, ask your server admin to switch this device to Pull mode.")
+                            color: Theme.ink
+                            font.family: Theme.fontUi
+                            font.pixelSize: 12
+                            wrapMode: Text.WordWrap
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ---- Security PIN prompt ---------------------------------------------
+    // One prompt for all five flows (set / change / disable / gate on / gate
+    // off). They differ only in which fields are shown and which AppLock
+    // call runs, so a single popup with a mode is far less to get wrong than
+    // five near-identical dialogs.
+    Popup {
+        id: securityPrompt
+
+        property string mode: ""
+        property string headingText: ""
+        property string errorText: ""
+        // Only the change-PIN flow needs both fields; every other flow
+        // needs exactly one.
+        readonly property bool needsCurrent: mode === "changePin" || mode === "disableLock"
+                                              || mode === "gateOn" || mode === "gateOff"
+                                              || mode === "hlpOn" || mode === "hlpOff"
+        readonly property bool needsNew: mode === "setPin" || mode === "changePin"
+
+        modal: true
+        focus: true
+        closePolicy: Popup.CloseOnEscape
+        x: (root.width - width) / 2
+        y: (root.height - height) / 2
+        width: Math.min(360, root.width - 32)
+        padding: 20
+
+        background: Rectangle {
+            color: Theme.panel
+            radius: Theme.shapeSheet
+            border.width: 1
+            border.color: Theme.line
+        }
+
+        function begin(newMode, heading) {
+            securityPrompt.mode = newMode
+            securityPrompt.headingText = heading
+            securityPrompt.errorText = ""
+            currentPinField.text = ""
+            newPinField.text = ""
+            securityPrompt.open()
+        }
+
+        onOpened: {
+            if (securityPrompt.needsCurrent)
+                currentPinField.inputField.forceActiveFocus()
+            else
+                newPinField.inputField.forceActiveFocus()
+        }
+
+        ColumnLayout {
+            anchors.fill: parent
+            spacing: 12
+
+            Text {
+                Layout.fillWidth: true
+                text: securityPrompt.headingText
+                color: Theme.inkStrong
+                font.family: Theme.fontUi
+                font.pixelSize: 14
+                font.bold: true
+                wrapMode: Text.WordWrap
+            }
+
+            ThemedTextField {
+                id: currentPinField
+                Layout.fillWidth: true
+                visible: securityPrompt.needsCurrent
+                placeholderText: i18n("Current PIN")
+                Component.onCompleted: {
+                    inputField.echoMode = TextInput.Password
+                    inputField.inputMethodHints = Qt.ImhDigitsOnly
+                }
+            }
+
+            ThemedTextField {
+                id: newPinField
+                Layout.fillWidth: true
+                visible: securityPrompt.needsNew
+                placeholderText: i18n("New PIN")
+                Component.onCompleted: {
+                    inputField.echoMode = TextInput.Password
+                    inputField.inputMethodHints = Qt.ImhDigitsOnly
+                }
+            }
+
+            Text {
+                Layout.fillWidth: true
+                visible: securityPrompt.errorText !== ""
+                text: securityPrompt.errorText
+                color: Theme.dangerColor
+                font.family: Theme.fontUi
+                font.pixelSize: 12
+                wrapMode: Text.WordWrap
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 8
+                Item { Layout.fillWidth: true }
+                GhostButton {
+                    text: i18n("Cancel")
+                    onClicked: securityPrompt.close()
+                }
+                PrimaryButton {
+                    text: i18n("Confirm")
+                    enabled: (!securityPrompt.needsCurrent || currentPinField.text.length > 0)
+                             && (!securityPrompt.needsNew || newPinField.text.length > 0)
+                    onClicked: securityPrompt.submit()
+                }
+            }
+        }
+
+        function submit() {
+            const current = currentPinField.text
+            const fresh = newPinField.text
+            let ok = false
+
+            if (securityPrompt.mode === "setPin" || securityPrompt.mode === "changePin")
+                ok = AppLock.setPin(current, fresh)
+            else if (securityPrompt.mode === "disableLock")
+                ok = AppLock.disableLock(current)
+            else if (securityPrompt.mode === "gateOn")
+                ok = AppLock.setCredentialPinGateEnabled(true, current)
+            else if (securityPrompt.mode === "gateOff")
+                ok = AppLock.setCredentialPinGateEnabled(false, current)
+            else if (securityPrompt.mode === "hlpOn")
+                ok = AppLock.setHostileLocationEnabled(true, current)
+            else if (securityPrompt.mode === "hlpOff")
+                ok = AppLock.setHostileLocationEnabled(false, current)
+
+            if (ok) {
+                securityPrompt.close()
+                return
+            }
+            // Stay open so the user can retry without re-navigating. The
+            // only failure these calls report is a wrong PIN or a store
+            // write failure; both read the same to the user.
+            securityPrompt.errorText = i18n("Incorrect PIN, or the change could not be saved.")
+            currentPinField.text = ""
         }
     }
 

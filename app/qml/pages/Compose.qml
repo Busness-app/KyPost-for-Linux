@@ -35,6 +35,11 @@ Item {
     // DesktopRoot are expected to pop/close this screen in response; this
     // component doesn't assume push-navigation vs a pane, per constraint 4.
     signal sendSucceeded()
+    // Emitted once MailApp.saveDraft() reports success. Unlike
+    // sendSucceeded(), the composer deliberately stays open -- saving a
+    // draft is not finishing with it -- so hosts should acknowledge rather
+    // than navigate away.
+    signal draftSaved()
     // Detach into a standalone top-level window (Desktop mode only -- see
     // the pop-out IconButton below). Carries the current To/Subject/Body so
     // the draft continues in the new window; Cc/Bcc/attachments don't
@@ -133,6 +138,27 @@ Item {
                                          subjectField.text, result.html, root.attachmentPaths)
             if (ok)
                 root.sendSucceeded()
+        })
+    }
+
+    // Saves to the Drafts mailbox. Deliberately does NOT apply trySend()'s
+    // "fill in all fields" check -- a half-written draft is the normal thing
+    // to save, and refusing to save it would be the opposite of useful.
+    function trySaveDraft() {
+        toField.commitInputAsToken()
+        ccField.commitInputAsToken()
+        bccField.commitInputAsToken()
+
+        bodyEditor.requestSendableHtml(function(result) {
+            root.validationError = ""
+            if (MailApp.saveDraft(toField.joinedText, ccField.joinedText, bccField.joinedText,
+                                   subjectField.text, result.html, root.attachmentPaths)) {
+                // Acknowledge in place: this component already owns a Toast
+                // for its other inline feedback, and the composer stays open
+                // so there is no navigation change to signal a save happened.
+                toast.show(i18n("Draft saved"))
+                root.draftSaved()
+            }
         })
     }
 
@@ -328,6 +354,11 @@ Item {
                 font.pixelSize: 13
             }
             Item { Layout.fillWidth: true }
+            GhostButton {
+                text: i18n("Save Draft")
+                enabled: !MailApp.isBusy
+                onClicked: root.trySaveDraft()
+            }
             PrimaryButton {
                 text: i18n("Send")
                 enabled: !MailApp.isBusy

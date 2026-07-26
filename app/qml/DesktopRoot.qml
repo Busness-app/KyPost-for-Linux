@@ -55,7 +55,22 @@ Kirigami.ApplicationWindow {
         if (General.trayIconEnabled && General.minimizeToTrayOnClose) {
             close.accepted = false
             root.visible = false
+            // Hiding to tray is the desktop equivalent of Android's onStop:
+            // the user has walked away from a window that is still running.
+            AppLock.lockNow()
         }
+    }
+
+    // Re-lock whenever the window is hidden or minimised by any route, not
+    // only the minimise-to-tray path above -- otherwise a plain minimise
+    // would leave the mail on screen the moment it is restored.
+    onVisibleChanged: {
+        if (!root.visible)
+            AppLock.lockNow()
+    }
+    onWindowStateChanged: {
+        if (root.windowState === Qt.WindowMinimized)
+            AppLock.lockNow()
     }
 
     // ---- selection state --------------------------------------------
@@ -82,7 +97,7 @@ Kirigami.ApplicationWindow {
     property bool detailCollapsed: false
 
     function folderDisplayName(wireName) {
-        return Format.folderDisplayName(MailApp.standardFolders(), wireName)
+        return Format.folderDisplayName(MailApp.mailFolders(), wireName)
     }
 
     function selectFolder(wireName) {
@@ -91,6 +106,32 @@ Kirigami.ApplicationWindow {
         root.selectedMessageId = ""
         root.detailMode = "empty"
         MailApp.selectFolder(wireName)
+    }
+
+    // ---- folder management -------------------------------------------
+    // One reusable prompt for create/rename and one confirm for delete,
+    // rather than three near-identical Dialogs. `folderPromptMode` decides
+    // which MailApp call the accept button makes.
+    function promptCreateFolder(parentWireName) {
+        folderPrompt.mode = "create"
+        folderPrompt.targetFolder = parentWireName
+        folderPrompt.headingText = i18n("New folder in %1", root.folderDisplayName(parentWireName))
+        folderPrompt.nameText = ""
+        folderPrompt.open()
+    }
+
+    function promptRenameFolder(wireName, displayName) {
+        folderPrompt.mode = "rename"
+        folderPrompt.targetFolder = wireName
+        folderPrompt.headingText = i18n("Rename folder")
+        folderPrompt.nameText = displayName
+        folderPrompt.open()
+    }
+
+    function promptDeleteFolder(wireName, displayName) {
+        folderDeleteConfirm.targetFolder = wireName
+        folderDeleteConfirm.displayName = displayName
+        folderDeleteConfirm.open()
     }
 
     function selectContactsSection() {
@@ -147,7 +188,13 @@ Kirigami.ApplicationWindow {
         root.selectedContactUid = ""
     }
 
-    Component.onCompleted: MailApp.refresh()
+    Component.onCompleted: {
+        MailApp.refresh()
+        // Populates the sidebar's Archive subfolders. Cheap and quiet: a
+        // failure leaves the six standard mailboxes showing (see
+        // MailController::refreshFolders).
+        MailApp.refreshFolders()
+    }
 
     // ---- notification tap-through ---------------------------------------
     // MailController::openEmailRequested (Task 42) is forwarded from
@@ -245,6 +292,156 @@ Kirigami.ApplicationWindow {
     // which server is asking and let the user accept or reject before
     // Pairing.confirmPendingPair() makes any network call. See
     // PairingController::pairFromDeepLink's doc comment for the full gate.
+    // Create/rename prompt. Deliberately one Popup with a mode flag: the two
+    // flows differ only in the heading and which MailApp call runs.
+    Popup {
+        id: folderPrompt
+        property string mode: "create"
+        property string targetFolder: ""
+        property string headingText: ""
+        property alias nameText: folderPromptField.text
+
+        modal: true
+        focus: true
+        closePolicy: Popup.CloseOnEscape
+        x: (root.width - width) / 2
+        y: (root.height - height) / 2
+        width: Math.min(380, root.width - 32)
+        padding: 20
+
+        background: Rectangle {
+            color: Theme.panel
+            radius: Theme.shapeSheet
+            border.width: 1
+            border.color: Theme.line
+        }
+
+        // ThemedTextField is a Rectangle wrapper, not a TextField -- focus
+        // and the Return key both belong to its inner `inputField`.
+        onOpened: folderPromptField.inputField.forceActiveFocus()
+
+        ColumnLayout {
+            anchors.fill: parent
+            spacing: 12
+
+            Text {
+                Layout.fillWidth: true
+                text: folderPrompt.headingText
+                color: Theme.inkStrong
+                font.family: Theme.fontUi
+                font.pixelSize: 14
+                font.bold: true
+                wrapMode: Text.WordWrap
+            }
+
+            ThemedTextField {
+                id: folderPromptField
+                Layout.fillWidth: true
+                placeholderText: i18n("Folder name")
+            }
+
+            // ThemedTextField exposes only text/placeholderText/inputField --
+            // it has no `accepted` signal of its own, so Return has to be
+            // taken from the inner TextField it wraps.
+            Connections {
+                target: folderPromptField.inputField
+                function onAccepted() { folderPrompt.submit() }
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 8
+                Item { Layout.fillWidth: true }
+                GhostButton {
+                    text: i18n("Cancel")
+                    onClicked: folderPrompt.close()
+                }
+                PrimaryButton {
+                    text: folderPrompt.mode === "create" ? i18n("Create") : i18n("Rename")
+                    enabled: folderPromptField.text.trim().length > 0 && !MailApp.isBusy
+                    onClicked: folderPrompt.submit()
+                }
+            }
+        }
+
+        function submit() {
+            const name = folderPromptField.text.trim()
+            if (name.length === 0)
+                return
+            const ok = folderPrompt.mode === "create"
+                ? MailApp.createFolder(folderPrompt.targetFolder, name)
+                : MailApp.renameFolder(folderPrompt.targetFolder, name)
+            // Stay open on failure so the typed name isn't lost; MailApp
+            // has already put the reason in lastError, which the sidebar's
+            // error Text below binds to.
+            if (ok)
+                folderPrompt.close()
+        }
+    }
+
+    Popup {
+        id: folderDeleteConfirm
+        property string targetFolder: ""
+        property string displayName: ""
+
+        modal: true
+        focus: true
+        closePolicy: Popup.CloseOnEscape
+        x: (root.width - width) / 2
+        y: (root.height - height) / 2
+        width: Math.min(380, root.width - 32)
+        padding: 20
+
+        background: Rectangle {
+            color: Theme.panel
+            radius: Theme.shapeSheet
+            border.width: 1
+            border.color: Theme.line
+        }
+
+        ColumnLayout {
+            anchors.fill: parent
+            spacing: 12
+
+            Text {
+                Layout.fillWidth: true
+                text: i18n("Delete “%1”?", folderDeleteConfirm.displayName)
+                color: Theme.inkStrong
+                font.family: Theme.fontUi
+                font.pixelSize: 14
+                font.bold: true
+                wrapMode: Text.WordWrap
+            }
+
+            Text {
+                Layout.fillWidth: true
+                text: i18n("The folder and any messages in it are removed from the server. This cannot be undone.")
+                color: Theme.ink
+                font.family: Theme.fontUi
+                font.pixelSize: 12
+                wrapMode: Text.WordWrap
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 8
+                Item { Layout.fillWidth: true }
+                GhostButton {
+                    text: i18n("Cancel")
+                    onClicked: folderDeleteConfirm.close()
+                }
+                DangerButton {
+                    text: i18n("Delete")
+                    enabled: !MailApp.isBusy
+                    onClicked: {
+                        if (MailApp.deleteFolder(folderDeleteConfirm.targetFolder))
+                            folderDeleteConfirm.close()
+                    }
+                }
+            }
+        }
+    }
+
     Popup {
         id: pairingConfirmPopup
         modal: true
@@ -656,16 +853,17 @@ Kirigami.ApplicationWindow {
             spacing: 0
 
             // ---- sidebar ------------------------------------------------
-            // Mac's exact order (task-39 brief): Inbox, then the 4 fixed
-            // interior folders (Drafts, Junk, Sent, Trash), then Archive
-            // last, under a "Mail" section; Contacts under a "People"
-            // section below it. MailApp.standardFolders() already returns
-            // exactly this order (see MailController::standardFolders()'s
-            // kFolders array), so this just renders it as-is -- no
-            // reordering needed here. Keyword tabs / folder-subfolder rows
-            // from Mac's sidebar are out of scope this task (no
-            // listFolders() call wired anywhere in this phase, see the
-            // task-39 brief) -- deferred follow-up.
+            // Mac's exact order: Inbox, then the 4 fixed interior folders
+            // (Drafts, Junk, Sent, Trash), then Archive last, under a "Mail"
+            // section; Contacts under a "People" section below it.
+            // MailApp.mailFolders() already returns exactly this order (see
+            // MailController::mailFolders()'s kFolders array), so this just
+            // renders it as-is -- no reordering needed here.
+            //
+            // Server subfolders are nested under their parent by
+            // mailFolders() and indented here by `depth`; this comment
+            // previously said no folder listing was wired up, which stopped
+            // being true when FolderRepository landed.
             Rectangle {
                 Layout.preferredWidth: 200
                 Layout.minimumWidth: 200
@@ -691,7 +889,19 @@ Kirigami.ApplicationWindow {
                     SectionLabel { text: i18n("Mail") }
 
                     Repeater {
-                        model: MailApp.standardFolders()
+                        id: folderRepeater
+                        // Server subfolders (Archive/...) are nested under
+                        // their parent by mailFolders(); re-read whenever the
+                        // folder set changes.
+                        model: MailApp.mailFolders()
+
+                        Connections {
+                            target: MailApp
+                            function onFoldersChanged() {
+                                folderRepeater.model = MailApp.mailFolders()
+                            }
+                        }
+
                         delegate: Rectangle {
                             Layout.fillWidth: true
                             implicitHeight: folderLabel.implicitHeight + 16
@@ -718,11 +928,13 @@ Kirigami.ApplicationWindow {
                                 id: folderLabel
                                 anchors.verticalCenter: parent.verticalCenter
                                 anchors.left: parent.left
-                                anchors.leftMargin: 10
+                                anchors.leftMargin: 10 + (modelData.depth || 0) * 14
                                 text: modelData.displayName
                                 color: Theme.inkStrong
                                 font.family: Theme.fontUi
-                                font.pixelSize: 14
+                                // Subfolders read as children of the mailbox
+                                // above them, not as peers.
+                                font.pixelSize: modelData.depth > 0 ? 13 : 14
                             }
 
                             HoverHandler {
@@ -732,6 +944,34 @@ Kirigami.ApplicationWindow {
                             TapHandler {
                                 id: folderTap
                                 onTapped: root.selectFolder(modelData.wireName)
+                            }
+
+                            TapHandler {
+                                acceptedButtons: Qt.RightButton
+                                onTapped: folderMenu.popup()
+                            }
+
+                            Menu {
+                                id: folderMenu
+
+                                MenuItem {
+                                    text: i18n("New Subfolder…")
+                                    onTriggered: root.promptCreateFolder(modelData.wireName)
+                                }
+                                MenuItem {
+                                    // deletable is the server's verdict
+                                    // (built-in mailboxes and top-level
+                                    // folders are refused), so don't offer
+                                    // what the backend will reject.
+                                    text: i18n("Rename…")
+                                    enabled: modelData.deletable === true
+                                    onTriggered: root.promptRenameFolder(modelData.wireName, modelData.displayName)
+                                }
+                                MenuItem {
+                                    text: i18n("Delete Folder…")
+                                    enabled: modelData.deletable === true
+                                    onTriggered: root.promptDeleteFolder(modelData.wireName, modelData.displayName)
+                                }
                             }
                         }
                     }
@@ -971,13 +1211,34 @@ Kirigami.ApplicationWindow {
                                         font.weight: Font.Medium
                                         elide: Text.ElideRight
                                     }
-                                    Text {
+                                    // Subject preceded by the OpenPGP marker, when there is
+                                    // one. Both the glyph and its spoken equivalent come from
+                                    // EmailListModel roles (app/mail/PgpMessagePresentation.h);
+                                    // only ClientProtected and DecryptFailed are marked, so
+                                    // most rows show nothing here.
+                                    RowLayout {
                                         Layout.fillWidth: true
-                                        text: model.subject
-                                        color: Theme.inkStrong
-                                        font.family: Theme.fontUi
-                                        font.pixelSize: 13
-                                        elide: Text.ElideRight
+                                        spacing: 6
+
+                                        Text {
+                                            visible: !!model.pgpMarker
+                                            text: model.pgpMarker || ""
+                                            color: Theme.inkStrong
+                                            font.family: Theme.fontUi
+                                            font.pixelSize: 13
+                                            // The glyph alone is announced inconsistently (or
+                                            // not at all) across AT stacks, so carry the words.
+                                            Accessible.role: Accessible.StaticText
+                                            Accessible.name: model.pgpMarkerAccessibleName || ""
+                                        }
+                                        Text {
+                                            Layout.fillWidth: true
+                                            text: model.subject
+                                            color: Theme.inkStrong
+                                            font.family: Theme.fontUi
+                                            font.pixelSize: 13
+                                            elide: Text.ElideRight
+                                        }
                                     }
                                     Text {
                                         Layout.fillWidth: true
@@ -1111,5 +1372,17 @@ Kirigami.ApplicationWindow {
                 }
             }
         }
+    }
+    // ---- app lock -----------------------------------------------------
+    // Highest z in the window and anchored over everything, so no mail,
+    // subject line or contact is readable behind it. Loader, so the PIN
+    // screen doesn't exist at all when the lock is off.
+    Loader {
+        id: unlockOverlay
+        anchors.fill: parent
+        z: 1000
+        active: AppLock.locked
+        visible: active
+        source: "pages/Unlock.qml"
     }
 }

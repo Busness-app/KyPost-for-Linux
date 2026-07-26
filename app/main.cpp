@@ -7,6 +7,8 @@
 #include "pgp/PgpQrController.h"
 #include "pgp/PgpQrScanner.h"
 #include "platform/SecureStoreKeychain.h"
+#include "security/AppLockManager.h"
+#include "security/AppRelauncher.h"
 #include "push/NotificationDispatcher.h"
 #include "push/NtfyTopicProvisioner.h"
 #include "push/PushPayloadParser.h"
@@ -17,6 +19,8 @@
 #include "db/ContactDao.h"
 #include "db/Database.h"
 #include "db/EmailDao.h"
+#include "db/FolderDao.h"
+#include "db/SecurityWipe.h"
 #include "db/GroupDao.h"
 #include "db/PendingContactChangeDao.h"
 #include "db/PushDao.h"
@@ -25,6 +29,8 @@
 #include "domain/DeviceRegistrationService.h"
 #include "domain/GroupsRepository.h"
 #include "domain/KeywordRepository.h"
+#include "domain/FolderRepository.h"
+#include "security/AppLockStore.h"
 #include "domain/MailRepository.h"
 #include "domain/PairingStore.h"
 #include "domain/PgpQrRepository.h"
@@ -33,6 +39,7 @@
 #include "models/PushNotification.h"
 #include "net/ContactPhotoClient.h"
 #include "net/ContactSyncClient.h"
+#include "net/FolderClient.h"
 #include "net/GroupsClient.h"
 #include "net/HttpClient.h"
 #include "net/MfaResponseClient.h"
@@ -51,6 +58,7 @@
 #include <QDebug>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QFontDatabase>
 #include <QJsonObject>
 #include <QNetworkAccessManager>
@@ -313,20 +321,74 @@ int main(int argc, char* argv[])
     // constructed below also lives under dataDir, so this one chmod covers
     // both.
     QFile::setPermissions(dataDir, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
-    // One-time migration: the app was renamed from llamamail to kypost
-    // (branding rename) without moving the on-disk database file. Installs
-    // upgrading from a pre-rename build have all their real data in
-    // llamamail.db; carry it forward under the new name instead of
-    // silently opening a fresh, empty kypost.db, which would desync from
-    // cursors.ini's already-advanced sync cursor and orphan every locally
-    // cached contact/mail record.
+    // One-time migration for the Llama Mail -> KyPost rename, which moved the
+    // profile in TWO independent ways that have to be undone together:
+    //
+    //   1. the database filename:  llamamail.db -> kypost.db
+    //   2. the whole data directory, because AppDataLocation is derived from
+    //      QCoreApplication::applicationName() and that changed
+    //      "LlamaMail" -> "mail" (commit e0dde4e, one day before the
+    //      filename change). Measured: ~/.local/share/LlamaMail
+    //      vs ~/.local/share/mail.
+    //
+    // The original migration only handled (1), so it looked for
+    // llamamail.db inside the NEW directory and could never find a genuinely
+    // pre-rename profile, which lives in the old one. Both candidates are
+    // checked here, newest-directory first.
+    //
+    // Known limitation, stated rather than papered over: the guard below is
+    // "only if no kypost.db exists yet". An install that already launched a
+    // post-rename build has an empty kypost.db, and this will not overwrite
+    // it -- choosing between two populated databases is a data-merge
+    // decision, not a rename fix, and silently picking one could destroy
+    // mail. Such profiles keep their old data orphaned on disk and re-sync
+    // from the relay instead. See docs/RENAME_NOTES.md.
     const QString newDbPath = dataDir + QStringLiteral("/kypost.db");
-    const QString oldDbPath = dataDir + QStringLiteral("/llamamail.db");
-    if (!QFile::exists(newDbPath) && QFile::exists(oldDbPath))
-        QFile::rename(oldDbPath, newDbPath);
+    if (!QFile::exists(newDbPath)) {
+        const QString legacyDataDir =
+            QFileInfo(dataDir).absolutePath() + QStringLiteral("/LlamaMail");
+        const QStringList oldDbCandidates = {
+            dataDir + QStringLiteral("/llamamail.db"),
+            legacyDataDir + QStringLiteral("/llamamail.db"),
+        };
+        for (const QString& oldDbPath : oldDbCandidates) {
+            if (!QFile::exists(oldDbPath))
+                continue;
+            if (QFile::copy(oldDbPath, newDbPath)) {
+                // Copy, not rename: leaving the original in place means a
+                // failed or unwanted migration is always recoverable by
+                // hand. It costs one database's worth of disk, once.
+                qInfo("main: migrated pre-rename database from %s", qPrintable(oldDbPath));
+            } else {
+                qWarning("main: failed to migrate pre-rename database from %s", qPrintable(oldDbPath));
+            }
+            break;
+        }
+    }
+    // Hostile Location Protection: read BEFORE the database is constructed,
+    // because it decides what the database even is. ":memory:" leaves no
+    // mail, contacts or folders on disk for the whole session. Every DAO is
+    // unchanged either way -- they only ever see a QSqlDatabase&.
+    //
+    // This is also why toggling the setting relaunches the process rather
+    // than taking effect live: main()'s composition root is one unbroken
+    // chain of stack locals from Database down through every DAO,
+    // repository, controller and QML singleton, and there is no supported
+    // way to re-point it at a different database at runtime.
+    const bool hostileLocation = settingsStore.hostileLocationProtectionEnabled();
+
     Database database;
-    if (!database.open(newDbPath))
+    if (hostileLocation) {
+        // Defensive: if a previous run crashed between "write the flag" and
+        // "delete the file", there could still be a database on disk holding
+        // exactly what this mode exists to prevent.
+        SecurityWipe::removeDatabaseFiles(newDbPath);
+        SecurityWipe::clearCacheDirectory(dataDir + QStringLiteral("/contact-photos"));
+        if (!database.open(QStringLiteral(":memory:")))
+            qFatal("main: Database::open failed for in-memory database");
+    } else if (!database.open(newDbPath)) {
         qFatal("main: Database::open failed for %s", qPrintable(newDbPath));
+    }
 
     // extended-contact-fields Task 3: on-disk cache for fetched contact
     // photo bytes, keyed by Contact::photoRef -- reuses the same
@@ -348,6 +410,10 @@ int main(int argc, char* argv[])
     // groups (see core/db/migrations/003_extended_contact_fields.sql's
     // appended `groups` table).
     GroupDao groupDao(database.handle());
+    // Server-side mailbox list (subfolders under Archive). The table and DAO
+    // existed since the initial schema but were never constructed here, so
+    // the sidebar showed only the six hardcoded standard folders.
+    FolderDao folderDao(database.handle());
 
     // 3. SecureStoreKeychain -- the app/platform/ Secret-Service-backed
     // SecureStore built in Phase 2 (SecureStoreFile is for tests/UT only).
@@ -362,12 +428,27 @@ int main(int argc, char* argv[])
     // 5. PairingStore -- the one shared "are we paired" contract every
     // repository below reads instead of re-deriving SecureStore key names.
     PairingStore pairingStore(secureStore);
+    // App lock policy lives in SecureStore, NOT SettingsStore: settings.ini
+    // is a plain text file, so storing `lockEnabled` there would let anyone
+    // with file access simply switch the lock off -- the exact access level
+    // the lock exists to survive. See AppLockStore.h.
+    AppLockStore appLockStore(secureStore);
 
     // 6. HttpClient -- default transferTimeoutMs. networkManager must
     // outlive httpClient and every net/ client below that borrows it
     // transitively.
     QNetworkAccessManager networkManager;
     HttpClient httpClient(networkManager);
+
+    // Enforce the certificate pin captured when this device paired (trust on
+    // first use -- see DeviceRegistrationService::pair). Empty for a pairing
+    // made before pinning existed, or over plain http in testing, in which
+    // case enforcement stays off rather than bricking every request.
+    if (const std::optional<DevicePairing> existingPairing = pairingStore.load();
+        existingPairing.has_value() && !existingPairing->certificateSpkiSha256.isEmpty()) {
+        httpClient.setCertificatePin(
+            QByteArray::fromBase64(existingPairing->certificateSpkiSha256.toLatin1()));
+    }
 
     // 7. core/net clients -- thin wire-format wrappers around httpClient.
     RelayMailSource relayMailSource(httpClient);
@@ -378,6 +459,7 @@ int main(int argc, char* argv[])
     // extended-contact-fields Task 2: GET /api/groups, this repo's first
     // per-resource GET client -- see core/net/GroupsClient.h.
     GroupsClient groupsClient(httpClient);
+    FolderClient folderClient(httpClient);
     // extended-contact-fields Task 3: GET /api/contacts/{id}/photo, this
     // repo's second per-resource GET client -- see core/net/ContactPhotoClient.h.
     ContactPhotoClient contactPhotoClient(httpClient);
@@ -388,6 +470,7 @@ int main(int argc, char* argv[])
     // 8. core/domain repositories -- the layer Tasks 32-34's QML-facing
     // controllers actually call into.
     MailRepository mailRepository(relayMailSource, emailDao, pairingStore, cursorStore);
+    FolderRepository folderRepository(folderClient, folderDao, pairingStore);
     KeywordRepository keywordRepository(settingsStore);
     // extended-contact-fields Task 2: refreshes groupDao from groupsClient
     // once per contact sync cycle -- wired into ContactsController::sync()
@@ -406,7 +489,8 @@ int main(int argc, char* argv[])
     PgpQrRepository pgpQrRepository(pgpQrClient, pairingStore);
     ContactSyncRepository contactSyncRepository(contactSyncClient, contactDao, pendingContactChangeDao,
                                                  cursorStore, pairingStore);
-    DeviceRegistrationService deviceRegistrationService(nativeRegistrationClient, pairingStore, settingsStore);
+    DeviceRegistrationService deviceRegistrationService(nativeRegistrationClient, pairingStore, settingsStore,
+                                                        httpClient);
 
     // 9. Task 41: the push domain graph deferred by the Phase 4 final-review
     // note above -- PushNotificationClient (over httpClient, same
@@ -469,9 +553,80 @@ int main(int argc, char* argv[])
     // EmailListModel (parented to itself); every network-calling slot on
     // this controller blocks the GUI thread synchronously, same accepted
     // tradeoff as every other Phase 6 controller (see global constraint 2).
-    MailController mailController(mailRepository, relayMailSource, keywordRepository, pairingStore);
+    MailController mailController(mailRepository, relayMailSource, keywordRepository, pairingStore,
+                                   folderRepository, settingsStore);
     qmlRegisterSingletonInstance<MailController>(
         "com.urlxl.mail", 1, 0, "MailApp", &mailController);
+
+    // App lock ("AppLock"). Registered here rather than beside
+    // Theme/General above because AppLockStore is part of the composition
+    // graph built in this section, not the app-shell preferences block.
+    AppLockManager appLockManager(appLockStore, settingsStore);
+    qmlRegisterSingletonInstance<AppLockManager>(
+        "com.urlxl.mail", 1, 0, "AppLock", &appLockManager);
+
+    // Wipe on repeated PIN failure. AppLockManager knows only that the
+    // threshold was crossed; deciding what "wipe" means is the host's job,
+    // and it is deliberately everything an attacker could otherwise read:
+    // cached mail/contacts, the pairing credential, and the lock itself
+    // (leaving a PIN behind would be a hint about the wiped account).
+    QObject::connect(&appLockManager, &AppLockManager::wipeRequested, &appLockManager,
+                      [&database, &pairingStore, &appLockStore, &settingsStore, dataDir]() {
+                          qWarning("App lock: wipe threshold reached, erasing local data");
+                          database.wipeAllTables();
+                          SecurityWipe::clearCacheDirectory(dataDir + QStringLiteral("/contact-photos"));
+                          pairingStore.clear();
+                          appLockStore.clear();
+                          settingsStore.setDeliveryMode(QString());
+                          // Relaunch into the now-empty, unpaired state
+                          // rather than leaving a running window whose
+                          // controllers still hold the pre-wipe view of the
+                          // world. Same mechanism the HLP toggle uses.
+                          AppRelauncher::requestRelaunch();
+                      });
+
+    // Sealing/unsealing the device secret when the credential gate is
+    // toggled. Kept out of AppLockManager because only the host knows where
+    // the pairing credential lives.
+    QObject::connect(&appLockManager, &AppLockManager::credentialGateChanged, &appLockManager,
+                      [&pairingStore](bool enabled, const QString& pin) {
+                          if (enabled)
+                              pairingStore.sealDeviceSecret(pin);
+                          else
+                              // Permanent, not session-only: the PIN may be
+                              // about to be destroyed (disableLock), and a
+                              // blob left sealed under it would strand the
+                              // pairing.
+                              pairingStore.unsealDeviceSecretPermanently(pin);
+                      });
+
+    // With the credential gate on, the device secret sits sealed on disk and
+    // every authenticated request 401s until the PIN has been entered. This
+    // is what makes unlocking restore service: the secret is unsealed into
+    // the store for the rest of the session, then re-sealed the moment the
+    // app re-locks.
+    QObject::connect(&appLockManager, &AppLockManager::unlockedWithPin, &appLockManager,
+                      [&pairingStore](const QString& pin) { pairingStore.unsealDeviceSecret(pin); });
+    QObject::connect(&appLockManager, &AppLockManager::relockRequested, &appLockManager,
+                      [&pairingStore]() { pairingStore.lockDeviceSecret(); });
+
+    // Hostile Location Protection was toggled. The setting is already
+    // persisted; this erases on-disk data when switching the mode ON, then
+    // relaunches so the next process picks the right database.
+    QObject::connect(&appLockManager, &AppLockManager::relaunchRequired, &appLockManager,
+                      [&database, newDbPath, dataDir](bool wipeDisk) {
+                          if (wipeDisk) {
+                              // Empty the tables first: the connection is
+                              // still open, so the file cannot be removed
+                              // reliably yet, and this guarantees the content
+                              // is gone even if the unlink below loses a race
+                              // with a straggling writer.
+                              database.wipeAllTables();
+                              SecurityWipe::removeDatabaseFiles(newDbPath);
+                              SecurityWipe::clearCacheDirectory(dataDir + QStringLiteral("/contact-photos"));
+                          }
+                          AppRelauncher::requestRelaunch();
+                      });
 
     // Task 42: notification tap-through. NotificationDispatcher (Task 40,
     // already constructed above as part of the Task 41 push graph) emits
@@ -794,5 +949,19 @@ int main(int argc, char* argv[])
 
     pushConnector.registerClient(QStringLiteral("KyPost push notifications"));
 
-    return app.exec();
+    const int exitCode = app.exec();
+
+    // A clean quit should leave nothing behind, rather than relying on
+    // five-minute timers that will never fire now the loop has stopped.
+    mailController.clearEphemeralAttachments();
+
+    // Relaunch AFTER the event loop has returned, never from inside it.
+    // KDBusService(Unique) holds the com.urlxl.mail well-known name for this
+    // process's lifetime; a child spawned while the parent still owned it
+    // would be treated as a duplicate launch, activate the dying parent and
+    // exit -- leaving the user staring at a closed app. Sequencing it here
+    // removes that race by construction rather than papering over it with a
+    // sleep. See app/security/AppRelauncher.h.
+    AppRelauncher::performPendingRelaunch();
+    return exitCode;
 }

@@ -90,6 +90,11 @@ MailFetchOutcome MailRepository::refreshFolder(const QString& folder, bool force
     QMap<QString, Email> emailsById;
     QMap<QString, QSet<QString>> keywordsById;
     QStringList order;
+    // Message ids the delta flagged as "updated" (flags/label changed, body
+    // deliberately omitted). Consumed by the delta branch below to avoid
+    // overwriting a cached body with the empty one the server sent on
+    // purpose.
+    QSet<QString> updatedIds;
 
     for (auto it = result.byTab.constBegin(); it != result.byTab.constEnd(); ++it) {
         const QString& tab = it.key();
@@ -99,6 +104,8 @@ MailFetchOutcome MailRepository::refreshFolder(const QString& folder, bool force
                 emailsById.insert(id, item.email);
                 order.append(id);
             }
+            if (item.changeType.has_value() && *item.changeType == QStringLiteral("updated"))
+                updatedIds.insert(id);
             if (tab != kUncategorizedTab)
                 keywordsById[id].insert(tab);
         }
@@ -118,14 +125,39 @@ MailFetchOutcome MailRepository::refreshFolder(const QString& folder, bool force
     if (!result.isDelta) {
         m_emailDao.replaceFolderSnapshot(folder, emails);
     } else {
-        // insertOrReplace is already upsert-by-messageId, matching Android's
-        // "new" + "updated" both going through a single upsert path -- no
-        // separate body/preview-preservation merge is needed since
-        // RelayMailSource doesn't special-case delta bodies differently from
-        // full-snapshot bodies (there is nothing to preserve the wire didn't
-        // already provide).
-        for (const Email& email : emails)
-            m_emailDao.insertOrReplace(email);
+        // insertOrReplace is upsert-by-messageId, but it must not be handed
+        // the row verbatim on an "updated" delta. The backend documents
+        // (internal/api/server.go, inbox entry ChangeType) that "updated"
+        // means "flags/label changed, Body intentionally empty -- the client
+        // already has it cached". Upserting that row as-is wipes the cached
+        // body, so opening a message after any flag change showed a blank
+        // one.
+        //
+        // That was already a bug; PGP state makes it a dangerous one. A
+        // message with pgpEncrypted set, no body and no decrypt error is the
+        // exact wire signature of a client-protected message, so a wiped
+        // body would make pgpMessageStateOf() report ClientProtected and
+        // tell a server-mode user their own readable mail is unreadable --
+        // the precise failure mailcache/store.go's warmBody() comment warns
+        // clients about.
+        //
+        // Preserving is gated on all three of: the delta says "updated", the
+        // incoming row has no body, and a cached body actually exists. A
+        // genuinely client-protected message has no cached body to restore,
+        // so it still classifies correctly.
+        for (const Email& email : emails) {
+            Email toStore = email;
+            const bool incomingHasBody = toStore.body.has_value() && !toStore.body->isEmpty();
+            if (!incomingHasBody && updatedIds.contains(toStore.messageId)) {
+                const std::optional<Email> cached = m_emailDao.findById(toStore.messageId);
+                if (cached.has_value() && cached->body.has_value() && !cached->body->isEmpty()) {
+                    toStore.body = cached->body;
+                    if (toStore.preview.isEmpty())
+                        toStore.preview = cached->preview;
+                }
+            }
+            m_emailDao.insertOrReplace(toStore);
+        }
         for (const QString& id : result.removed)
             m_emailDao.deleteById(id);
         m_cursorStore.setMailCursor(QString::number(result.cursor));

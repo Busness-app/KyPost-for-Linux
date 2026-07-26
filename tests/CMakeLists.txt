@@ -31,7 +31,14 @@ kypost_add_test(KeywordSettingsTest core/models/KeywordSettingsTest.cpp)
 kypost_add_test(MfaChallengeTest core/models/MfaChallengeTest.cpp)
 kypost_add_test(PushNotificationTest core/models/PushNotificationTest.cpp)
 
+# core/security: PIN policy, lockout backoff, and the PIN-derived AEAD that
+# backs the credential gate. All three are pure/store-only, no GUI.
+kypost_add_test(LockoutPolicyTest core/security/LockoutPolicyTest.cpp)
+kypost_add_test(CredentialCipherTest core/security/CredentialCipherTest.cpp)
+kypost_add_test(AppLockStoreTest core/security/AppLockStoreTest.cpp)
+
 kypost_add_test(DatabaseTest core/db/DatabaseTest.cpp)
+kypost_add_test(SecurityWipeTest core/db/SecurityWipeTest.cpp)
 kypost_add_test(EmailDaoTest core/db/EmailDaoTest.cpp)
 kypost_add_test(ContactDaoTest core/db/ContactDaoTest.cpp)
 kypost_add_test(GroupDaoTest core/db/GroupDaoTest.cpp)
@@ -48,6 +55,9 @@ kypost_add_test(ContactPhotoCacheTest core/stores/ContactPhotoCacheTest.cpp)
 kypost_add_test(PairingStoreTest core/domain/PairingStoreTest.cpp)
 kypost_add_test(DeviceRegistrationServiceTest core/domain/DeviceRegistrationServiceTest.cpp)
 kypost_add_test(MailRepositoryTest core/domain/MailRepositoryTest.cpp)
+kypost_add_test(FolderRepositoryTest core/domain/FolderRepositoryTest.cpp)
+kypost_add_test(PairingStoreSealTest core/domain/PairingStoreSealTest.cpp)
+kypost_add_test(PgpMessageStateTest core/domain/PgpMessageStateTest.cpp)
 kypost_add_test(KeywordRepositoryTest core/domain/KeywordRepositoryTest.cpp)
 kypost_add_test(ContactSyncReconciliationTest core/domain/ContactSyncReconciliationTest.cpp)
 kypost_add_test(NativeContactReconciliationTest core/domain/NativeContactReconciliationTest.cpp)
@@ -66,6 +76,7 @@ kypost_add_test(PushNotificationClientTest core/net/PushNotificationClientTest.c
 kypost_add_test(MfaResponseClientTest core/net/MfaResponseClientTest.cpp)
 kypost_add_test(DeregisterClientTest core/net/DeregisterClientTest.cpp)
 kypost_add_test(ContactSyncClientTest core/net/ContactSyncClientTest.cpp)
+kypost_add_test(FolderClientTest core/net/FolderClientTest.cpp)
 kypost_add_test(GroupsClientTest core/net/GroupsClientTest.cpp)
 kypost_add_test(ContactPhotoClientTest core/net/ContactPhotoClientTest.cpp)
 kypost_add_test(PgpQrClientTest core/net/PgpQrClientTest.cpp)
@@ -91,21 +102,48 @@ kypost_add_app_test(SecureStoreKeychainTest
 
 # EmailListModel/MailController (Task 32) live in app/mail/, not kypostcore
 # (see core/ boundary rule): app/ headers plus the app/mail/*.cpp sources
-# compiled directly into the test binary. EmailListModelTest needs no extra
-# LIBS beyond kypostcore/Qt6::Test.
+# compiled directly into the test binary. Found here rather than lower down
+# because EmailListModelTest itself now needs KF6::I18n: its PGP marker roles
+# pull in app/mail/PgpMessagePresentation.cpp, which is localized.
+find_package(KF6I18n REQUIRED)
+
 kypost_add_app_test(EmailListModelTest
   SOURCES
     app/mail/EmailListModelTest.cpp
     ${CMAKE_SOURCE_DIR}/app/mail/EmailListModel.cpp
+    ${CMAKE_SOURCE_DIR}/app/mail/PgpMessagePresentation.cpp
+  LIBS KF6::I18n
 )
 
-find_package(KF6I18n REQUIRED)
+# Localized prose + the webmail URL builder for the four PgpMessageState
+# values. Lives in app/ rather than core/ because it needs KF6::I18n, which
+# core/'s QtCore/QtNetwork/QtSql-only boundary forbids.
+# AppLockManager: unlock/lockout/wipe transitions and the "prove the PIN
+# even to turn protection off" rule. Needs no extra LIBS -- plain QObject.
+kypost_add_app_test(AppLockManagerTest
+  SOURCES
+    app/security/AppLockManagerTest.cpp
+    ${CMAKE_SOURCE_DIR}/app/security/AppLockManager.cpp
+)
+
+kypost_add_app_test(PgpMessagePresentationTest
+  SOURCES
+    app/mail/PgpMessagePresentationTest.cpp
+    ${CMAKE_SOURCE_DIR}/app/mail/PgpMessagePresentation.cpp
+  LIBS KF6::I18n
+)
+
 kypost_add_app_test(MailControllerTest
   SOURCES
     app/mail/MailControllerTest.cpp
     ${CMAKE_SOURCE_DIR}/app/mail/EmailListModel.cpp
     ${CMAKE_SOURCE_DIR}/app/mail/MailController.cpp
-  LIBS KF6::I18n
+    ${CMAKE_SOURCE_DIR}/app/mail/PgpMessagePresentation.cpp
+  # Qt6::Gui for QDesktopServices, used by the Hostile-Location-Protection
+  # ephemeral attachment path. The kypost target gets it transitively via
+  # Qt6::Quick; a test binary links kypostcore + Qt6::Test only, so it has
+  # to be named here.
+  LIBS KF6::I18n Qt6::Gui
 )
 
 # RemoteContentInterceptor (VibeSec fix): covers shouldBlockRemoteContentRequest(),

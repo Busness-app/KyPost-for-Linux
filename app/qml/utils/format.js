@@ -46,11 +46,13 @@ function initialsFromNamePart(namePart) {
 }
 
 // Looks up a wire folder name's display name among `folders` (the result of
-// MailApp.standardFolders(), passed in by the caller rather than imported
-// here so this stays a plain, dependency-free JS module). Falls back to
-// `wireName` itself when not found. Shared by DesktopRoot.qml's
-// folderDisplayName() and MobileRoot.qml's currentFolderDisplayName(),
-// which both did this identical linear scan over the same data.
+// MailApp.mailFolders(), passed in by the caller rather than imported here
+// so this stays a plain, dependency-free JS module). Falls back to
+// `wireName` itself when not found -- which is also what makes a
+// just-created subfolder render sanely before the next refresh lands.
+// Shared by DesktopRoot.qml's folderDisplayName() and MobileRoot.qml's
+// currentFolderDisplayName(), which both did this identical linear scan
+// over the same data.
 function folderDisplayName(folders, wireName) {
     for (let i = 0; i < folders.length; i++) {
         if (folders[i].wireName === wireName)

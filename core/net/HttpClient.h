@@ -86,7 +86,32 @@ public:
     HttpResult del(const QUrl& url, const QList<QPair<QString, QString>>& query,
                     const QList<QPair<QString, QString>>& headers = {});
 
+    // --- TOFU certificate pinning ---------------------------------------
+    // Trust-on-first-use: the SPKI SHA-256 of the server's TLS certificate
+    // is captured when the device pairs, then every later request must
+    // match it. Not a hardcoded pin -- this client talks to whatever server
+    // the user paired with, so there is no build-time value to bake in.
+    //
+    // SPKI rather than whole-certificate: the pin then survives an ordinary
+    // certificate renewal that keeps the same key, which a full-certificate
+    // hash would not. Verified that QSslKey::toDer() on a certificate's
+    // public key yields SubjectPublicKeyInfo DER, byte-identical to
+    // `openssl pkey -pubin -outform der`, so this hash matches what standard
+    // pin-generation tooling (and kypost-android's OkHttp CertificatePinner)
+    // produces.
+
+    // Empty disables enforcement. Set from the stored pairing at startup.
+    void setCertificatePin(const QByteArray& spkiSha256);
+    QByteArray certificatePin() const;
+
+    // SPKI SHA-256 seen on the most recent TLS handshake, or empty if the
+    // last request was plaintext or never connected. This is the value the
+    // pairing flow captures.
+    QByteArray lastPeerSpkiSha256() const;
+
 private:
+    QByteArray m_certificatePin;
+    mutable QByteArray m_lastPeerSpkiSha256;
     // Appends query items to url via QUrlQuery, preserving any query url
     // already has — mirrors the Swift URL.appending(queryOrThrow:) extension.
     QUrl urlWithQuery(const QUrl& url, const QList<QPair<QString, QString>>& query) const;

@@ -393,6 +393,68 @@ Item {
             font.pixelSize: 12
             wrapMode: Text.WordWrap
         }
+
+        // OpenPGP protection-mode banner. Every string and the decision
+        // behind it come from C++ (MailController::findByMessageId ->
+        // app/mail/PgpMessagePresentation.h -> core/domain/PgpMessageState.h),
+        // so this file never re-derives the rule -- it only picks whether to
+        // show the block and which accent to paint it.
+        //
+        // pgpState mirrors the PgpMessageState enum: 0 None, 1
+        // ClientProtected, 2 DecryptFailed, 3 DecryptedByServer.
+        Rectangle {
+            id: pgpBanner
+
+            readonly property int state: root.email.pgpState !== undefined ? root.email.pgpState : 0
+            readonly property bool isProblem: state === 1 || state === 2
+
+            Layout.fillWidth: true
+            visible: pgpBanner.state !== 0 && root.email.pgpBannerTitle
+            implicitHeight: visible ? pgpBannerLayout.implicitHeight + 24 : 0
+            radius: Theme.shapePanel
+            // A problem state gets the warning accent; "the server decrypted
+            // this" is disclosure, not a fault, so it stays neutral.
+            color: pgpBanner.isProblem ? Theme.dangerFillColor : Theme.panel
+            border.width: 1
+            border.color: pgpBanner.isProblem ? Theme.dangerBorderColor : Theme.line
+
+            ColumnLayout {
+                id: pgpBannerLayout
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: parent.top
+                anchors.margins: 12
+                spacing: 6
+
+                Text {
+                    Layout.fillWidth: true
+                    text: root.email.pgpBannerTitle || ""
+                    color: Theme.inkStrong
+                    font.family: Theme.fontUi
+                    font.pixelSize: 13
+                    font.bold: true
+                    wrapMode: Text.WordWrap
+                }
+
+                Text {
+                    Layout.fillWidth: true
+                    text: root.email.pgpBannerBody || ""
+                    color: Theme.ink
+                    font.family: Theme.fontUi
+                    font.pixelSize: 12
+                    wrapMode: Text.WordWrap
+                }
+
+                PrimaryButton {
+                    // C++ leaves webmailUrl empty unless the message really
+                    // is unreadable here AND the pairing has a usable https
+                    // base URL, so an emptiness test is the whole rule.
+                    visible: !!root.email.webmailUrl
+                    text: i18n("Open in webmail")
+                    onClicked: Qt.openUrlExternally(root.email.webmailUrl)
+                }
+            }
+        }
         } // aboveWebView
 
         // Loader, not a directly-embedded WebEngineView -- active only once
@@ -556,7 +618,18 @@ Item {
                             onTapped: {
                                 const ok = MailApp.downloadAttachment(
                                     root.folder, root.messageId, modelData.index, modelData.name)
-                                root.attachmentStatus = ok ? i18n("Saved to Downloads") : MailApp.lastError
+                                // Under Hostile Location Protection the file
+                                // is opened from a temporary location rather
+                                // than saved, so say so -- claiming "Saved to
+                                // Downloads" would be wrong, and claiming
+                                // "never touched disk" would oversell a
+                                // tmpfs file. See
+                                // MailController::openAttachmentEphemerally.
+                                root.attachmentStatus = ok
+                                    ? (AppLock.hostileLocationEnabled
+                                        ? i18n("Opened temporarily — not saved")
+                                        : i18n("Saved to Downloads"))
+                                    : MailApp.lastError
                                 attachmentStatusTimer.restart()
                             }
                         }

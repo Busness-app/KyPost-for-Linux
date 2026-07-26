@@ -6,7 +6,32 @@
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <QCryptographicHash>
+#include <QSslCertificate>
+#include <QSslKey>
 #include <QUrlQuery>
+
+namespace {
+
+// Cloudflare fronts mail.urlxl.com and challenges/blocks requests carrying
+// Qt's stock "Mozilla/5.0" QNetworkAccessManager User-Agent, so a real
+// product token is mandatory rather than cosmetic (AGENTS.md section 8).
+// Applied to every verb below via applyDefaultHeaders(); a caller-supplied
+// User-Agent in `headers` still wins, because setRawHeader() runs after
+// this and overwrites.
+QString userAgent()
+{
+    return QStringLiteral("KyPost/%1 (Linux)").arg(QStringLiteral(KYPOST_VERSION));
+}
+
+void applyDefaultHeaders(QNetworkRequest& request, const QList<QPair<QString, QString>>& headers)
+{
+    request.setHeader(QNetworkRequest::UserAgentHeader, userAgent());
+    for (const auto& header : headers)
+        request.setRawHeader(header.first.toUtf8(), header.second.toUtf8());
+}
+
+} // namespace
 
 HttpClient::HttpClient(QNetworkAccessManager& manager, int transferTimeoutMs)
     : m_manager(manager)
@@ -20,6 +45,21 @@ HttpClient::HttpClient(QNetworkAccessManager& manager, int transferTimeoutMs)
         m_manager.setTransferTimeout(transferTimeoutMs);
 }
 
+void HttpClient::setCertificatePin(const QByteArray& spkiSha256)
+{
+    m_certificatePin = spkiSha256;
+}
+
+QByteArray HttpClient::certificatePin() const
+{
+    return m_certificatePin;
+}
+
+QByteArray HttpClient::lastPeerSpkiSha256() const
+{
+    return m_lastPeerSpkiSha256;
+}
+
 HttpClient::HttpResult HttpClient::get(const QUrl& url, const QList<QPair<QString, QString>>& query,
                                         const QList<QPair<QString, QString>>& headers,
                                         const RedirectValidator& redirectValidator)
@@ -29,8 +69,7 @@ HttpClient::HttpResult HttpClient::get(const QUrl& url, const QList<QPair<QStrin
         return HttpResult{ NetworkError::InvalidUrl, 0, {}, QStringLiteral("Invalid URL") };
 
     QNetworkRequest request(requestUrl);
-    for (const auto& header : headers)
-        request.setRawHeader(header.first.toUtf8(), header.second.toUtf8());
+    applyDefaultHeaders(request, headers);
 
     // Qt's default (NoLessSafeRedirectPolicy) follows redirects
     // automatically with no way for the caller to inspect the target.
@@ -56,8 +95,7 @@ HttpClient::HttpResult HttpClient::post(const QUrl& url, const QList<QPair<QStri
 
     QNetworkRequest request(requestUrl);
     request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
-    for (const auto& header : headers)
-        request.setRawHeader(header.first.toUtf8(), header.second.toUtf8());
+    applyDefaultHeaders(request, headers);
 
     return waitForReply(m_manager.post(request, QJsonDocument(jsonBody).toJson(QJsonDocument::Compact)));
 }
@@ -71,8 +109,7 @@ HttpClient::HttpResult HttpClient::put(const QUrl& url, const QList<QPair<QStrin
 
     QNetworkRequest request(requestUrl);
     request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
-    for (const auto& header : headers)
-        request.setRawHeader(header.first.toUtf8(), header.second.toUtf8());
+    applyDefaultHeaders(request, headers);
 
     return waitForReply(m_manager.put(request, QJsonDocument(jsonBody).toJson(QJsonDocument::Compact)));
 }
@@ -85,8 +122,7 @@ HttpClient::HttpResult HttpClient::del(const QUrl& url, const QList<QPair<QStrin
         return HttpResult{ NetworkError::InvalidUrl, 0, {}, QStringLiteral("Invalid URL") };
 
     QNetworkRequest request(requestUrl);
-    for (const auto& header : headers)
-        request.setRawHeader(header.first.toUtf8(), header.second.toUtf8());
+    applyDefaultHeaders(request, headers);
 
     return waitForReply(m_manager.deleteResource(request));
 }
@@ -109,6 +145,29 @@ HttpClient::HttpResult HttpClient::waitForReply(QNetworkReply* reply, const Redi
 {
     QEventLoop loop;
     QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+
+    // TOFU pinning. ::encrypted fires after the handshake completes but
+    // before any request body is written, so aborting here means a
+    // mismatched server never receives the device credentials -- which is
+    // the whole point, and is why this is not done by inspecting the reply
+    // afterwards.
+    bool pinMismatch = false;
+    QObject::connect(reply, &QNetworkReply::encrypted, reply, [this, reply, &pinMismatch]() {
+        const QSslCertificate peer = reply->sslConfiguration().peerCertificate();
+        if (peer.isNull())
+            return;
+        const QByteArray spki =
+            QCryptographicHash::hash(peer.publicKey().toDer(), QCryptographicHash::Sha256);
+        // Recorded even on mismatch: the pairing flow reads this to capture
+        // the very first pin, and a caller diagnosing a mismatch wants to
+        // know what was actually presented.
+        m_lastPeerSpkiSha256 = spki;
+
+        if (!m_certificatePin.isEmpty() && spki != m_certificatePin) {
+            pinMismatch = true;
+            reply->abort();
+        }
+    });
     // ManualRedirectPolicy (set above in get(), only when redirectValidator
     // is non-empty) means Qt pauses and waits for redirectAllowed() before
     // following each hop -- re-run the same safety check against the
@@ -140,7 +199,14 @@ HttpClient::HttpResult HttpClient::waitForReply(QNetworkReply* reply, const Redi
     for (const auto& header : rawHeaders)
         result.headers.append({ QString::fromLatin1(header.first), QString::fromLatin1(header.second) });
 
-    if (result.statusCode != 0) {
+    // Checked before the status code: an aborted handshake yields no status,
+    // and even if it somehow did, "wrong server" outranks whatever that
+    // server said.
+    if (pinMismatch) {
+        result.error = NetworkError::CertificateMismatch;
+        result.detail = QStringLiteral(
+            "The server's TLS certificate does not match the one this device paired with.");
+    } else if (result.statusCode != 0) {
         // Got an HTTP response — map by status code even if QNetworkReply
         // also flagged an error of its own (e.g. 404 sets ContentNotFoundError).
         result.error = networkErrorFromStatusCode(result.statusCode);

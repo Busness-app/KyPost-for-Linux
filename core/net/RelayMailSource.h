@@ -97,6 +97,27 @@ struct SendMailResult
     bool ok = false;
     bool sentSaved = false;
     QString warning;
+
+    // Set when the backend refused with 409 + `clientSideNeeded: true`: the
+    // account's PGP key is end-to-end protected, so the server cannot sign
+    // or encrypt on the user's behalf and deliberately refuses rather than
+    // silently sending in the clear (backend: handleMailSend's
+    // `req.Sign || req.Encrypt` branch).
+    //
+    // Not reachable from today's Compose UI, which sends no sign/encrypt
+    // flags -- carried so the distinction is available the moment such a
+    // toggle exists, and so this 409 is never mistaken for a generic
+    // conflict.
+    bool clientSideNeeded = false;
+};
+
+// POST /api/mail/draft response: {ok}. No sentSaved/warning -- the backend
+// answers with a bare ok on success and http.Error otherwise.
+struct SaveDraftResult
+{
+    std::optional<NetworkError> error;
+    QString detail;
+    bool ok = false;
 };
 
 // One entry of GET /api/mail/attachments's "attachments" array (backend's
@@ -174,6 +195,15 @@ public:
     SendMailResult sendMail(const QUrl& serverBaseUrl, const RelayAuth& auth, const QString& to, const QString& cc,
                              const QString& bcc, const QString& subject, const QString& body, const QString& mode,
                              const QVector<MailAttachmentUpload>& attachments) const;
+
+    // POST /api/mail/draft. Same request body as sendMail (the backend
+    // decodes both with decodeMailRequest), but a much simpler response:
+    // {ok: true}, with every failure arriving as plain text via http.Error
+    // rather than JSON.
+    SaveDraftResult saveDraft(const QUrl& serverBaseUrl, const RelayAuth& auth, const QString& to,
+                               const QString& cc, const QString& bcc, const QString& subject,
+                               const QString& body, const QString& mode,
+                               const QVector<MailAttachmentUpload>& attachments) const;
 
     // messageId is an IMAP UID parsed server-side as an integer, but travels
     // as an ordinary query-string value like everywhere else in this class

@@ -81,7 +81,7 @@ void PairingControllerTest::pairFromDeepLinkEntersConfirmStateWithoutNetworkCall
     QNetworkAccessManager manager;
     HttpClient http(manager);
     NativeRegistrationClient client(http);
-    DeviceRegistrationService service(client, pairingStore, settingsStore);
+    DeviceRegistrationService service(client, pairingStore, settingsStore, http);
     DeregisterClient deregisterClient(http);
 
     PairingController controller(service, pairingStore, settingsStore, deregisterClient);
@@ -114,7 +114,7 @@ void PairingControllerTest::confirmPendingPairWithNoPendingRequestFails()
     QNetworkAccessManager manager;
     HttpClient http(manager);
     NativeRegistrationClient client(http);
-    DeviceRegistrationService service(client, pairingStore, settingsStore);
+    DeviceRegistrationService service(client, pairingStore, settingsStore, http);
     DeregisterClient deregisterClient(http);
 
     PairingController controller(service, pairingStore, settingsStore, deregisterClient);
@@ -139,7 +139,7 @@ void PairingControllerTest::cancelPendingPairDiscardsRequestWithNoNetworkCall()
     QNetworkAccessManager manager;
     HttpClient http(manager);
     NativeRegistrationClient client(http);
-    DeviceRegistrationService service(client, pairingStore, settingsStore);
+    DeviceRegistrationService service(client, pairingStore, settingsStore, http);
     DeregisterClient deregisterClient(http);
 
     PairingController controller(service, pairingStore, settingsStore, deregisterClient);
@@ -184,7 +184,7 @@ void PairingControllerTest::pairFromDeepLinkHappyPathPairsAndPersists()
     QNetworkAccessManager manager;
     HttpClient http(manager);
     NativeRegistrationClient client(http);
-    DeviceRegistrationService service(client, pairingStore, settingsStore);
+    DeviceRegistrationService service(client, pairingStore, settingsStore, http);
     DeregisterClient deregisterClient(http);
 
     PairingController controller(service, pairingStore, settingsStore, deregisterClient);
@@ -279,7 +279,7 @@ void PairingControllerTest::pairFromDeepLinkSendsDeviceTokenWhenSet()
     QNetworkAccessManager manager;
     HttpClient http(manager);
     NativeRegistrationClient client(http);
-    DeviceRegistrationService service(client, pairingStore, settingsStore);
+    DeviceRegistrationService service(client, pairingStore, settingsStore, http);
     DeregisterClient deregisterClient(http);
 
     PairingController controller(service, pairingStore, settingsStore, deregisterClient);
@@ -323,7 +323,7 @@ void PairingControllerTest::pairFromDeepLinkDerivesRegistrationUrlFromSrvWhenReg
     QNetworkAccessManager manager;
     HttpClient http(manager);
     NativeRegistrationClient client(http);
-    DeviceRegistrationService service(client, pairingStore, settingsStore);
+    DeviceRegistrationService service(client, pairingStore, settingsStore, http);
     DeregisterClient deregisterClient(http);
 
     PairingController controller(service, pairingStore, settingsStore, deregisterClient);
@@ -379,7 +379,7 @@ void PairingControllerTest::pairFromDeepLinkMissingRequiredParam()
     QNetworkAccessManager manager;
     HttpClient http(manager);
     NativeRegistrationClient client(http);
-    DeviceRegistrationService service(client, pairingStore, settingsStore);
+    DeviceRegistrationService service(client, pairingStore, settingsStore, http);
     DeregisterClient deregisterClient(http);
 
     PairingController controller(service, pairingStore, settingsStore, deregisterClient);
@@ -420,7 +420,7 @@ void PairingControllerTest::pairFromDeepLinkRejectsNonNativePairHost()
     QNetworkAccessManager manager;
     HttpClient http(manager);
     NativeRegistrationClient client(http);
-    DeviceRegistrationService service(client, pairingStore, settingsStore);
+    DeviceRegistrationService service(client, pairingStore, settingsStore, http);
     DeregisterClient deregisterClient(http);
 
     PairingController controller(service, pairingStore, settingsStore, deregisterClient);
@@ -459,7 +459,7 @@ void PairingControllerTest::pairFromDeepLinkRejectsPlaintextHttpServerUrl()
     QNetworkAccessManager manager;
     HttpClient http(manager);
     NativeRegistrationClient client(http);
-    DeviceRegistrationService service(client, pairingStore, settingsStore);
+    DeviceRegistrationService service(client, pairingStore, settingsStore, http);
     DeregisterClient deregisterClient(http);
 
     PairingController controller(service, pairingStore, settingsStore, deregisterClient);
@@ -501,7 +501,7 @@ void PairingControllerTest::pairFromDeepLinkAllowsPlaintextHttpForLoopbackServer
     QNetworkAccessManager manager;
     HttpClient http(manager);
     NativeRegistrationClient client(http);
-    DeviceRegistrationService service(client, pairingStore, settingsStore);
+    DeviceRegistrationService service(client, pairingStore, settingsStore, http);
     DeregisterClient deregisterClient(http);
 
     PairingController controller(service, pairingStore, settingsStore, deregisterClient);
@@ -538,7 +538,7 @@ void PairingControllerTest::pairFromDeepLinkRejectsRegOnDifferentOriginThanSrv()
     QNetworkAccessManager manager;
     HttpClient http(manager);
     NativeRegistrationClient client(http);
-    DeviceRegistrationService service(client, pairingStore, settingsStore);
+    DeviceRegistrationService service(client, pairingStore, settingsStore, http);
     DeregisterClient deregisterClient(http);
 
     PairingController controller(service, pairingStore, settingsStore, deregisterClient);
@@ -582,7 +582,7 @@ void PairingControllerTest::pairFromDeepLinkNotifiesFreshPendingPairEvenWhenStat
     QNetworkAccessManager manager;
     HttpClient http(manager);
     NativeRegistrationClient client(http);
-    DeviceRegistrationService service(client, pairingStore, settingsStore);
+    DeviceRegistrationService service(client, pairingStore, settingsStore, http);
     DeregisterClient deregisterClient(http);
 
     PairingController controller(service, pairingStore, settingsStore, deregisterClient);
@@ -630,7 +630,7 @@ void PairingControllerTest::pairFromPastedLinkRejectsNonLinkTextWithNoNetworkCal
     QNetworkAccessManager manager;
     HttpClient http(manager);
     NativeRegistrationClient client(http);
-    DeviceRegistrationService service(client, pairingStore, settingsStore);
+    DeviceRegistrationService service(client, pairingStore, settingsStore, http);
     DeregisterClient deregisterClient(http);
 
     PairingController controller(service, pairingStore, settingsStore, deregisterClient);
@@ -664,7 +664,7 @@ void PairingControllerTest::refreshFromStoreReflectsPreSeededPairingStoreAndRemo
     QNetworkAccessManager manager;
     HttpClient http(manager);
     NativeRegistrationClient client(http);
-    DeviceRegistrationService service(client, pairingStore, settingsStore);
+    DeviceRegistrationService service(client, pairingStore, settingsStore, http);
     DeregisterClient deregisterClient(http);
 
     // Construction alone must reflect the pre-seeded pairing -- see
@@ -722,7 +722,7 @@ void PairingControllerTest::removePairingSkipsNetworkCallWhenNoDeviceSecretStore
     QNetworkAccessManager manager;
     HttpClient http(manager);
     NativeRegistrationClient client(http);
-    DeviceRegistrationService service(client, pairingStore, settingsStore);
+    DeviceRegistrationService service(client, pairingStore, settingsStore, http);
     DeregisterClient deregisterClient(http);
 
     PairingController controller(service, pairingStore, settingsStore, deregisterClient);
@@ -761,7 +761,7 @@ void PairingControllerTest::removePairingDeregistersServerSideWhenDeviceSecretPr
     QNetworkAccessManager manager;
     HttpClient http(manager);
     NativeRegistrationClient client(http);
-    DeviceRegistrationService service(client, pairingStore, settingsStore);
+    DeviceRegistrationService service(client, pairingStore, settingsStore, http);
     DeregisterClient deregisterClient(http);
 
     PairingController controller(service, pairingStore, settingsStore, deregisterClient);
@@ -794,7 +794,7 @@ void PairingControllerTest::resetReturnsToIdleAfterFailure()
     QNetworkAccessManager manager;
     HttpClient http(manager);
     NativeRegistrationClient client(http);
-    DeviceRegistrationService service(client, pairingStore, settingsStore);
+    DeviceRegistrationService service(client, pairingStore, settingsStore, http);
     DeregisterClient deregisterClient(http);
 
     PairingController controller(service, pairingStore, settingsStore, deregisterClient);

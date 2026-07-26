@@ -32,6 +32,13 @@ InboxEmailItem inboxItemFromJson(const QJsonObject& obj)
     item.email.hasAttachments = obj.value(QStringLiteral("hasAttachments")).toBool();
     item.email.label = obj.value(QStringLiteral("label")).toString();
 
+    // Both are `omitempty` on the wire, so absent means false/empty -- which
+    // is exactly what toBool()/toString() yield for a missing key. See
+    // core/domain/PgpMessageState.h for what the pair means once combined
+    // with the body.
+    item.email.pgpEncrypted = obj.value(QStringLiteral("pgpEncrypted")).toBool();
+    item.email.pgpDecryptError = obj.value(QStringLiteral("pgpDecryptError")).toString();
+
     if (obj.contains(QStringLiteral("detail")))
         item.detail = obj.value(QStringLiteral("detail")).toString();
     if (obj.contains(QStringLiteral("changeType")))
@@ -85,6 +92,34 @@ QString filenameFromContentDisposition(const QString& headerValue)
         ++i;
     }
     return filename;
+}
+
+// /api/mail/send and /api/mail/draft are decoded by the same backend
+// function (decodeMailRequest), so they take a byte-identical body. Shared
+// here rather than duplicated so a future field can't be added to one and
+// forgotten on the other.
+QJsonObject mailRequestBody(const QString& to, const QString& cc, const QString& bcc, const QString& subject,
+                             const QString& body, const QString& mode,
+                             const QVector<MailAttachmentUpload>& attachments)
+{
+    QJsonArray attachmentsJson;
+    for (const MailAttachmentUpload& attachment : attachments) {
+        QJsonObject attachmentJson;
+        attachmentJson[QStringLiteral("name")] = attachment.name;
+        attachmentJson[QStringLiteral("mimeType")] = attachment.mimeType;
+        attachmentJson[QStringLiteral("dataBase64")] = QString::fromLatin1(attachment.data.toBase64());
+        attachmentsJson.append(attachmentJson);
+    }
+
+    QJsonObject requestBody;
+    requestBody[QStringLiteral("to")] = to;
+    requestBody[QStringLiteral("cc")] = cc;
+    requestBody[QStringLiteral("bcc")] = bcc;
+    requestBody[QStringLiteral("subject")] = subject;
+    requestBody[QStringLiteral("body")] = body;
+    requestBody[QStringLiteral("mode")] = mode;
+    requestBody[QStringLiteral("attachments")] = attachmentsJson;
+    return requestBody;
 }
 
 } // namespace
@@ -196,23 +231,7 @@ SendMailResult RelayMailSource::sendMail(const QUrl& serverBaseUrl, const RelayA
                                           const QString& body, const QString& mode,
                                           const QVector<MailAttachmentUpload>& attachments) const
 {
-    QJsonArray attachmentsJson;
-    for (const MailAttachmentUpload& attachment : attachments) {
-        QJsonObject attachmentJson;
-        attachmentJson[QStringLiteral("name")] = attachment.name;
-        attachmentJson[QStringLiteral("mimeType")] = attachment.mimeType;
-        attachmentJson[QStringLiteral("dataBase64")] = QString::fromLatin1(attachment.data.toBase64());
-        attachmentsJson.append(attachmentJson);
-    }
-
-    QJsonObject requestBody;
-    requestBody[QStringLiteral("to")] = to;
-    requestBody[QStringLiteral("cc")] = cc;
-    requestBody[QStringLiteral("bcc")] = bcc;
-    requestBody[QStringLiteral("subject")] = subject;
-    requestBody[QStringLiteral("body")] = body;
-    requestBody[QStringLiteral("mode")] = mode;
-    requestBody[QStringLiteral("attachments")] = attachmentsJson;
+    const QJsonObject requestBody = mailRequestBody(to, cc, bcc, subject, body, mode, attachments);
 
     const HttpClient::HttpResult result = m_httpClient.post(
         joinUrlPath(serverBaseUrl, QStringLiteral("api/mail/send")), {}, requestBody, auth.headerItems());
@@ -220,8 +239,27 @@ SendMailResult RelayMailSource::sendMail(const QUrl& serverBaseUrl, const RelayA
     SendMailResult out;
     if (result.error.has_value()) {
         out.error = result.error;
-        out.detail = !result.detail.isEmpty() ? result.detail
-                                               : QStringLiteral("Mail send failed with status %1").arg(result.statusCode);
+
+        // The backend's failures carry a human-readable `error` string in a
+        // JSON body; HttpClient only fills `detail` for transport-level
+        // failures, so without this every rejection surfaced as the useless
+        // "Mail send failed with status 409". Decoding is best-effort: a
+        // non-JSON body (proxy error page, empty 502) just falls through to
+        // the status-code wording.
+        QString bodyError;
+        QString decodeError;
+        const std::optional<QJsonObject> errorJson = decodeJsonObject(result.body, &decodeError);
+        if (errorJson.has_value()) {
+            bodyError = errorJson->value(QStringLiteral("error")).toString();
+            out.clientSideNeeded = errorJson->value(QStringLiteral("clientSideNeeded")).toBool();
+        }
+
+        if (!result.detail.isEmpty())
+            out.detail = result.detail;
+        else if (!bodyError.isEmpty())
+            out.detail = bodyError;
+        else
+            out.detail = QStringLiteral("Mail send failed with status %1").arg(result.statusCode);
         return out;
     }
 
@@ -237,6 +275,45 @@ SendMailResult RelayMailSource::sendMail(const QUrl& serverBaseUrl, const RelayA
     out.ok = json.value(QStringLiteral("ok")).toBool();
     out.sentSaved = json.value(QStringLiteral("sentSaved")).toBool();
     out.warning = json.value(QStringLiteral("warning")).toString();
+    return out;
+}
+
+SaveDraftResult RelayMailSource::saveDraft(const QUrl& serverBaseUrl, const RelayAuth& auth, const QString& to,
+                                            const QString& cc, const QString& bcc, const QString& subject,
+                                            const QString& body, const QString& mode,
+                                            const QVector<MailAttachmentUpload>& attachments) const
+{
+    const HttpClient::HttpResult result = m_httpClient.post(
+        joinUrlPath(serverBaseUrl, QStringLiteral("api/mail/draft")), {},
+        mailRequestBody(to, cc, bcc, subject, body, mode, attachments), auth.headerItems());
+
+    SaveDraftResult out;
+    if (result.error.has_value()) {
+        out.error = result.error;
+        // Unlike /api/mail/send, every failure here is http.Error -- a
+        // plain-text body, not JSON. The body is already the human-readable
+        // message ("imap configuration is required before saving drafts"),
+        // so prefer it, capped so a proxy's HTML error page can't become the
+        // toast.
+        const QString bodyText = QString::fromUtf8(result.body).trimmed();
+        if (!result.detail.isEmpty())
+            out.detail = result.detail;
+        else if (!bodyText.isEmpty() && !bodyText.startsWith(QLatin1Char('<')) && bodyText.size() <= 200)
+            out.detail = bodyText;
+        else
+            out.detail = QStringLiteral("Draft save failed with status %1").arg(result.statusCode);
+        return out;
+    }
+
+    QString errorString;
+    const std::optional<QJsonObject> decoded = decodeJsonObject(result.body, &errorString);
+    if (!decoded.has_value()) {
+        out.error = NetworkError::Decoding;
+        out.detail = QStringLiteral("Failed to decode draft response: %1").arg(errorString);
+        return out;
+    }
+
+    out.ok = decoded->value(QStringLiteral("ok")).toBool();
     return out;
 }
 

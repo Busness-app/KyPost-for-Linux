@@ -23,5 +23,12 @@ struct DevicePairing
     // see PairingController::removePairing()'s graceful-degradation path.
     QString deviceSecret; // SecureStore key "pairing.deviceSecret"
 
+    // Base64 SHA-256 of the server's TLS SubjectPublicKeyInfo, captured on
+    // the handshake that completed this device's registration (trust on
+    // first use). Empty means "no pin recorded" -- for a pairing created
+    // before this field existed, or one made over plain http in testing --
+    // and enforcement is skipped rather than failing every request.
+    QString certificateSpkiSha256; // SecureStore key "pairing.certificateSpkiSha256"
+
     bool operator==(const DevicePairing&) const = default;
 };

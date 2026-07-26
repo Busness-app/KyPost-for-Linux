@@ -43,6 +43,8 @@ Email emailFromQuery(const QSqlQuery& query)
     email.atUtc = query.value(QStringLiteral("at_utc")).toString();
     email.hasAttachments = query.value(QStringLiteral("has_attachments")).toInt() != 0;
     email.sourceMode = query.value(QStringLiteral("source_mode")).toString();
+    email.pgpEncrypted = query.value(QStringLiteral("pgp_encrypted")).toInt() != 0;
+    email.pgpDecryptError = query.value(QStringLiteral("pgp_decrypt_error")).toString();
     return email;
 }
 
@@ -66,9 +68,10 @@ bool EmailDao::insertOrReplace(const Email& email)
     query.prepare(QStringLiteral(
         "INSERT OR REPLACE INTO emails "
         "(message_id, folder, sender, sent_to, cc, bcc, subject, preview, body, label, "
-        "keywords_json, status, at_utc, has_attachments, source_mode) "
+        "keywords_json, status, at_utc, has_attachments, source_mode, pgp_encrypted, pgp_decrypt_error) "
         "VALUES (:message_id, :folder, :sender, :sent_to, :cc, :bcc, :subject, :preview, :body, "
-        ":label, :keywords_json, :status, :at_utc, :has_attachments, :source_mode)"));
+        ":label, :keywords_json, :status, :at_utc, :has_attachments, :source_mode, "
+        ":pgp_encrypted, :pgp_decrypt_error)"));
     query.bindValue(QStringLiteral(":message_id"), email.messageId);
     query.bindValue(QStringLiteral(":folder"), email.folder);
     query.bindValue(QStringLiteral(":sender"), email.sender);
@@ -84,6 +87,8 @@ bool EmailDao::insertOrReplace(const Email& email)
     query.bindValue(QStringLiteral(":at_utc"), email.atUtc);
     query.bindValue(QStringLiteral(":has_attachments"), email.hasAttachments ? 1 : 0);
     query.bindValue(QStringLiteral(":source_mode"), email.sourceMode);
+    query.bindValue(QStringLiteral(":pgp_encrypted"), email.pgpEncrypted ? 1 : 0);
+    query.bindValue(QStringLiteral(":pgp_decrypt_error"), email.pgpDecryptError);
     return query.exec();
 }
 

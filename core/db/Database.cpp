@@ -59,6 +59,60 @@ bool Database::open(const QString& path)
     return true;
 }
 
+bool Database::wipeAllTables()
+{
+    if (!m_db.isOpen())
+        return false;
+
+    QSqlQuery tablesQuery(m_db);
+    if (!tablesQuery.exec(QStringLiteral(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"))) {
+        return false;
+    }
+
+    QStringList tables;
+    while (tablesQuery.next())
+        tables.append(tablesQuery.value(0).toString());
+
+    // secure_delete makes SQLite overwrite deleted content with zeroes
+    // rather than just unlinking it into the freelist. It is ON by default
+    // in this build (verified), but that is a compile-time default
+    // (SQLITE_SECURE_DELETE) that other builds -- notably a vanilla
+    // amalgamation -- leave OFF. Set it explicitly so the guarantee does not
+    // silently depend on whose SQLite we happen to link.
+    {
+        QSqlQuery pragmaQuery(m_db);
+        pragmaQuery.exec(QStringLiteral("PRAGMA secure_delete = ON"));
+    }
+
+    if (!m_db.transaction())
+        return false;
+
+    for (const QString& table : tables) {
+        QSqlQuery deleteQuery(m_db);
+        // Table names cannot be bound as parameters. These come from
+        // sqlite_master, not from user input, and are quoted defensively.
+        if (!deleteQuery.exec(QStringLiteral("DELETE FROM \"%1\"").arg(table))) {
+            m_db.rollback();
+            return false;
+        }
+    }
+
+    if (!m_db.commit())
+        return false;
+
+    // Belt and braces on top of secure_delete above: VACUUM rebuilds the
+    // file from live content only, which also reclaims freelist pages that
+    // predate this call (e.g. written before secure_delete was set). Must
+    // run outside a transaction, hence after the commit.
+    //
+    // Measured, not assumed: with secure_delete ON, a plain DELETE already
+    // removes the content from the file, so VACUUM is defence in depth here
+    // rather than the mechanism doing the work.
+    QSqlQuery vacuumQuery(m_db);
+    return vacuumQuery.exec(QStringLiteral("VACUUM"));
+}
+
 QSqlDatabase& Database::handle()
 {
     return m_db;

@@ -56,6 +56,12 @@ target_sources(kypost PRIVATE
   mail/EmailListModel.h
   mail/MailController.cpp
   mail/MailController.h
+  mail/PgpMessagePresentation.cpp
+  mail/PgpMessagePresentation.h
+  security/AppLockManager.cpp
+  security/AppLockManager.h
+  security/AppRelauncher.cpp
+  security/AppRelauncher.h
 )
 
 # RemoteContentInterceptor (VibeSec fix): installed as EmailDetail.qml's

@@ -13,6 +13,22 @@ class PairingStore;
 // singleton in main.cpp. respond() runs synchronously on the calling (GUI)
 // thread -- see Phase 6 global constraint 2, this is a known, accepted
 // freeze-the-UI tradeoff for this phase, not a bug.
+//
+// STATUS (2026-07-25): no QML consumes this. The Unlock/approval screen that
+// used to live at app/qml/pages/MfaApproval.qml was deleted because it could
+// never run: kypost-server derives transport "unifiedpush" from
+// platform "linux" (internal/api/server.go), and push_mfa_handlers.go filters
+// unifiedpush devices out of every MFA challenge -- so a Linux device is never
+// notified of one, in push OR pull mode.
+//
+// This class is deliberately KEPT rather than deleted with the UI: the server
+// filter is explicitly temporary ("until encryption is added" -- the RFC 8291
+// UnifiedPush encryption plan is unimplemented server-side), and
+// POST /api/mfa/push/respond remains a valid, device-authenticated endpoint.
+// When that lands, this is the half that already works; only the QML needs
+// rebuilding. Do not wire a screen to it before the backend change, or it
+// will be dead on arrival again.
+
 class MfaController : public QObject
 {
     Q_OBJECT

@@ -1,8 +1,14 @@
-# Llama Mail — Linux Qt Client Plan (Linux Desktop + KDE Mobile via Flatpak, Ubuntu Touch via Click)
+# KyPost — Linux Qt Client Plan (Linux Desktop + KDE Mobile via Flatpak)
 
-Fourth sibling after Android (`~/git/llama-mobile`) and SwiftUI macOS/iOS (this
-repo). **This plan supersedes both `Kirigami_llama_mail.md` (2026-07-11 draft)
-and the short-lived `KDE_Client_Plan.md`.** One Qt codebase, two packages,
+> **Renamed 2026-07-25.** This document predates the Llama Mail → KyPost
+> rename and still used the old product name, the old `llamalabels://` deep
+> link scheme, the old `libllamacore` library name, and old sibling-repo
+> paths throughout. Those are corrected inline below. Ubuntu Touch / Click
+> is a dropped decision, not a pending target — see AGENTS.md §4.
+
+Fourth sibling after Android (`~/git/kypost-android`) and SwiftUI macOS/iOS
+(`~/git/kypost-for-Mac`). **This plan supersedes both `Kirigami_llama_mail.md` (2026-07-11 draft,
+pre-rename filename) and the short-lived `KDE_Client_Plan.md`.** One Qt codebase, two packages,
 two UI roots:
 
 | Target | Toolkit | Packaging | Qt | UI root |
@@ -11,7 +17,7 @@ two UI roots:
 | KDE Mobile (Plasma Mobile) | Kirigami (KF6) | same Flatpak | Qt 6 | Mobile |
 | Ubuntu Touch (Lomiri) | Kirigami (KF5, bundled in the click) | Clickable → OpenStore | Qt 5.15 | Mobile |
 
-New sibling repo: `~/git/llama-mail-qt` (this repo is Xcode-centric; don't nest).
+New sibling repo: `~/git/kypost-Linux` (kypost-for-Mac is Xcode-centric; don't nest).
 Suggested app IDs: `com.urlxl.mail` (Flatpak/Flathub), `kypost.urlxl`
 (click/OpenStore).
 
@@ -46,8 +52,8 @@ fully-adaptive tree:
 ## What changed since the 2026-07-11 draft plan
 
 1. **UnifiedPush landed** (backend commits `cb96ae0`, `510eba6`, `21a20b8` in
-   `~/git/llama-labels`; Android commits `4782ce7`, `8ef0398` in
-   `~/git/llama-mobile`; doc `llama-labels/UNIFIEDPUSH_IMPLEMENTATION.md`).
+   `~/git/kypost-server`; Android commits `4782ce7`, `8ef0398` in
+   `~/git/kypost-android`; doc `kypost-server/UNIFIEDPUSH_IMPLEMENTATION.md`).
    The old plan's "polling-only v1" is gone — push is in v1 where the platform
    allows it (see the push matrix below). The backend explicitly anticipated
    these clients: *"KDE Mobile / Ubuntu Touch clients call the same
@@ -58,7 +64,7 @@ fully-adaptive tree:
    - Attachments: `GET /api/mail/attachments`, `GET /api/mail/attachment`
      (messageId = IMAP UID), `attachments:[{name,mimeType,dataBase64}]` on send
      (25 MB decoded cap, 40 MB body limit). Contract in
-     `llama-mobile/Mobile_Mail_Relay.md`.
+     `kypost-android/Mobile_Mail_Relay.md`.
    - Send supports `mode: "plain" | "html" | "markup"`.
    - Registration dedupe: server upserts by pushToken+platform; clients send
      their stored `deviceId` on re-registration (otherwise every register call
@@ -78,8 +84,8 @@ fully-adaptive tree:
 
 - **Relay-only.** No IMAP/SMTP anywhere. `mail.urlxl.com` is the sole
   transport. Search is local-cache-only.
-- **Wire contracts come from `llama-mobile`** (`Mobile_Mail_Relay.md`,
-  `Mobile_Contact_Sync.md`) and, for post-July-2026 features, this repo's
+- **Wire contracts come from `kypost-android`** (`Mobile_Mail_Relay.md`,
+  `Mobile_Contact_Sync.md`) and, for post-July-2026 features, kypost-for-Mac's
   `Data/Networking/*` Swift clients (relay-only, live-verified, test-locked).
   Never guess shapes — guessed shapes caused live 400s twice. Verified inventory:
   - `GET /api/inbox?sub&hash&limit&mailbox&since` → `{tabs, byTab, cursor, delta, removed}`
@@ -97,10 +103,12 @@ fully-adaptive tree:
   - `POST /api/notifications/native/deregister` — auth via the same device
     headers, empty body, `{"ok": true}` on success; lets a device remove
     itself from the account's paired-devices list without a session
-- **13 theme palettes are a binding contract** with web `theme.ts` / Android
-  `AppTheme.kt` / this repo's `Style/AppTheme.swift` (easiest transcription
-  source — copy values, don't approximate). Fonts: Space Grotesk + IBM Plex
-  Mono (OFL; bundle the TTFs).
+- **The theme palettes are a binding contract** with web `theme.ts` / Android
+  `AppTheme.kt` / kypost-for-Mac's `Style/AppTheme.swift` (easiest transcription
+  source — copy values, don't approximate). Currently **15**;
+  `AppTheme::themeNames()` is the source of truth (this said "13" until
+  2026-07-25 — two were added later and the count went stale). Fonts: Space
+  Grotesk + IBM Plex Mono (OFL; bundle the TTFs).
 - **StandardFolder wire names**: `INBOX`, `Drafts`, `Junk`, `Sent`, `Trash`,
   `Archive`; display name splits on both `/` and `.`.
 - 90-second foreground refresh cadence. Full-snapshot refresh (`since=0`);
@@ -176,12 +184,12 @@ Parse the **envelope**, feed `data` into the ported PushPayloadParser
 (`messageId` required; `senderName`/`emailSubject`/`Keywords` drive the
 notification and dedupe).
 
-> ⚠️ **Android reference bug — do not copy it:** `LlamaUnifiedPushService.onMessage`
+> ⚠️ **Android reference bug — do not copy it:** `KyPostUnifiedPushService.onMessage`
 > decodes the message as a flat `Map<String,String>`, but the backend sends the
 > nested envelope above; the nested `data` object makes the decode throw →
 > `getOrNull()` → **every UnifiedPush mail notification is silently dropped**
 > on Android as committed. Parse `{title, body, data}` here; fixing Android is
-> a separate task in `llama-mobile`.
+> a separate task in `kypost-android`.
 
 - 404/410 from the endpoint ⇒ backend marks the device **stale and deletes the
   registration** (same trap as APNs BadDeviceToken). On distributor/topic
@@ -238,7 +246,7 @@ polls race, and dedupe-by-seq is what makes that safe.
 
 ## Stack decisions
 
-- **Language split**: C++20 core library (`libllamacore`) using **only
+- **Language split**: C++20 core library (`libkypostcore`) using **only
   QtCore/QtNetwork/QtSql** — this subset compiles identically under Qt 5.15 and
   Qt 6, confining the dual-Qt problem to QML and platform glue. QtDBus/
   KUnifiedPush/KNotifications/lomiri glue lives in the app layer, never in core.
@@ -265,8 +273,8 @@ polls race, and dedupe-by-seq is what makes that safe.
   scaffold from `EmailDetailView.swift` / Android `EmailDetailActivity`,
   palette colors injected as hex; intercept navigation →
   `Qt.openUrlExternally`; plain-text bodies render as mono `Text`.
-- **Deep links** (`llamalabels://native-pair?...`):
-  - Flatpak: `.desktop` with `MimeType=x-scheme-handler/llamalabels;`,
+- **Deep links** (`kypost://native-pair?...` — renamed from `llamalabels://`):
+  - Flatpak: `.desktop` with `MimeType=x-scheme-handler/kypost;`,
     `KDBusService(Unique)` routes URLs into the running instance.
   - Ubuntu Touch: `urls` hook in the click manifest (url-dispatcher).
   - Paste-link pairing is the universal fallback; camera QR scan is v2.
@@ -283,7 +291,18 @@ mobile, context menus + shortcuts on desktop), HTML mail viewing, plain-text
 compose (reply/reply-all/forward), **attachment viewing + download** (portal
 file chooser on Flatpak, ContentHub export on UT), contacts list/detail with
 sync + reconciliation, settings (Connection/Appearance/Keywords/Notifications),
-13 themes, MFA approval (polling-driven), **push per the matrix above**.
+15 themes, MFA approval (polling-driven), **push per the matrix above**.
+
+> **Scope status, 2026-07-25.** The v1/v2 split below is the original plan and
+> is kept for the reasoning, but it no longer describes the shipped app. Since
+> shipped from the "Out (v2)" list: **compose attachments, rich-text/HTML
+> compose, server drafts, delta/cursor mail sync**, plus server-side folder
+> management, PGP protection-mode awareness, app lock, credential PIN gate,
+> TOFU certificate pinning and Hostile Location Protection (none of which
+> appear below at all). Still genuinely out: camera QR *pairing*,
+> MFA-over-push (backend-gated — see AGENTS.md §4), UT background push,
+> drag-and-drop. `MfaApproval.qml` referenced elsewhere in this document was
+> deleted on 2026-07-25; see TESTING.md for why.
 
 Out (v2): compose attachments, rich-text/HTML compose, server drafts, camera
 QR pairing, delta/cursor mail sync, encrypted push → MFA-over-push
@@ -293,9 +312,9 @@ multi-select, pop-out windows.
 ## Repo layout
 
 ```
-llama-mail-qt/
+kypost-Linux/
   CMakeLists.txt              # ECM + Qt5/Qt6 dual (QT_MAJOR_VERSION switch)
-  core/                       # libllamacore — QtCore/Network/Sql only, compiles Qt5+Qt6
+  core/                       # libkypostcore — QtCore/Network/Sql only, compiles Qt5+Qt6
     models/                   # Email, Contact, KeywordSettings, MfaChallenge, PushNotification, StandardFolder
     net/                      # HttpClient (QNAM wrapper, stub-injectable, real UA), RelayMailSource,
                               # ContactSyncClient, NativeRegistrationClient (transport-aware),
@@ -326,7 +345,7 @@ llama-mail-qt/
 ## Phases
 
 **Phase 1 — Two skeletons that ship, one of which pushes.**
-CMake workspace building `libllamacore` + a hello-Kirigami window under BOTH
+CMake workspace building `libkypostcore` + a hello-Kirigami window under BOTH
 Qt 6 (Flatpak: `org.kde.Platform` 6.x + QtWebEngine baseapp + bundled
 KUnifiedPush/QtKeychain) and Qt 5.15 (Clickable `ubuntu-sdk-20.04`, Kirigami/ECM
 built via `clickable.yaml` `libraries:`). Prove early, on real targets:
@@ -343,7 +362,7 @@ confirm the UnifiedPush commits are deployed to `mail.urlxl.com`.
 SecureStore (both backends). DAO round-trip tests. Runs under both Qt majors in CI.
 
 **Phase 3 — Relay networking.** HttpClient wrapper, then each client against
-the verified contracts, translated from this repo's `Data/Networking/*`.
+the verified contracts, translated from kypost-for-Mac's `Data/Networking/*`.
 Test-lock the register body (with `transport`/`deviceId`), send comma-joining,
 action verbs, attachments endpoints, and the push envelope (nested `data`,
 capital-K `Keywords`) — every locked shape corresponds to a past live failure.
@@ -415,7 +434,7 @@ tests under both Qt majors).
    nested envelope as flat and silently drops every UP notification. Until a
    client has received a live UnifiedPush mail notification end-to-end, treat
    the envelope as unverified-live and pin it with tests against the backend
-   source, not the Android client. Fixing Android is a separate `llama-mobile`
+   source, not the Android client. Fixing Android is a separate `kypost-android`
    task.
 6. **SSRF validation vs local testing**: private/loopback endpoints are
    rejected at registration (and re-checked at dial time). All push testing

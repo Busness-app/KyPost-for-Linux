@@ -1,5 +1,7 @@
 #pragma once
 
+#include "models/MailFolder.h"
+
 #include <QSqlDatabase>
 #include <QString>
 #include <QVector>
@@ -29,7 +31,17 @@ public:
     QVector<FolderRecord> findByParent(const QString& parent) const;
     QVector<FolderRecord> findAll() const;
     bool deleteByPath(const QString& path);
+    bool deleteByParent(const QString& parent);
     bool deleteAll();
+
+    // Wipes every row under `parent` and inserts `folders` in its place,
+    // wrapped in one transaction so a partial failure doesn't leave the
+    // parent half-replaced. Same shape as EmailDao::replaceFolderSnapshot.
+    // Deletions on the server are only observable as an absence, so a
+    // replace (not an upsert loop) is what actually removes a folder that
+    // has gone away.
+    bool replaceParentSnapshot(const QString& parent, const QVector<MailFolder>& folders,
+                                const QString& sourceMode);
 
 private:
     QSqlDatabase& m_db;

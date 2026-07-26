@@ -63,7 +63,7 @@ void DeviceRegistrationServiceTest::successfulPairPersistsPairingAndSettings()
     QVERIFY(settingsDir.isValid());
     SettingsStore settingsStore(settingsDir.filePath(QStringLiteral("settings.ini")));
 
-    DeviceRegistrationService service(client, pairingStore, settingsStore);
+    DeviceRegistrationService service(client, pairingStore, settingsStore, http);
 
     PairingParams params = sampleParams(fake.port());
     params.serverBaseUrl = QStringLiteral("http://relay.example:9443");
@@ -116,7 +116,7 @@ void DeviceRegistrationServiceTest::pullEndpointFromDifferentOriginThanServerIsR
     QVERIFY(settingsDir.isValid());
     SettingsStore settingsStore(settingsDir.filePath(QStringLiteral("settings.ini")));
 
-    DeviceRegistrationService service(client, pairingStore, settingsStore);
+    DeviceRegistrationService service(client, pairingStore, settingsStore, http);
 
     const NativeRegistrationResult result =
         service.pair(sampleParams(fake.port()), QStringLiteral("https://push.example/endpoint"));
@@ -142,7 +142,7 @@ void DeviceRegistrationServiceTest::unauthorizedPairLeavesStoresUntouched()
     QVERIFY(settingsDir.isValid());
     SettingsStore settingsStore(settingsDir.filePath(QStringLiteral("settings.ini")));
 
-    DeviceRegistrationService service(client, pairingStore, settingsStore);
+    DeviceRegistrationService service(client, pairingStore, settingsStore, http);
 
     const NativeRegistrationResult result =
         service.pair(sampleParams(fake.port()), QStringLiteral("https://push.example/endpoint"));
@@ -186,7 +186,7 @@ void DeviceRegistrationServiceTest::reregisterIfPairedSendsStoredCredentialsAndU
     QNetworkAccessManager manager;
     HttpClient http(manager);
     NativeRegistrationClient client(http);
-    DeviceRegistrationService service(client, pairingStore, settingsStore);
+    DeviceRegistrationService service(client, pairingStore, settingsStore, http);
 
     const std::optional<NativeRegistrationResult> result =
         service.reregisterIfPaired(QStringLiteral("https://push.example/endpoint"));
@@ -223,7 +223,7 @@ void DeviceRegistrationServiceTest::reregisterIfPairedWithNoPriorPairingMakesNoR
     QNetworkAccessManager manager;
     HttpClient http(manager);
     NativeRegistrationClient client(http);
-    DeviceRegistrationService service(client, pairingStore, settingsStore);
+    DeviceRegistrationService service(client, pairingStore, settingsStore, http);
 
     const std::optional<NativeRegistrationResult> result =
         service.reregisterIfPaired(QStringLiteral("https://push.example/endpoint"));
@@ -258,7 +258,7 @@ void DeviceRegistrationServiceTest::reregisterIfPairedOn401LeavesStoredPairingUn
     QNetworkAccessManager manager;
     HttpClient http(manager);
     NativeRegistrationClient client(http);
-    DeviceRegistrationService service(client, pairingStore, settingsStore);
+    DeviceRegistrationService service(client, pairingStore, settingsStore, http);
 
     const std::optional<NativeRegistrationResult> result =
         service.reregisterIfPaired(QStringLiteral("https://push.example/endpoint"));

@@ -2,6 +2,7 @@
 
 #include "domain/DevicePairing.h"
 #include "domain/PairingStore.h"
+#include "net/HttpClient.h"
 #include "stores/SettingsStore.h"
 
 #include <QUrl>
@@ -39,10 +40,11 @@ bool sameOrigin(const QUrl& a, const QUrl& b)
 } // namespace
 
 DeviceRegistrationService::DeviceRegistrationService(NativeRegistrationClient& client, PairingStore& pairingStore,
-                                                       SettingsStore& settingsStore)
+                                                       SettingsStore& settingsStore, HttpClient& httpClient)
     : m_client(client)
     , m_pairingStore(pairingStore)
     , m_settingsStore(settingsStore)
+    , m_httpClient(httpClient)
 {
 }
 
@@ -65,7 +67,17 @@ NativeRegistrationResult DeviceRegistrationService::pair(const PairingParams& pa
     // invalidating whatever was stored before -- persist unconditionally,
     // never fall back to the previous value.
     pairing.deviceSecret = result.response.deviceSecret;
+    // Trust on first use: pin whatever key just served the registration.
+    // Empty over plain http (no handshake, so nothing to pin), which is the
+    // testing case -- enforcement then stays off rather than failing every
+    // later request.
+    pairing.certificateSpkiSha256 = QString::fromLatin1(m_httpClient.lastPeerSpkiSha256().toBase64());
     m_pairingStore.save(pairing);
+
+    // Enforce immediately, so even the requests made later in this same
+    // session are checked rather than waiting for the next launch.
+    if (!pairing.certificateSpkiSha256.isEmpty())
+        m_httpClient.setCertificatePin(m_httpClient.lastPeerSpkiSha256());
 
     const QUrl serverOrigin(params.serverBaseUrl);
     const QUrl advertisedPullEndpoint(result.response.pullEndpoint);

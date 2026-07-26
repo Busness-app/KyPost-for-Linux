@@ -4,7 +4,10 @@
 #include "db/EmailDao.h"
 #include "domain/DevicePairing.h"
 #include "domain/KeywordRepository.h"
+#include "db/FolderDao.h"
+#include "domain/FolderRepository.h"
 #include "domain/MailRepository.h"
+#include "net/FolderClient.h"
 #include "domain/PairingStore.h"
 #include "mail/EmailListModel.h"
 #include "net/HttpClient.h"
@@ -117,8 +120,12 @@ void MailControllerTest::selectKeywordFiltersCachedEmailsWithoutAnyNetworkCall()
     HttpClient http(manager);
     RelayMailSource source(http);
     MailRepository mailRepository(source, emailDao, pairingStore, cursorStore);
+    FolderDao folderDao(db.handle());
+    FolderClient folderClient(http);
+    FolderRepository folderRepository(folderClient, folderDao, pairingStore);
 
-    MailController controller(mailRepository, source, keywordRepository, pairingStore);
+    MailController controller(mailRepository, source, keywordRepository, pairingStore, folderRepository,
+                               settingsStore);
 
     // refresh() is the only call in this test allowed to reach the network
     // -- it populates the cache selectKeyword() below must filter locally.
@@ -172,8 +179,12 @@ void MailControllerTest::archiveEmailsNotPairedShortCircuitsWithNoNetworkCall()
     HttpClient http(manager);
     RelayMailSource source(http);
     MailRepository mailRepository(source, emailDao, pairingStore, cursorStore);
+    FolderDao folderDao(db.handle());
+    FolderClient folderClient(http);
+    FolderRepository folderRepository(folderClient, folderDao, pairingStore);
 
-    MailController controller(mailRepository, source, keywordRepository, pairingStore);
+    MailController controller(mailRepository, source, keywordRepository, pairingStore, folderRepository,
+                               settingsStore);
 
     QSignalSpy errorSpy(&controller, &MailController::lastErrorChanged);
     const bool ok = controller.archiveEmails({ QStringLiteral("m1") });
@@ -211,8 +222,12 @@ void MailControllerTest::sendMailOverAttachmentCapRejectsBeforeAnyNetworkCall()
     HttpClient http(manager);
     RelayMailSource source(http);
     MailRepository mailRepository(source, emailDao, pairingStore, cursorStore);
+    FolderDao folderDao(db.handle());
+    FolderClient folderClient(http);
+    FolderRepository folderRepository(folderClient, folderDao, pairingStore);
 
-    MailController controller(mailRepository, source, keywordRepository, pairingStore);
+    MailController controller(mailRepository, source, keywordRepository, pairingStore, folderRepository,
+                               settingsStore);
 
     QTemporaryDir attachmentDir;
     QVERIFY(attachmentDir.isValid());
@@ -259,8 +274,12 @@ void MailControllerTest::sendMailUsesHtmlSendMode()
     HttpClient http(manager);
     RelayMailSource source(http);
     MailRepository mailRepository(source, emailDao, pairingStore, cursorStore);
+    FolderDao folderDao(db.handle());
+    FolderClient folderClient(http);
+    FolderRepository folderRepository(folderClient, folderDao, pairingStore);
 
-    MailController controller(mailRepository, source, keywordRepository, pairingStore);
+    MailController controller(mailRepository, source, keywordRepository, pairingStore, folderRepository,
+                               settingsStore);
 
     const bool ok = controller.sendMail(QStringLiteral("to@example.com"), QString(), QString(),
                                          QStringLiteral("Subject"), QStringLiteral("<b>Body</b>"), {});
@@ -309,8 +328,12 @@ void MailControllerTest::downloadAttachmentSanitizesPathTraversalInSuggestedName
     HttpClient http(manager);
     RelayMailSource source(http);
     MailRepository mailRepository(source, emailDao, pairingStore, cursorStore);
+    FolderDao folderDao(db.handle());
+    FolderClient folderClient(http);
+    FolderRepository folderRepository(folderClient, folderDao, pairingStore);
 
-    MailController controller(mailRepository, source, keywordRepository, pairingStore);
+    MailController controller(mailRepository, source, keywordRepository, pairingStore, folderRepository,
+                               settingsStore);
 
     const QString downloadDir = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
     QDir().mkpath(downloadDir);
@@ -364,8 +387,12 @@ void MailControllerTest::downloadAttachmentSanitizesPathTraversalInServerFilenam
     HttpClient http(manager);
     RelayMailSource source(http);
     MailRepository mailRepository(source, emailDao, pairingStore, cursorStore);
+    FolderDao folderDao(db.handle());
+    FolderClient folderClient(http);
+    FolderRepository folderRepository(folderClient, folderDao, pairingStore);
 
-    MailController controller(mailRepository, source, keywordRepository, pairingStore);
+    MailController controller(mailRepository, source, keywordRepository, pairingStore, folderRepository,
+                               settingsStore);
 
     const QString downloadDir = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
     QDir().mkpath(downloadDir);
@@ -419,8 +446,12 @@ void MailControllerTest::findByMessageIdReturnsMapForCachedEmailAndEmptyMapWhenM
     HttpClient http(manager);
     RelayMailSource source(http);
     MailRepository mailRepository(source, emailDao, pairingStore, cursorStore);
+    FolderDao folderDao(db.handle());
+    FolderClient folderClient(http);
+    FolderRepository folderRepository(folderClient, folderDao, pairingStore);
 
-    MailController controller(mailRepository, source, keywordRepository, pairingStore);
+    MailController controller(mailRepository, source, keywordRepository, pairingStore, folderRepository,
+                               settingsStore);
 
     const QVariantMap found = controller.findByMessageId(QStringLiteral("m-1"));
     QCOMPARE(found.value(QStringLiteral("messageId")).toString(), QStringLiteral("m-1"));
@@ -469,8 +500,12 @@ void MailControllerTest::allKeywordSettingsReflectsInboxCacheAndSetKeywordVisibl
     HttpClient http(manager);
     RelayMailSource source(http);
     MailRepository mailRepository(source, emailDao, pairingStore, cursorStore);
+    FolderDao folderDao(db.handle());
+    FolderClient folderClient(http);
+    FolderRepository folderRepository(folderClient, folderDao, pairingStore);
 
-    MailController controller(mailRepository, source, keywordRepository, pairingStore);
+    MailController controller(mailRepository, source, keywordRepository, pairingStore, folderRepository,
+                               settingsStore);
 
     // "Work" was never toggled -- SettingsStore::keywordVisible() defaults
     // to true (see its own doc comment), so it should show up as visible.

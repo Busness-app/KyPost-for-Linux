@@ -7,6 +7,7 @@
 
 class PairingStore;
 class SettingsStore;
+class HttpClient;
 
 // Initial-pairing and re-registration params for DeviceRegistrationService::
 // pair(). Mirrors DevicePairing's six persisted fields minus deviceId, which
@@ -28,8 +29,13 @@ struct PairingParams
 class DeviceRegistrationService
 {
 public:
+    // `httpClient` is the same instance `client` was built on. Taken
+    // directly so pair() can read the SPKI hash of the handshake that just
+    // completed the registration -- that is the trust-on-first-use moment,
+    // and there is no later point at which the pin can be captured
+    // legitimately (by then an attacker's certificate would be pinned).
     DeviceRegistrationService(NativeRegistrationClient& client, PairingStore& pairingStore,
-                               SettingsStore& settingsStore);
+                               SettingsStore& settingsStore, HttpClient& httpClient);
 
     NativeRegistrationResult pair(const PairingParams& params, const QString& deviceToken);
 
@@ -39,4 +45,5 @@ private:
     NativeRegistrationClient& m_client;
     PairingStore& m_pairingStore;
     SettingsStore& m_settingsStore;
+    HttpClient& m_httpClient;
 };

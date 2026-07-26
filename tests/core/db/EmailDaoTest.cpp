@@ -44,6 +44,8 @@ void EmailDaoTest::roundTripsInsertUpdateDelete()
     email.atUtc = QStringLiteral("2026-01-01T00:00:00Z");
     email.hasAttachments = true;
     email.sourceMode = QStringLiteral("sync");
+    email.pgpEncrypted = true;
+    email.pgpDecryptError = QStringLiteral("no secret key");
 
     QVERIFY(dao.insertOrReplace(email));
 
@@ -56,6 +58,10 @@ void EmailDaoTest::roundTripsInsertUpdateDelete()
     updated.body = std::nullopt;
     updated.keywords = QStringList{QStringLiteral("later")};
     updated.hasAttachments = false;
+    // Also exercises clearing the PGP columns, so a stale decrypt error
+    // can't survive a re-sync of a message that is no longer failing.
+    updated.pgpEncrypted = false;
+    updated.pgpDecryptError = QString();
     QVERIFY(dao.insertOrReplace(updated));
 
     auto refetched = dao.findById(email.messageId);

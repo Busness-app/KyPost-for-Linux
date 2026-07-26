@@ -43,6 +43,35 @@ bool FolderDao::insertOrReplace(const QString& path, const QString& parent, bool
     return query.exec();
 }
 
+bool FolderDao::deleteByParent(const QString& parent)
+{
+    QSqlQuery query(m_db);
+    query.prepare(QStringLiteral("DELETE FROM folders WHERE parent = :parent"));
+    query.bindValue(QStringLiteral(":parent"), parent);
+    return query.exec();
+}
+
+bool FolderDao::replaceParentSnapshot(const QString& parent, const QVector<MailFolder>& folders,
+                                       const QString& sourceMode)
+{
+    if (!m_db.transaction())
+        return false;
+
+    if (!deleteByParent(parent)) {
+        m_db.rollback();
+        return false;
+    }
+
+    for (const MailFolder& folder : folders) {
+        if (!insertOrReplace(folder.path, parent, folder.deletable, sourceMode)) {
+            m_db.rollback();
+            return false;
+        }
+    }
+
+    return m_db.commit();
+}
+
 std::optional<FolderRecord> FolderDao::findByPath(const QString& path) const
 {
     QSqlQuery query(m_db);

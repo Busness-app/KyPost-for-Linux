@@ -34,6 +34,13 @@ public:
         AtUtcRole,
         HasAttachmentsRole,
         SourceModeRole,
+        // Presentation of the message's OpenPGP state: a glyph for rows the
+        // user cannot read, plus its spoken equivalent. Exposed as roles
+        // rather than computed in QML so the rule lives in one place
+        // (core/domain/PgpMessageState.h + app/mail/PgpMessagePresentation.h)
+        // and both roots render identically.
+        PgpMarkerRole,
+        PgpMarkerAccessibleNameRole,
     };
 
     explicit EmailListModel(QObject* parent = nullptr);

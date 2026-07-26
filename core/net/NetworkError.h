@@ -17,6 +17,11 @@ enum class NetworkError
     ServiceUnavailable, // 503 — backend config issue, do not retry
     Server,             // any other non-2xx status
     Transport,          // network-level failure (e.g. connection refused/timeout)
+    // The server's TLS public key does not match the one captured when this
+    // device paired. Kept distinct from Transport because the two mean very
+    // different things to a user: "the network is flaky, retry" versus
+    // "something is impersonating your mail server, do not retry".
+    CertificateMismatch,
     Decoding,           // JSON parse failure; produced by each Task 14-18
                         // client's own decode step, never by HttpClient
 };
