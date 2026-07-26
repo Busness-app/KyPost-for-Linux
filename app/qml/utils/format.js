@@ -32,6 +32,37 @@ function isExternallyOpenableUrl(url) {
     return externallyOpenableSchemes.indexOf(s.substring(0, colon).toLowerCase()) !== -1
 }
 
+// The real address out of a raw From/To/Cc header value.
+//
+// A display name is attacker-controlled and is authenticated by nothing: DKIM,
+// SPF and DMARC all validate the domain a message was sent from, never the
+// human-readable label in front of it. So this arrives intact and aligned:
+//
+//     From: "evil@attacker.tld" <bob@corp.com>
+//
+// EmailDetail's extractAddress() took the FIRST "<", which on that input still
+// happens to work but fails the mirror case, and the webmail's equivalent took
+// the first email-shaped substring anywhere -- which picked the address out of
+// the display name. Reply/Reply All/Forward all carry the quoted original, so
+// getting this wrong sends a thread to someone who never sent it.
+//
+// The rule, shared verbatim with the webmail and Android clients: the real
+// address is the LAST angle-addr, because RFC 5322 puts display-name first and
+// addr-spec last. A bare value is the address itself. Anything without an "@"
+// is not an address and yields "" rather than being passed through as a
+// pseudo-recipient.
+function addressFromHeader(raw) {
+    const s = String(raw === undefined || raw === null ? "" : raw).trim()
+    if (s.length === 0)
+        return ""
+    let candidate = s
+    const close = s.lastIndexOf(">")
+    const open = close === -1 ? -1 : s.lastIndexOf("<", close)
+    if (open !== -1 && close > open)
+        candidate = s.substring(open + 1, close).trim()
+    return candidate.indexOf("@") !== -1 ? candidate : ""
+}
+
 // The IMAP keyword the server sets on mail that impersonates KyPost itself
 // (backend/internal/processor/phish_scan.go). $Phishing is the reserved RFC
 // 8621 keyword, so other mail clients understand it too.

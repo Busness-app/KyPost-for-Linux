@@ -97,15 +97,11 @@ Item {
 
     // If `raw` contains "<...>", returns the content between the first '<'
     // and the matching '>'; otherwise returns `raw` trimmed as-is.
+    // Delegates to Format (utils/format.js) so the rule is testable on its own
+    // and stays identical to the webmail and Android clients -- see
+    // tests/qml/tst_AddressText.qml for why a display name must never win.
     function extractAddress(raw) {
-        const s = raw || ""
-        const lt = s.indexOf("<")
-        if (lt !== -1) {
-            const gt = s.indexOf(">", lt)
-            if (gt !== -1)
-                return s.substring(lt + 1, gt).trim()
-        }
-        return s.trim()
+        return Format.addressFromHeader(raw)
     }
 
     // Splits a comma/semicolon-joined address-list string (Email.sentTo/.cc
