@@ -143,6 +143,10 @@ void PgpMessagePresentationTest::webmailMailboxUrlRejectsAnythingButHttps()
                               QStringLiteral("Drafts")).isEmpty());
     QVERIFY(webmailMailboxUrl(QUrl(), QStringLiteral("Drafts")).isEmpty());
     QVERIFY(webmailMailboxUrl(QUrl(QStringLiteral("https://")), QStringLiteral("Drafts")).isEmpty());
+
+    // An empty mailbox has nothing to target, so it must not produce a link at
+    // all rather than one with an empty mailbox parameter.
+    QVERIFY(webmailMailboxUrl(QUrl(QStringLiteral("https://mail.example.com")), QString()).isEmpty());
 }
 
 // A base URL carrying its own query or fragment must not leak into the link.
