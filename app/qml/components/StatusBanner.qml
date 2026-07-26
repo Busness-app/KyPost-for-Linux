@@ -36,13 +36,13 @@ Item {
                 {
                     active: Pairing.reregistrationRejected,
                     message: i18n("This device's pairing has expired, so new mail notifications "
-                                   "have stopped arriving. Open Settings and pair this device again.")
+                                   + "have stopped arriving. Open Settings and pair this device again.")
                 },
                 {
                     active: AppLock.credentialsUnavailable,
                     message: i18n("KyPost could not decrypt this device's stored credentials, so "
-                                   "the server will reject its requests. Check that your system "
-                                   "keyring is unlocked, then lock and unlock KyPost again.")
+                                   + "the server will reject its requests. Check that your system "
+                                   + "keyring is unlocked, then lock and unlock KyPost again.")
                 }
             ]
 

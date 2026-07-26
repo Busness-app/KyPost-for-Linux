@@ -478,9 +478,9 @@ Item {
                         Layout.topMargin: 4
                         wrapMode: Text.WordWrap
                         text: i18n("When no UnifiedPush distributor is available, KyPost receives "
-                                    "notifications through this push server. Sender names and "
-                                    "subject lines pass through it. Point it at your own ntfy "
-                                    "instance if you would rather they did not.")
+                                    + "notifications through this push server. Sender names and "
+                                    + "subject lines pass through it. Point it at your own ntfy "
+                                    + "instance if you would rather they did not.")
                     }
                 }
             }
@@ -915,7 +915,7 @@ Item {
             // not.
             securityPrompt.errorText = AppLock.credentialPinGateEnabled
                 ? i18n("Incorrect PIN, or the stored credentials could not be re-encrypted. If the "
-                       "PIN is right, check that your system keyring is unlocked and try again.")
+                       + "PIN is right, check that your system keyring is unlocked and try again.")
                 : i18n("Incorrect PIN, or the change could not be saved.")
             currentPinField.text = ""
         }
