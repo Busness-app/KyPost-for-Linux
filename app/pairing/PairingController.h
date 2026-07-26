@@ -46,13 +46,25 @@ class PairingController : public QObject
     // assigned independently.
     Q_PROPERTY(QString pairingState READ pairingState NOTIFY pairingStateChanged) // "idle" | "confirm" | "working" | "paired" | "failed"
     Q_PROPERTY(QString pairingError READ pairingError NOTIFY pairingStateChanged) // meaningful only when pairingState == "failed"
-    // Host of the server a not-yet-confirmed pairFromDeepLink()/
-    // pairFromPastedLink() call wants to pair with -- meaningful only when
-    // pairingState == "confirm". Lets the confirmation UI show the user
-    // which server is asking, before confirmPendingPair() makes any network
-    // call. See PairingController.cpp's pairFromDeepLink() doc comment for
-    // why this gate exists.
-    Q_PROPERTY(QString pendingPairHost READ pendingPairHost NOTIFY pairingStateChanged)
+    // Origin ("scheme://host[:port]") of the server a not-yet-confirmed
+    // pairFromDeepLink()/pairFromPastedLink() call wants to pair with --
+    // meaningful only when pairingState == "confirm". Lets the confirmation UI
+    // show the user which server is asking, before confirmPendingPair() makes
+    // any network call. See PairingController.cpp's pairFromDeepLink() doc
+    // comment for why this gate exists.
+    //
+    // The full origin rather than the bare host: this used to expose
+    // QUrl::host() only, so "http://evil.example:8443" and
+    // "https://evil.example" were indistinguishable in the one confirmation
+    // the user ever sees -- and the scheme is the difference between sending
+    // the pairing token and the real push device token over TLS or in
+    // cleartext.
+    Q_PROPERTY(QString pendingPairOrigin READ pendingPairOrigin NOTIFY pairingStateChanged)
+    // True when that pending origin is plaintext http. Only reachable for
+    // loopback (isAcceptablePairingScheme rejects http elsewhere), which is a
+    // legitimate self-hosted/dev case -- but it must be announced rather than
+    // blending in with https.
+    Q_PROPERTY(bool pendingPairInsecure READ pendingPairInsecure NOTIFY pairingStateChanged)
     // True once a background re-registration was rejected with 401.
     //
     // AGENTS.md section 8 records this as a known live-system gotcha ("Re-
@@ -106,7 +118,8 @@ public:
     State state() const;
     QString pairingState() const; // stateToString(state()) -- for existing QML bindings
     QString pairingError() const;
-    QString pendingPairHost() const;
+    QString pendingPairOrigin() const;
+    bool pendingPairInsecure() const;
     QString deliveryMode() const;
     QString transport() const;
     QString pushServerBaseUrl() const;
@@ -134,7 +147,7 @@ public slots:
     // instance (main.cpp's routeDeepLink()), with none of this app's own UI
     // ever having been on screen. A successful parse therefore no longer
     // pairs immediately: it stores the parsed params and moves
-    // pairingState to "confirm", where pendingPairHost tells the UI which
+    // pairingState to "confirm", where pendingPairOrigin tells the UI which
     // server is asking. Only an explicit confirmPendingPair() call actually
     // performs the network call and persists the new pairing;
     // cancelPendingPair() (or a fresh call to this method/pairFromPastedLink)
@@ -171,6 +184,19 @@ public slots:
     // live E2E testing (Task 43). pairFromParsedParams() below now sends
     // whatever this holds, empty or not, rather than always QString().
     void setDeviceToken(const QString& token);
+
+    // Called by main.cpp on every AppLockManager::lockedChanged, plus once at
+    // startup. While locked, pairFromDeepLink() refuses to enter the confirm
+    // state and confirmPendingPair() refuses to act.
+    //
+    // Pushed state rather than a pull-based probe, matching setDeviceToken()
+    // above, so no constructor signature changes. The confirm prompt is a QQC2
+    // Popup, which Qt renders inside QQuickOverlay -- above any z-ordered
+    // sibling, including the app-lock overlay at z: 1000. Gating here rather
+    // than relying on that stacking means the question does not have to be
+    // answered, and covers both the argv deep-link path and the
+    // KDBusService::activateRequested relay by construction.
+    void setAppLocked(bool locked);
 
     // Called by main.cpp with the outcome of every background
     // reregisterIfPaired() -- true only for RegistrationOutcome::
@@ -218,4 +244,5 @@ private:
     // core/util/ReentrancyGuard.h.
     bool m_inNetworkCall = false;
     bool m_reregistrationRejected = false;
+    bool m_appLocked = false;
 };

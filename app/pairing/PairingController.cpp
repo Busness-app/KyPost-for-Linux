@@ -44,12 +44,17 @@ QString deriveRegistrationUrl(const QString& serverBaseUrl)
 }
 
 // VibeSec finding: a kypost://native-pair link's `srv` accepted any scheme,
-// including http://, with no warning -- and pendingPairHost() (below)
-// strips the scheme entirely before display, so even an attentive user had
-// no way to notice they were about to pair (and send the pairing token +
-// real push deviceToken) in cleartext. https is required except for
-// loopback, which every local/self-hosted-dev pairing flow (and this
-// file's own test suite) legitimately targets over plain http.
+// including http://, with no warning -- and what the confirm dialog showed
+// stripped the scheme entirely, so even an attentive user had no way to notice
+// they were about to pair (and send the pairing token + real push deviceToken)
+// in cleartext. https is required except for loopback, which every
+// local/self-hosted-dev pairing flow (and this file's own test suite)
+// legitimately targets over plain http.
+//
+// The disclosure half of that finding is now fixed too: pendingPairOrigin()
+// below reports "scheme://host[:port]", and pendingPairInsecure() lets the
+// dialog call out the remaining legitimate cleartext (loopback) case rather
+// than letting it blend in with https.
 bool isAcceptablePairingScheme(const QUrl& url)
 {
     if (url.scheme().compare(QStringLiteral("https"), Qt::CaseInsensitive) == 0)
@@ -116,7 +121,7 @@ std::optional<ParsedPairingLink> parseNativePairLink(const QUrl& url)
     // VibeSec finding: `reg` used to be able to point the actual
     // registration POST (carrying subscriberId/pairingToken/the real push
     // deviceToken) at a completely different host than `srv` -- the only
-    // value pendingPairHost() (below) ever surfaces to the confirm dialog.
+    // value pendingPairOrigin() (below) ever surfaces to the confirm dialog.
     // Requiring reg to share srv's origin means the host the user approves
     // is always the host that's actually contacted.
     if (!parsed.registrationUrl.isEmpty()) {
@@ -177,9 +182,30 @@ QString PairingController::pairingError() const
     return m_pairingError;
 }
 
-QString PairingController::pendingPairHost() const
+QString PairingController::pendingPairOrigin() const
 {
-    return m_pendingPair.has_value() ? QUrl(m_pendingPair->serverBaseUrl).host() : QString();
+    if (!m_pendingPair.has_value())
+        return QString();
+    const QUrl url(m_pendingPair->serverBaseUrl);
+    // QUrl::authority() carries userinfo, which a hostile link could stuff with
+    // an "@"-prefixed lookalike ("https://real.example@evil.example"). Rebuild
+    // the origin from the parts that actually determine where the request goes.
+    QString origin = url.scheme() + QStringLiteral("://") + url.host();
+    if (url.port() != -1)
+        origin += QStringLiteral(":") + QString::number(url.port());
+    return origin;
+}
+
+bool PairingController::pendingPairInsecure() const
+{
+    if (!m_pendingPair.has_value())
+        return false;
+    return QUrl(m_pendingPair->serverBaseUrl).scheme().compare(QStringLiteral("http"), Qt::CaseInsensitive) == 0;
+}
+
+void PairingController::setAppLocked(bool locked)
+{
+    m_appLocked = locked;
 }
 
 QString PairingController::deliveryMode() const
@@ -224,6 +250,23 @@ void PairingController::refreshFromStore()
 
 bool PairingController::pairFromDeepLink(const QUrl& url)
 {
+    // A locked app must not raise a confirmable pairing prompt. The prompt is a
+    // QQC2 Popup, drawn inside QQuickOverlay, which Qt stacks above ordinary
+    // siblings -- including the app-lock overlay at z: 1000 -- so relying on
+    // z-order here would be relying on an implementation detail. Refusing in the
+    // controller settles it regardless of what paints on top.
+    //
+    // The request is dropped rather than queued, matching Android
+    // (PushPairingActivity is a LockedActivity and finishes on start, discarding
+    // the intent): the user re-opens the link after unlocking, and no
+    // attacker-supplied payload survives across the lock waiting for a later
+    // confirm.
+    if (m_appLocked) {
+        m_pendingPair.reset();
+        setPairingState(State::Failed, i18n("Unlock KyPost first, then open the pairing link again."));
+        return false;
+    }
+
     const std::optional<ParsedPairingLink> parsed = parseNativePairLink(url);
     if (!parsed.has_value()) {
         m_pendingPair.reset();
@@ -242,7 +285,7 @@ bool PairingController::pairFromDeepLink(const QUrl& url)
     m_pendingPair = params;
     // forceNotify=true: VibeSec fix -- m_pendingPair just changed even when
     // the state label ("confirm") didn't, e.g. a second link arriving while
-    // the confirm dialog from a first link is still open. pendingPairHost
+    // the confirm dialog from a first link is still open. pendingPairOrigin
     // is NOTIFY-bound to pairingStateChanged, so without forcing the emit
     // here the dialog would keep showing the FIRST link's host while
     // confirmPendingPair() would actually act on the SECOND link's params.
@@ -260,6 +303,14 @@ bool PairingController::confirmPendingPair()
     ReentrancyGuard guard(m_inNetworkCall);
     if (!guard.entered())
         return false;
+
+    // Re-checked here, not just in pairFromDeepLink: this covers the lock
+    // engaging while a confirm dialog is already open and visible, which is
+    // exactly the case the Popup-over-lock-overlay stacking would expose.
+    if (m_appLocked) {
+        setPairingState(State::Failed, i18n("Unlock KyPost first, then open the pairing link again."));
+        return false;
+    }
 
     if (!m_pendingPair.has_value()) {
         setPairingState(State::Failed, i18n("There is no pending pairing request to confirm."));
