@@ -97,6 +97,8 @@ add_library(kypostcore STATIC
   net/ContactPhotoClient.h
   net/PgpQrClient.cpp
   net/PgpQrClient.h
+  net/PgpBootstrapClient.cpp
+  net/PgpBootstrapClient.h
   net/RelayMailSource.cpp
   net/RelayMailSource.h
   net/NtfySubscriber.cpp
