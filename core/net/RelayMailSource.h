@@ -104,11 +104,23 @@ struct SendMailResult
     // silently sending in the clear (backend: handleMailSend's
     // `req.Sign || req.Encrypt` branch).
     //
-    // Not reachable from today's Compose UI, which sends no sign/encrypt
-    // flags -- carried so the distinction is available the moment such a
-    // toggle exists, and so this 409 is never mistaken for a generic
+    // As of this task, reachable: sendMail's sign/encrypt flags below can
+    // trigger it -- carried so this 409 is never mistaken for a generic
     // conflict.
     bool clientSideNeeded = false;
+
+    // Set when the backend refused with 409 + `keylessRecipients`: at least
+    // one recipient has no usable PGP key, and the server refused rather than
+    // quietly falling back to a one-time link that stores this message's
+    // plaintext server-side for seven days.
+    //
+    // Nothing was delivered -- the refusal happens before any SMTP
+    // (server.go:1272), so re-sending the identical request with
+    // allowPickupFallback set is safe and cannot duplicate. Distinct from
+    // clientSideNeeded above, which is the same status for a different and
+    // unrecoverable reason.
+    bool pickupFallbackNeeded = false;
+    QStringList keylessRecipients;
 };
 
 // POST /api/mail/draft response: {ok}. No sentSaved/warning -- the backend
@@ -194,7 +206,8 @@ public:
     // saves to Sent).
     SendMailResult sendMail(const QUrl& serverBaseUrl, const RelayAuth& auth, const QString& to, const QString& cc,
                              const QString& bcc, const QString& subject, const QString& body, const QString& mode,
-                             const QVector<MailAttachmentUpload>& attachments) const;
+                             const QVector<MailAttachmentUpload>& attachments, bool sign = false, bool encrypt = false,
+                             bool allowPickupFallback = false) const;
 
     // POST /api/mail/draft. Same request body as sendMail (the backend
     // decodes both with decodeMailRequest), but a much simpler response:

@@ -27,6 +27,11 @@ private slots:
     void sendMailJoinsRecipientsAndBase64EncodesAttachmentByteForByte();
     void sendMailSendsEmptyAttachmentsArrayWhenNoneProvided();
     void sendMailParsesAlwaysPresentWarningField();
+    void sendMailPutsPgpFlagsInTheRequestBody();
+    void sendMailParsesKeylessRecipient409();
+    void sendMailClientSideNeeded409IsNotAKeylessRefusal();
+    void sendMail409WithNeitherPgpFieldStaysAGenericError();
+    void sendMailMalformed409BodyDoesNotCrashTheDecode();
 
     void listAttachmentsSendsMailboxMessageIdAsQueryParamsAndAuthAsHeadersAndParsesResult();
 
@@ -443,6 +448,113 @@ void RelayMailSourceTest::downloadAttachmentMapsNotFoundFrom404()
     QVERIFY(result.error.has_value());
     QCOMPARE(*result.error, NetworkError::Server);
     QVERIFY(result.data.isEmpty());
+}
+
+void RelayMailSourceTest::sendMailPutsPgpFlagsInTheRequestBody()
+{
+    FakeRelayServer fake(httpResponse(200, "OK", R"({"ok":true,"sentSaved":true,"warning":""})"));
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    RelayMailSource source(http);
+
+    const QUrl serverBaseUrl(QStringLiteral("http://127.0.0.1:%1").arg(fake.port()));
+    const RelayAuth auth{ QStringLiteral("device-1"), QStringLiteral("secret-1") };
+    source.sendMail(serverBaseUrl, auth, QStringLiteral("a@example.com"), QString(), QString(),
+                    QStringLiteral("Hi"), QStringLiteral("Body"), QStringLiteral("plain"), {},
+                    /*sign=*/true, /*encrypt=*/true, /*allowPickupFallback=*/true);
+
+    const QJsonObject body = fake.receivedJsonBody();
+    QCOMPARE(body.value(QStringLiteral("sign")).toBool(), true);
+    QCOMPARE(body.value(QStringLiteral("encrypt")).toBool(), true);
+    QCOMPARE(body.value(QStringLiteral("allowPickupFallback")).toBool(), true);
+}
+
+void RelayMailSourceTest::sendMailParsesKeylessRecipient409()
+{
+    // Nothing was delivered: the server refuses before any SMTP, which is why
+    // re-sending with the opt-in cannot duplicate the message.
+    FakeRelayServer fake(httpResponse(
+        409, "Conflict",
+        R"({"error":"some recipients have no usable PGP key","keylessRecipients":["bob@example.com"],)"
+        R"("pickupFallbackAvailable":true})"));
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    RelayMailSource source(http);
+
+    const QUrl serverBaseUrl(QStringLiteral("http://127.0.0.1:%1").arg(fake.port()));
+    const RelayAuth auth{ QStringLiteral("device-1"), QStringLiteral("secret-1") };
+    const SendMailResult result =
+        source.sendMail(serverBaseUrl, auth, QStringLiteral("bob@example.com"), QString(), QString(),
+                        QStringLiteral("Hi"), QStringLiteral("Body"), QStringLiteral("plain"), {},
+                        /*sign=*/false, /*encrypt=*/true, /*allowPickupFallback=*/false);
+
+    QCOMPARE(result.ok, false);
+    QCOMPARE(result.pickupFallbackNeeded, true);
+    QCOMPARE(result.keylessRecipients, QStringList{ QStringLiteral("bob@example.com") });
+    // The two PGP refusals share a status code and are told apart by field.
+    QCOMPARE(result.clientSideNeeded, false);
+}
+
+void RelayMailSourceTest::sendMailClientSideNeeded409IsNotAKeylessRefusal()
+{
+    FakeRelayServer fake(httpResponse(
+        409, "Conflict",
+        R"({"error":"this account's PGP key is end-to-end protected","clientSideNeeded":true})"));
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    RelayMailSource source(http);
+
+    const QUrl serverBaseUrl(QStringLiteral("http://127.0.0.1:%1").arg(fake.port()));
+    const RelayAuth auth{ QStringLiteral("device-1"), QStringLiteral("secret-1") };
+    const SendMailResult result =
+        source.sendMail(serverBaseUrl, auth, QStringLiteral("bob@example.com"), QString(), QString(),
+                        QStringLiteral("Hi"), QStringLiteral("Body"), QStringLiteral("plain"), {},
+                        /*sign=*/false, /*encrypt=*/true, /*allowPickupFallback=*/false);
+
+    QCOMPARE(result.clientSideNeeded, true);
+    QCOMPARE(result.pickupFallbackNeeded, false);
+    QVERIFY(result.keylessRecipients.isEmpty());
+}
+
+void RelayMailSourceTest::sendMail409WithNeitherPgpFieldStaysAGenericError()
+{
+    // A 409 that is neither PGP refusal must not inherit PGP wording or set
+    // either flag -- otherwise an unrelated future conflict would open the
+    // plaintext-link dialog.
+    FakeRelayServer fake(httpResponse(409, "Conflict", R"({"error":"something else entirely"})"));
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    RelayMailSource source(http);
+
+    const QUrl serverBaseUrl(QStringLiteral("http://127.0.0.1:%1").arg(fake.port()));
+    const RelayAuth auth{ QStringLiteral("device-1"), QStringLiteral("secret-1") };
+    const SendMailResult result =
+        source.sendMail(serverBaseUrl, auth, QStringLiteral("bob@example.com"), QString(), QString(),
+                        QStringLiteral("Hi"), QStringLiteral("Body"), QStringLiteral("plain"), {},
+                        /*sign=*/false, /*encrypt=*/true, /*allowPickupFallback=*/false);
+
+    QCOMPARE(result.pickupFallbackNeeded, false);
+    QCOMPARE(result.clientSideNeeded, false);
+    QCOMPARE(result.detail, QStringLiteral("something else entirely"));
+}
+
+void RelayMailSourceTest::sendMailMalformed409BodyDoesNotCrashTheDecode()
+{
+    FakeRelayServer fake(httpResponse(409, "Conflict", "not json at all", "text/plain"));
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    RelayMailSource source(http);
+
+    const QUrl serverBaseUrl(QStringLiteral("http://127.0.0.1:%1").arg(fake.port()));
+    const RelayAuth auth{ QStringLiteral("device-1"), QStringLiteral("secret-1") };
+    const SendMailResult result =
+        source.sendMail(serverBaseUrl, auth, QStringLiteral("bob@example.com"), QString(), QString(),
+                        QStringLiteral("Hi"), QStringLiteral("Body"), QStringLiteral("plain"), {},
+                        /*sign=*/false, /*encrypt=*/true, /*allowPickupFallback=*/false);
+
+    QCOMPARE(result.pickupFallbackNeeded, false);
+    QCOMPARE(result.clientSideNeeded, false);
+    QVERIFY(!result.detail.isEmpty());
 }
 
 QTEST_GUILESS_MAIN(RelayMailSourceTest)

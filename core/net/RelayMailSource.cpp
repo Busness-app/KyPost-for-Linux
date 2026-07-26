@@ -229,9 +229,15 @@ ActionResult RelayMailSource::performAction(const QUrl& serverBaseUrl, const Rel
 SendMailResult RelayMailSource::sendMail(const QUrl& serverBaseUrl, const RelayAuth& auth, const QString& to,
                                           const QString& cc, const QString& bcc, const QString& subject,
                                           const QString& body, const QString& mode,
-                                          const QVector<MailAttachmentUpload>& attachments) const
+                                          const QVector<MailAttachmentUpload>& attachments, bool sign, bool encrypt,
+                                          bool allowPickupFallback) const
 {
-    const QJsonObject requestBody = mailRequestBody(to, cc, bcc, subject, body, mode, attachments);
+    QJsonObject requestBody = mailRequestBody(to, cc, bcc, subject, body, mode, attachments);
+    // Inserted here rather than inside mailRequestBody() because saveDraft()
+    // shares that helper and the draft handler ignores these fields.
+    requestBody.insert(QStringLiteral("sign"), sign);
+    requestBody.insert(QStringLiteral("encrypt"), encrypt);
+    requestBody.insert(QStringLiteral("allowPickupFallback"), allowPickupFallback);
 
     const HttpClient::HttpResult result = m_httpClient.post(
         joinUrlPath(serverBaseUrl, QStringLiteral("api/mail/send")), {}, requestBody, auth.headerItems());
@@ -251,7 +257,25 @@ SendMailResult RelayMailSource::sendMail(const QUrl& serverBaseUrl, const RelayA
         const std::optional<QJsonObject> errorJson = decodeJsonObject(result.body, &decodeError);
         if (errorJson.has_value()) {
             bodyError = errorJson->value(QStringLiteral("error")).toString();
+            // Order matches the server's own: a client-custody account is
+            // refused at server.go:1207, before the keyless gate at :1272, so
+            // the two never arrive together. Checking clientSideNeeded first
+            // means a future server that did send both still reports the
+            // unrecoverable one.
             out.clientSideNeeded = errorJson->value(QStringLiteral("clientSideNeeded")).toBool();
+            if (!out.clientSideNeeded) {
+                const QJsonArray keyless = errorJson->value(QStringLiteral("keylessRecipients")).toArray();
+                for (const QJsonValue& value : keyless) {
+                    const QString address = value.toString();
+                    if (!address.isEmpty())
+                        out.keylessRecipients.append(address);
+                }
+                // Driven by the field's presence, not by pickupFallbackAvailable:
+                // the server sets that to a constant true, so treating it as the
+                // trigger would add a dependency on a value that carries no
+                // information.
+                out.pickupFallbackNeeded = !out.keylessRecipients.isEmpty();
+            }
         }
 
         if (!result.detail.isEmpty())
