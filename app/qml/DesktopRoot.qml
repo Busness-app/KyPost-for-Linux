@@ -709,6 +709,11 @@ Kirigami.ApplicationWindow {
                 initialBodyIsHtml: true
                 isPoppedOut: true
                 onSendSucceeded: composeWindow.close()
+                // No MailApp.sendWarning sink here: this Window closes on
+                // sendSucceeded(), so any notice parented to it would be
+                // destroyed in the same turn it appeared. The main window owns
+                // that sink -- see the "send warnings" block near the bottom of
+                // this file for the full reasoning and its one limitation.
             }
 
             // See the matching Rectangle in emailWindowComponent above --
@@ -1373,6 +1378,46 @@ Kirigami.ApplicationWindow {
             }
         }
     }
+    // ---- send warnings ---------------------------------------------------
+    // MailApp.sendWarning means the message WAS sent, with partial trouble
+    // (the Sent copy failed, or a pickup link did not reach every recipient).
+    // Shown as a notice, never as a failure, and never with a retry that would
+    // duplicate it.
+    //
+    // The sink lives HERE rather than in Compose.qml because a warning only
+    // ever accompanies a successful send, and this file answers Compose's
+    // sendSucceeded() by closing the detail pane (destroying the composer) --
+    // a notice parented to it would be torn down in the same turn it appeared.
+    // MailApp is a singleton, so this receives the warning whichever composer
+    // sent.
+    //
+    // Known limitation, stated rather than papered over: this Toast is a child
+    // of THIS window, so it cannot render over the pop-out compose Window
+    // (composeWindowComponent above), which is a separate top-level window. A
+    // second Toast inside that Window would not help -- the pop-out closes
+    // itself on sendSucceeded(), in the same turn the warning arrives, which
+    // is the exact "doomed component" problem that moved this sink out of
+    // Compose.qml in the first place. So for a pop-out send the notice appears
+    // here, on the main window, which the user is returned to as the pop-out
+    // disappears. It is missed only if the main window is minimized or fully
+    // occluded for the Toast's 2.5s lifetime; fixing that properly needs a
+    // persistent, window-independent notification surface this app does not
+    // have yet.
+    Connections {
+        target: MailApp
+        function onSendWarning(warning) {
+            sendWarningToast.show(warning)
+        }
+    }
+
+    Toast {
+        id: sendWarningToast
+        z: 900 // under the app-lock overlay (1000), over every pane
+        anchors.bottom: parent.bottom
+        anchors.bottomMargin: 24
+        anchors.horizontalCenter: parent.horizontalCenter
+    }
+
     // ---- app lock -----------------------------------------------------
     // Highest z in the window and anchored over everything, so no mail,
     // subject line or contact is readable behind it. Loader, so the PIN

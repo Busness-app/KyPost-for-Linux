@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: kypost\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-07-26 09:16-0400\n"
+"POT-Creation-Date: 2026-07-26 10:57-0400\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -112,51 +112,51 @@ msgstr ""
 msgid "Could not save draft"
 msgstr ""
 
-#: app/mail/MailController.cpp:478
+#: app/mail/MailController.cpp:500
 #, kde-format
 msgid ""
 "This account's PGP key is held only in your browser, so this app cannot "
 "encrypt on its behalf. Continue in webmail to send it."
 msgstr ""
 
-#: app/mail/MailController.cpp:486
+#: app/mail/MailController.cpp:508 app/mail/MailController.cpp:554
 #, kde-format
 msgid "Could not send message"
 msgstr ""
 
-#: app/mail/MailController.cpp:603
+#: app/mail/MailController.cpp:688
 #, kde-format
 msgid ""
 "This device is paired over an insecure connection, so KyPost cannot open "
 "webmail for you. Open your mail in a browser to send this message."
 msgstr ""
 
-#: app/mail/MailController.cpp:610
+#: app/mail/MailController.cpp:695
 #, kde-format
 msgid "Saved to Drafts, but KyPost could not open your browser."
 msgstr ""
 
-#: app/mail/MailController.cpp:628
+#: app/mail/MailController.cpp:713
 #, kde-format
 msgid "Could not list attachments"
 msgstr ""
 
-#: app/mail/MailController.cpp:677
+#: app/mail/MailController.cpp:762
 #, kde-format
 msgid "Download failed"
 msgstr ""
 
-#: app/mail/MailController.cpp:705
+#: app/mail/MailController.cpp:790
 #, kde-format
 msgid "Could not write attachment to %1"
 msgstr ""
 
-#: app/mail/MailController.cpp:735
+#: app/mail/MailController.cpp:820
 #, kde-format
 msgid "Could not create a temporary location for the attachment"
 msgstr ""
 
-#: app/mail/MailController.cpp:743
+#: app/mail/MailController.cpp:828
 #, kde-format
 msgid "Could not open the attachment"
 msgstr ""
@@ -307,7 +307,7 @@ msgid "View"
 msgstr ""
 
 #: app/qml/components/AddressBookPickerDialog.qml:86
-#: app/qml/pages/Compose.qml:287
+#: app/qml/pages/Compose.qml:309
 msgid "Address Book"
 msgstr ""
 
@@ -330,7 +330,7 @@ msgid "✓ To"
 msgstr ""
 
 #: app/qml/components/AddressBookPickerDialog.qml:172
-#: app/qml/pages/Compose.qml:281
+#: app/qml/pages/Compose.qml:303
 msgid "To"
 msgstr ""
 
@@ -339,7 +339,7 @@ msgid "✓ Cc"
 msgstr ""
 
 #: app/qml/components/AddressBookPickerDialog.qml:176
-#: app/qml/pages/Compose.qml:294
+#: app/qml/pages/Compose.qml:316
 msgid "Cc"
 msgstr ""
 
@@ -348,7 +348,7 @@ msgid "✓ Bcc"
 msgstr ""
 
 #: app/qml/components/AddressBookPickerDialog.qml:180
-#: app/qml/pages/Compose.qml:302
+#: app/qml/pages/Compose.qml:324
 msgid "Bcc"
 msgstr ""
 
@@ -382,7 +382,7 @@ msgid "Style as button"
 msgstr ""
 
 #: app/qml/components/HyperlinkDialog.qml:130
-#: app/qml/components/PickupFallbackDialog.qml:116 app/qml/DesktopRoot.qml:356
+#: app/qml/components/PickupFallbackDialog.qml:148 app/qml/DesktopRoot.qml:356
 #: app/qml/DesktopRoot.qml:430 app/qml/DesktopRoot.qml:513
 #: app/qml/pages/ContactDetail.qml:724 app/qml/pages/Pairing.qml:160
 #: app/qml/pages/Settings.qml:811
@@ -393,11 +393,11 @@ msgstr ""
 msgid "Insert"
 msgstr ""
 
-#: app/qml/components/PickupFallbackDialog.qml:85
+#: app/qml/components/PickupFallbackDialog.qml:117
 msgid "Send an unencrypted link?"
 msgstr ""
 
-#: app/qml/components/PickupFallbackDialog.qml:93
+#: app/qml/components/PickupFallbackDialog.qml:125
 msgid ""
 "We don't have a PGP key for %2. They'll get an email with a one-time link "
 "instead."
@@ -407,14 +407,14 @@ msgid_plural ""
 msgstr[0] ""
 msgstr[1] ""
 
-#: app/qml/components/PickupFallbackDialog.qml:105
+#: app/qml/components/PickupFallbackDialog.qml:137
 msgid ""
 "To make that work, this message's contents are stored on your KyPost server "
 "— unencrypted — for up to 7 days or until the link is opened. Everyone else "
 "on this message still gets it encrypted."
 msgstr ""
 
-#: app/qml/components/PickupFallbackDialog.qml:120
+#: app/qml/components/PickupFallbackDialog.qml:152
 msgid "Send link anyway"
 msgstr ""
 
@@ -464,8 +464,8 @@ msgid ""
 "be undone."
 msgstr ""
 
-#: app/qml/DesktopRoot.qml:434 app/qml/DesktopRoot.qml:1280
-#: app/qml/MobileRoot.qml:698 app/qml/pages/ContactDetail.qml:443
+#: app/qml/DesktopRoot.qml:434 app/qml/DesktopRoot.qml:1285
+#: app/qml/MobileRoot.qml:724 app/qml/pages/ContactDetail.qml:443
 #: app/qml/pages/EmailDetail.qml:359
 msgid "Delete"
 msgstr ""
@@ -493,174 +493,174 @@ msgstr ""
 msgid "Email"
 msgstr ""
 
-#: app/qml/DesktopRoot.qml:698 app/qml/DesktopRoot.qml:840
-#: app/qml/MobileRoot.qml:227 app/qml/MobileRoot.qml:420
+#: app/qml/DesktopRoot.qml:698 app/qml/DesktopRoot.qml:845
+#: app/qml/MobileRoot.qml:253 app/qml/MobileRoot.qml:446
 msgid "Compose"
 msgstr ""
 
-#: app/qml/DesktopRoot.qml:737 app/qml/MobileRoot.qml:269
+#: app/qml/DesktopRoot.qml:742 app/qml/MobileRoot.qml:295
 msgid "Contact"
 msgstr ""
 
-#: app/qml/DesktopRoot.qml:836
+#: app/qml/DesktopRoot.qml:841
 msgid "Show Detail"
 msgstr ""
 
-#: app/qml/DesktopRoot.qml:836
+#: app/qml/DesktopRoot.qml:841
 msgid "Hide Detail"
 msgstr ""
 
-#: app/qml/DesktopRoot.qml:844 app/qml/MobileRoot.qml:363
-#: app/qml/MobileRoot.qml:382 app/qml/pages/Settings.qml:84
+#: app/qml/DesktopRoot.qml:849 app/qml/MobileRoot.qml:389
+#: app/qml/MobileRoot.qml:408 app/qml/pages/Settings.qml:84
 msgid "Settings"
 msgstr ""
 
-#: app/qml/DesktopRoot.qml:889
+#: app/qml/DesktopRoot.qml:894
 msgid "Mail"
 msgstr ""
 
-#: app/qml/DesktopRoot.qml:958
+#: app/qml/DesktopRoot.qml:963
 msgid "New Subfolder…"
 msgstr ""
 
-#: app/qml/DesktopRoot.qml:966
+#: app/qml/DesktopRoot.qml:971
 msgid "Rename…"
 msgstr ""
 
-#: app/qml/DesktopRoot.qml:971
+#: app/qml/DesktopRoot.qml:976
 msgid "Delete Folder…"
 msgstr ""
 
-#: app/qml/DesktopRoot.qml:981
+#: app/qml/DesktopRoot.qml:986
 msgid "People"
 msgstr ""
 
-#: app/qml/DesktopRoot.qml:1010 app/qml/MobileRoot.qml:247
-#: app/qml/MobileRoot.qml:426 app/qml/pages/ContactsList.qml:57
+#: app/qml/DesktopRoot.qml:1015 app/qml/MobileRoot.qml:273
+#: app/qml/MobileRoot.qml:452 app/qml/pages/ContactsList.qml:57
 #: app/qml/pages/Settings.qml:57
 msgid "Contacts"
 msgstr ""
 
-#: app/qml/DesktopRoot.qml:1085 app/qml/MobileRoot.qml:500
+#: app/qml/DesktopRoot.qml:1090 app/qml/MobileRoot.qml:526
 #: app/qml/pages/PgpMyQrCode.qml:127
 msgid "Refresh"
 msgstr ""
 
-#: app/qml/DesktopRoot.qml:1120 app/qml/MobileRoot.qml:542
+#: app/qml/DesktopRoot.qml:1125 app/qml/MobileRoot.qml:568
 msgid "All"
 msgstr ""
 
-#: app/qml/DesktopRoot.qml:1127 app/qml/MobileRoot.qml:553
+#: app/qml/DesktopRoot.qml:1132 app/qml/MobileRoot.qml:579
 #: app/qml/pages/EmailDetail.qml:610
 msgid "%1 (%2)"
 msgstr ""
 
-#: app/qml/DesktopRoot.qml:1149 app/qml/MobileRoot.qml:576
+#: app/qml/DesktopRoot.qml:1154 app/qml/MobileRoot.qml:602
 msgid "No emails yet — tap Refresh."
 msgstr ""
 
-#: app/qml/DesktopRoot.qml:1335
+#: app/qml/DesktopRoot.qml:1340
 msgid "Select an email"
 msgstr ""
 
-#: app/qml/DesktopRoot.qml:1335
+#: app/qml/DesktopRoot.qml:1340
 msgid "Select a contact"
 msgstr ""
 
-#: app/qml/MobileRoot.qml:199
+#: app/qml/MobileRoot.qml:225
 msgctxt "page title for viewing a single email message"
 msgid "Email"
 msgstr ""
 
-#: app/qml/MobileRoot.qml:293 app/qml/pages/PgpMyQrCode.qml:70
+#: app/qml/MobileRoot.qml:319 app/qml/pages/PgpMyQrCode.qml:70
 #: app/qml/pages/Settings.qml:385
 msgid "My PGP QR Code"
 msgstr ""
 
-#: app/qml/MobileRoot.qml:307
+#: app/qml/MobileRoot.qml:333
 msgid "Scan Contact Key"
 msgstr ""
 
-#: app/qml/MobileRoot.qml:344 app/qml/MobileRoot.qml:378
+#: app/qml/MobileRoot.qml:370 app/qml/MobileRoot.qml:404
 #: app/qml/pages/Pairing.qml:63
 msgid "Pair Device"
 msgstr ""
 
-#: app/qml/MobileRoot.qml:414 app/qml/MobileRoot.qml:437
+#: app/qml/MobileRoot.qml:440 app/qml/MobileRoot.qml:463
 msgid "Inbox"
 msgstr ""
 
-#: app/qml/MobileRoot.qml:489
+#: app/qml/MobileRoot.qml:515
 msgid "Folder: %1"
 msgstr ""
 
-#: app/qml/MobileRoot.qml:742 app/qml/pages/EmailDetail.qml:341
+#: app/qml/MobileRoot.qml:768 app/qml/pages/EmailDetail.qml:341
 msgid "Archive"
 msgstr ""
 
-#: app/qml/pages/Compose.qml:154
+#: app/qml/pages/Compose.qml:170
 msgid "Saved to Drafts — continue in your browser"
 msgstr ""
 
-#: app/qml/pages/Compose.qml:170
+#: app/qml/pages/Compose.qml:186
 msgid "Please fill in all fields"
 msgstr ""
 
-#: app/qml/pages/Compose.qml:201
+#: app/qml/pages/Compose.qml:223
 msgid "Draft saved"
 msgstr ""
 
-#: app/qml/pages/Compose.qml:265 app/qml/pages/ContactDetail.qml:353
+#: app/qml/pages/Compose.qml:287 app/qml/pages/ContactDetail.qml:353
 #: app/qml/pages/EmailDetail.qml:381
 msgid "Open in New Window"
 msgstr ""
 
-#: app/qml/pages/Compose.qml:284 app/qml/pages/Compose.qml:297
-#: app/qml/pages/Compose.qml:305
+#: app/qml/pages/Compose.qml:306 app/qml/pages/Compose.qml:319
+#: app/qml/pages/Compose.qml:327
 msgid "%1 is already added"
 msgstr ""
 
-#: app/qml/pages/Compose.qml:310
+#: app/qml/pages/Compose.qml:332
 msgid "Subject"
 msgstr ""
 
-#: app/qml/pages/Compose.qml:326 app/qml/pages/Compose.qml:504
+#: app/qml/pages/Compose.qml:348 app/qml/pages/Compose.qml:533
 msgid "Attach files"
 msgstr ""
 
-#: app/qml/pages/Compose.qml:390
+#: app/qml/pages/Compose.qml:412
 msgid "Encrypt"
 msgstr ""
 
-#: app/qml/pages/Compose.qml:407
+#: app/qml/pages/Compose.qml:436
 msgid "Sign"
 msgstr ""
 
-#: app/qml/pages/Compose.qml:429
+#: app/qml/pages/Compose.qml:458
 msgid "We don't have a PGP key on file for %2."
 msgid_plural "We don't have PGP keys on file for %2."
 msgstr[0] ""
 msgstr[1] ""
 
-#: app/qml/pages/Compose.qml:449
+#: app/qml/pages/Compose.qml:478
 msgid ""
 "This account's PGP key is stored only in your browser, so this app can't "
 "encrypt on its behalf."
 msgstr ""
 
-#: app/qml/pages/Compose.qml:459
+#: app/qml/pages/Compose.qml:488
 msgid "Continue in webmail"
 msgstr ""
 
-#: app/qml/pages/Compose.qml:483
+#: app/qml/pages/Compose.qml:512
 msgid "Sending…"
 msgstr ""
 
-#: app/qml/pages/Compose.qml:490
+#: app/qml/pages/Compose.qml:519
 msgid "Save Draft"
 msgstr ""
 
-#: app/qml/pages/Compose.qml:495
+#: app/qml/pages/Compose.qml:524
 msgid "Send"
 msgstr ""
 

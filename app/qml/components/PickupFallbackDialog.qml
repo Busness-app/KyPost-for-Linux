@@ -16,9 +16,11 @@ import com.urlxl.mail 1.0
 //
 // Same overlay-Item shape as HyperlinkDialog.qml / AddressBookPickerDialog.qml
 // (there is no QtQuick.Controls.Dialog precedent in this codebase). Cancel is
-// the safe path and is reachable three ways: the Cancel button, tapping the
-// scrim, and simply not confirming -- the affirmative action is the only one
-// that requires a deliberate press on a distinct button.
+// the safe path and is reachable four ways: the Cancel button, tapping the
+// scrim, Escape, and simply not confirming -- the affirmative action is the
+// only one that requires a deliberate press on a distinct button. No button
+// takes focus, so no keystroke can trigger the affirmative action either;
+// that asymmetry is deliberate, not an oversight of the overlay-Item shape.
 Item {
     id: root
 
@@ -26,18 +28,35 @@ Item {
     // The server's own list of addresses with no usable key, as delivered by
     // MailController::pickupFallbackRequired.
     property var recipients: []
+    // MailController's identifier for the one pending send this dialog is
+    // asking about, handed straight back on confirm so a confirmation cannot
+    // resolve some other composition's refusal. `var` rather than a typed
+    // property because QML has no native quint64; it crosses the bridge as a
+    // JS number, exact for any value this counter can reach.
+    property var token: 0
 
-    signal confirmed()
+    signal confirmed(var token)
     signal cancelled()
 
-    function open(addresses) {
+    function open(pendingSendToken, addresses) {
+        root.token = pendingSendToken
         root.recipients = addresses
         root.isOpen = true
+        // Escape below only works with active focus, and this overlay is
+        // created (not pushed onto a focus-managing stack), so claim it here.
+        // Not handed back on close: the composer's previously-focused field is
+        // not recorded, and the one field that usually holds focus is a
+        // WebEngineView whose caret does not reliably survive a
+        // forceActiveFocus() round trip. Cancelling therefore leaves keyboard
+        // focus unset until the user clicks a field -- a deliberate trade for
+        // making Escape work at all.
+        panel.forceActiveFocus()
     }
 
     function close() {
         root.isOpen = false
         root.recipients = []
+        root.token = 0
     }
 
     // Cancelling drops the composition's cached plaintext rather than holding
@@ -47,9 +66,14 @@ Item {
         root.close()
     }
 
+    // Closes BEFORE emitting, and carries the token in the signal rather than
+    // leaving the handler to read it back off this dialog: confirming kicks
+    // off a synchronous send, so the dialog must already be gone, and close()
+    // resets the property.
     function confirm() {
-        root.confirmed()
+        const confirmedToken = root.token
         root.close()
+        root.confirmed(confirmedToken)
     }
 
     visible: root.isOpen
@@ -65,6 +89,7 @@ Item {
     }
 
     Rectangle {
+        id: panel
         anchors.centerIn: parent
         width: 360
         implicitHeight: content.implicitHeight + 32
@@ -72,6 +97,13 @@ Item {
         color: Theme.panel
         border.width: 1
         border.color: Theme.line
+
+        // Escape cancels, the same as the Cancel button and the scrim: the
+        // safe path is the one a reflex keystroke can reach.
+        Keys.onEscapePressed: function (event) {
+            root.cancel()
+            event.accepted = true
+        }
 
         TapHandler {} // swallow taps -- keeps them from reaching the scrim behind
 

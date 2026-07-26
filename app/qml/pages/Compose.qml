@@ -56,6 +56,22 @@ Item {
     property var attachmentPaths: []
     property string validationError: ""
 
+    // True only for the duration of a MailApp.sendMail() /
+    // MailApp.confirmPickupFallbackSend() call made by THIS instance.
+    //
+    // MailApp is a QML singleton, so its pickupFallbackRequired/sendWarning
+    // signals reach every live Compose -- and two coexist easily (a pop-out
+    // compose window plus Ctrl+N in the main window). MailController emits
+    // pickupFallbackRequired synchronously, from inside sendMail(), so the
+    // only instance with that call on its stack is the true owner of the
+    // refusal; this flag is how the handler below asks "is this signal mine?".
+    //
+    // The token carried alongside answers the different question "is this
+    // confirmation still valid?" -- see MailController's own comment. Both are
+    // needed: the flag cannot tell that a pending send has been replaced, and
+    // the token cannot stop the wrong window from opening a dialog.
+    property bool sendInFlight: false
+
     // Recipient fields joined into one value purely so a single change handler
     // can debounce the PGP key preflight. Watching the three TokenFields'
     // joinedText is enough -- every way an address enters or leaves a field
@@ -175,9 +191,15 @@ Item {
             // one-time-link fallback also returns false, and arrives as
             // MailApp.pickupFallbackRequired (see the Connections block below),
             // which opens the confirmation instead of reporting an error.
+            //
+            // sendInFlight is set immediately around the call, in this one JS
+            // block, because pickupFallbackRequired arrives DURING it (see the
+            // property's own comment).
+            root.sendInFlight = true
             const ok = MailApp.sendMail(toField.joinedText, ccField.joinedText, bccField.joinedText,
                                          subjectField.text, result.html, root.attachmentPaths,
                                          signToggle.checked, encryptToggle.checked)
+            root.sendInFlight = false
             if (ok)
                 root.sendSucceeded()
         })
@@ -398,8 +420,15 @@ Item {
                 }
                 // Turning it on is the first moment the preflight has any
                 // meaning, so ask then rather than waiting for the next
-                // recipient edit.
-                onCheckedChanged: if (checked) preflightTimer.restart()
+                // recipient edit. Turning it off cancels a pending debounce:
+                // the warning it would produce is not shown while Encrypt is
+                // off, so the request would be pure waste.
+                onCheckedChanged: {
+                    if (checked)
+                        preflightTimer.restart()
+                    else
+                        preflightTimer.stop()
+                }
             }
             CheckBox {
                 id: signToggle
@@ -549,11 +578,19 @@ Item {
     PickupFallbackDialog {
         id: pickupFallbackDialog
         z: 40
-        onConfirmed: {
+        onConfirmed: function (token) {
             // Re-sends the exact payload the server refused, with the opt-in
             // set. Nothing is rebuilt here on purpose -- MailController holds
             // the original request so the confirmed send is byte-identical.
-            if (MailApp.confirmPickupFallbackSend())
+            // The token proves that request is still the one it refused.
+            //
+            // Bracketed with sendInFlight for the same reason trySend() is: a
+            // sendWarning from this confirmed re-send must be attributed to
+            // this instance.
+            root.sendInFlight = true
+            const ok = MailApp.confirmPickupFallbackSend(token)
+            root.sendInFlight = false
+            if (ok)
                 root.sendSucceeded()
         }
         onCancelled: MailApp.discardPendingSend()
@@ -565,16 +602,21 @@ Item {
         // The relay refused an encrypted send because at least one recipient has
         // no usable key. Nothing was delivered, so confirming is safe and cannot
         // duplicate the message.
-        function onPickupFallbackRequired(recipients) {
-            pickupFallbackDialog.open(recipients)
+        //
+        // The guard is load-bearing, not defensive: without it every live
+        // Compose opens this dialog naming the sending window's addresses, and
+        // a confirmation given in the wrong window would send the OTHER
+        // window's message while destroying this one's unsent draft.
+        function onPickupFallbackRequired(token, recipients) {
+            if (!root.sendInFlight)
+                return
+            pickupFallbackDialog.open(token, recipients)
         }
 
-        // The message WAS sent, with partial trouble (the Sent copy failed, or a
-        // pickup link did not reach everyone). Shown as a notice, never as a
-        // failure, and never with a retry that would duplicate it.
-        function onSendWarning(warning) {
-            toast.show(warning)
-        }
+        // No onSendWarning here on purpose. A warning only ever accompanies a
+        // SUCCESSFUL send, and the hosts answer sendSucceeded() by destroying
+        // this component -- so a notice shown here would die in the same turn
+        // it appeared. MobileRoot.qml / DesktopRoot.qml own that sink.
     }
 
     Toast {

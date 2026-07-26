@@ -181,6 +181,32 @@ Kirigami.ApplicationWindow {
         }
     }
 
+    // ---- send warnings ---------------------------------------------------
+    // MailApp.sendWarning means the message WAS sent, with partial trouble
+    // (the Sent copy failed, or a pickup link did not reach every recipient).
+    // Shown as a notice, never as a failure, and never with a retry that would
+    // duplicate it.
+    //
+    // The sink lives HERE rather than in Compose.qml because a warning only
+    // ever accompanies a successful send, and this file answers Compose's
+    // sendSucceeded() by popping (destroying) it -- a notice parented to the
+    // composer would be torn down in the same turn it appeared. MailApp is a
+    // singleton, so this receives the warning whichever composer sent.
+    Connections {
+        target: MailApp
+        function onSendWarning(warning) {
+            sendWarningToast.show(warning)
+        }
+    }
+
+    Toast {
+        id: sendWarningToast
+        z: 900 // under the app-lock overlay (1000), over every page
+        anchors.bottom: parent.bottom
+        anchors.bottomMargin: 24
+        anchors.horizontalCenter: parent.horizontalCenter
+    }
+
     // ---- pushed-page wrappers -------------------------------------------
     // Each Component wraps one of Tasks 35-37's plain-Item page components
     // in a thin Kirigami.Page shell (Phase 6 global constraint 4), pushed

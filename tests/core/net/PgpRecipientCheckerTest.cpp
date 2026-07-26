@@ -17,6 +17,7 @@ private slots:
     void reportsOnlyTheAddressesWithNoUsableKey();
     void sendsTheAddressesInTheRequestBody();
     void revokedKeyIsAlreadyKeylessWithoutReDerivation();
+    void revokedFlagAloneNeverMakesAKeyedRecipientKeyless();
     void failureIsNotAnEmptyKeylessList();
 };
 
@@ -76,6 +77,32 @@ void PgpRecipientCheckerTest::revokedKeyIsAlreadyKeylessWithoutReDerivation()
         checker.check(serverBaseUrl, auth, QStringList{ QStringLiteral("dave@example.com") });
 
     QCOMPARE(result.keylessRecipients, QStringList{ QStringLiteral("dave@example.com") });
+}
+
+// The falsifying inverse of the test above, and the one that actually pins
+// "never re-derive keylessness from revoked/expired": hasKey is the ONLY input.
+// A response saying hasKey: true, revoked: true is self-contradictory by the
+// server's own rule (hasKey comes from ks.Usable()), and this client must
+// still take hasKey at its word rather than second-guessing it from the
+// advisory flags -- a client that OR-ed revoked/expired in would warn about
+// recipients the send path will happily encrypt to, and the warning's whole
+// contract is that it is a lower bound, never a prediction.
+void PgpRecipientCheckerTest::revokedFlagAloneNeverMakesAKeyedRecipientKeyless()
+{
+    FakeRelayServer fake(httpResponse(200, "OK", R"({"results":[
+        {"address":"erin@example.com","hasKey":true,"revoked":true,"expired":true,"tier":"contact-verified"}
+    ]})"));
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    PgpRecipientChecker checker(http);
+
+    const QUrl serverBaseUrl(QStringLiteral("http://127.0.0.1:%1").arg(fake.port()));
+    const RelayAuth auth{ QStringLiteral("device-1"), QStringLiteral("secret-1") };
+    const RecipientKeyCheckResult result =
+        checker.check(serverBaseUrl, auth, QStringList{ QStringLiteral("erin@example.com") });
+
+    QCOMPARE(result.ok, true);
+    QVERIFY(result.keylessRecipients.isEmpty());
 }
 
 // A failed preflight must not read as "everyone has a key". It is only an

@@ -22,6 +22,8 @@
 
 #include <QDir>
 #include <QFile>
+#include <QJsonArray>
+#include <QJsonObject>
 #include <QNetworkAccessManager>
 #include <QSignalSpy>
 #include <QStandardPaths>
@@ -45,6 +47,10 @@ private slots:
     void confirmPickupFallbackSendResendsTheIdenticalBodyWithTheOptIn();
     void confirmPickupFallbackSendWithoutAPendingSendDoesNothing();
     void sendMailSurfacesAWarningOnAnOtherwiseSuccessfulSend();
+    void sendMailClientSideNeededHandsOffAndOffersNoToggles();
+    void openWebmailDraftsRefusesAnInsecurePairingBeforeSavingAnything();
+    void refreshPgpComposeStateFailureHidesEveryControl();
+    void preflightRecipientsFailureClearsRatherThanReassures();
 
 private:
     static void savePairing(PairingStore& pairingStore, quint16 port);
@@ -601,7 +607,10 @@ void MailControllerTest::sendMailEmitsPickupFallbackRequiredWithTheServersAddres
 
     QCOMPARE(sent, false);
     QCOMPARE(spy.count(), 1);
-    QCOMPARE(spy.at(0).at(0).toStringList(), QStringList{ QStringLiteral("bob@example.com") });
+    QCOMPARE(spy.at(0).at(1).toStringList(), QStringList{ QStringLiteral("bob@example.com") });
+    // The token names the one pending send this refusal belongs to. Never 0:
+    // a default-constructed PendingSend must not be able to match it.
+    QVERIFY(spy.at(0).at(0).value<quint64>() != 0);
 }
 
 void MailControllerTest::confirmPickupFallbackSendResendsTheIdenticalBodyWithTheOptIn()
@@ -642,14 +651,48 @@ void MailControllerTest::confirmPickupFallbackSendResendsTheIdenticalBodyWithThe
     MailController controller(mailRepository, source, keywordRepository, pairingStore, folderRepository,
                                settingsStore, bootstrapClient, recipientChecker);
 
+    // A REAL attachment, deleted between the refusal and the confirm. This is
+    // the assertion the whole PendingSend cache exists to satisfy: with an
+    // empty attachment list the test could not tell "the cache held the bytes"
+    // apart from "there were never any bytes", and rebuilding the payload from
+    // the QML fields on confirm would re-read this path and fail here.
+    QTemporaryDir attachmentDir;
+    QVERIFY(attachmentDir.isValid());
+    const QString attachmentPath = attachmentDir.filePath(QStringLiteral("note.txt"));
+    const QByteArray originalBytes = "the-bytes-the-user-reviewed";
+    {
+        QFile attachment(attachmentPath);
+        QVERIFY(attachment.open(QIODevice::WriteOnly));
+        QCOMPARE(attachment.write(originalBytes), static_cast<qint64>(originalBytes.size()));
+    }
+
+    QSignalSpy fallbackSpy(&controller, &MailController::pickupFallbackRequired);
     QVERIFY(!controller.sendMail(QStringLiteral("bob@example.com"), QString(), QString(),
-                                  QStringLiteral("Hi"), QStringLiteral("Body"), {},
+                                  QStringLiteral("Hi"), QStringLiteral("Body"), { attachmentPath },
                                   /*sign=*/false, /*encrypt=*/true));
+    QCOMPARE(fallbackSpy.count(), 1);
+    const quint64 token = fallbackSpy.at(0).at(0).value<quint64>();
+
+    // The file is gone AND its contents replaced by the time the user
+    // confirms -- an editor saved over it, or a temp export was cleaned up.
+    QVERIFY(QFile::remove(attachmentPath));
+    {
+        QFile replacement(attachmentPath);
+        QVERIFY(replacement.open(QIODevice::WriteOnly));
+        replacement.write("SOMETHING-ELSE-ENTIRELY");
+    }
 
     // Second server: FakeRelayServer serves exactly one connection.
     FakeRelayServer accepted(httpResponse(200, "OK", R"({"ok":true,"sentSaved":true,"warning":""})"));
     savePairing(pairingStore, accepted.port());
-    QVERIFY(controller.confirmPickupFallbackSend());
+
+    // A confirmation naming a DIFFERENT pending send must not send: this is
+    // what stops a dialog opened in another composer from resolving this one.
+    // Checked before the real confirm on purpose -- `accepted` serves a single
+    // connection, so if this reached the network the confirm below would fail.
+    QCOMPARE(controller.confirmPickupFallbackSend(token + 1), false);
+
+    QVERIFY(controller.confirmPickupFallbackSend(token));
 
     const QJsonObject first = refusal.receivedJsonBody();
     const QJsonObject second = accepted.receivedJsonBody();
@@ -664,8 +707,17 @@ void MailControllerTest::confirmPickupFallbackSendResendsTheIdenticalBodyWithThe
     }
     QCOMPARE(second.value(QStringLiteral("attachments")), first.value(QStringLiteral("attachments")));
 
+    // ...and those identical attachment bytes are the ORIGINAL file's, not
+    // whatever is on disk now.
+    const QJsonArray resentAttachments = second.value(QStringLiteral("attachments")).toArray();
+    QCOMPARE(resentAttachments.size(), 1);
+    const QJsonObject resent = resentAttachments.at(0).toObject();
+    QCOMPARE(resent.value(QStringLiteral("name")).toString(), QStringLiteral("note.txt"));
+    QCOMPARE(QByteArray::fromBase64(resent.value(QStringLiteral("dataBase64")).toString().toLatin1()),
+             originalBytes);
+
     // The opt-in is per-message: a second confirm must not re-send anything.
-    QCOMPARE(controller.confirmPickupFallbackSend(), false);
+    QCOMPARE(controller.confirmPickupFallbackSend(token), false);
 }
 
 void MailControllerTest::confirmPickupFallbackSendWithoutAPendingSendDoesNothing()
@@ -701,7 +753,9 @@ void MailControllerTest::confirmPickupFallbackSendWithoutAPendingSendDoesNothing
     MailController controller(mailRepository, source, keywordRepository, pairingStore, folderRepository,
                                settingsStore, bootstrapClient, recipientChecker);
 
-    QCOMPARE(controller.confirmPickupFallbackSend(), false);
+    // Any token at all, with nothing cached: a stray confirm must not mail.
+    QCOMPARE(controller.confirmPickupFallbackSend(1), false);
+    QCOMPARE(controller.confirmPickupFallbackSend(0), false);
 }
 
 void MailControllerTest::sendMailSurfacesAWarningOnAnOtherwiseSuccessfulSend()
@@ -756,6 +810,208 @@ void MailControllerTest::sendMailSurfacesAWarningOnAnOtherwiseSuccessfulSend()
     QCOMPARE(sent, true);
     QCOMPARE(spy.count(), 1);
     QVERIFY(!spy.at(0).at(0).toString().isEmpty());
+}
+
+void MailControllerTest::sendMailClientSideNeededHandsOffAndOffersNoToggles()
+{
+    // The other 409. Categorical, not confirmable: the account's private key
+    // exists only in the user's browser, so no request from this app can
+    // encrypt on its behalf. Nothing may stay cached for a confirm, and the
+    // composer must show the handoff INSTEAD OF the toggles, never both.
+    Database db;
+    QVERIFY(db.open(QStringLiteral(":memory:")));
+    EmailDao emailDao(db.handle());
+
+    FakeRelayServer fake(httpResponse(
+        409, "Conflict",
+        R"({"error":"this account's PGP key is end-to-end protected","clientSideNeeded":true})"));
+
+    QTemporaryDir secureDir;
+    QVERIFY(secureDir.isValid());
+    SecureStoreFile secureStore(secureDir.path());
+    PairingStore pairingStore(secureStore);
+    savePairing(pairingStore, fake.port());
+
+    QTemporaryDir cursorDir;
+    QVERIFY(cursorDir.isValid());
+    CursorStore cursorStore(cursorDir.filePath(QStringLiteral("cursor.ini")));
+
+    QTemporaryDir settingsDir;
+    QVERIFY(settingsDir.isValid());
+    SettingsStore settingsStore(settingsDir.filePath(QStringLiteral("settings.ini")));
+    KeywordRepository keywordRepository(settingsStore);
+
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    RelayMailSource source(http);
+    PgpBootstrapClient bootstrapClient(http);
+    PgpRecipientChecker recipientChecker(http);
+    MailRepository mailRepository(source, emailDao, pairingStore, cursorStore);
+    FolderDao folderDao(db.handle());
+    FolderClient folderClient(http);
+    FolderRepository folderRepository(folderClient, folderDao, pairingStore);
+
+    MailController controller(mailRepository, source, keywordRepository, pairingStore, folderRepository,
+                               settingsStore, bootstrapClient, recipientChecker);
+
+    QSignalSpy fallbackSpy(&controller, &MailController::pickupFallbackRequired);
+    QSignalSpy composeStateSpy(&controller, &MailController::pgpComposeStateChanged);
+
+    const bool sent = controller.sendMail(QStringLiteral("bob@example.com"), QString(), QString(),
+                                           QStringLiteral("Hi"), QStringLiteral("Body"), {},
+                                           /*sign=*/false, /*encrypt=*/true);
+
+    QCOMPARE(sent, false);
+    // Never the plaintext-link dialog: this refusal is not confirmable.
+    QCOMPARE(fallbackSpy.count(), 0);
+    QVERIFY(composeStateSpy.count() >= 1);
+    QCOMPARE(controller.pgpHandoffToWebmail(), true);
+    // One source of truth: the handoff block replaces the toggles.
+    QCOMPARE(controller.pgpCanEncrypt(), false);
+    QCOMPARE(controller.pgpCanSign(), false);
+    QVERIFY(!controller.lastError().isEmpty());
+    // The pending send was dropped, so a stray confirm cannot resurrect it.
+    QCOMPARE(controller.confirmPickupFallbackSend(1), false);
+}
+
+void MailControllerTest::openWebmailDraftsRefusesAnInsecurePairingBeforeSavingAnything()
+{
+    // Order matters more than the return value: the https check runs BEFORE
+    // the draft POST, so a handoff that cannot open the browser does not leave
+    // a silently duplicated draft behind. savePairing() writes an
+    // http://127.0.0.1 base and webmailMailboxUrl() is https-only, so this
+    // pairing can never produce a link.
+    Database db;
+    QVERIFY(db.open(QStringLiteral(":memory:")));
+    EmailDao emailDao(db.handle());
+
+    FakeRelayServer fake(httpResponse(200, "OK", R"({"ok":true})"));
+
+    QTemporaryDir secureDir;
+    QVERIFY(secureDir.isValid());
+    SecureStoreFile secureStore(secureDir.path());
+    PairingStore pairingStore(secureStore);
+    savePairing(pairingStore, fake.port());
+
+    QTemporaryDir cursorDir;
+    QVERIFY(cursorDir.isValid());
+    CursorStore cursorStore(cursorDir.filePath(QStringLiteral("cursor.ini")));
+
+    QTemporaryDir settingsDir;
+    QVERIFY(settingsDir.isValid());
+    SettingsStore settingsStore(settingsDir.filePath(QStringLiteral("settings.ini")));
+    KeywordRepository keywordRepository(settingsStore);
+
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    RelayMailSource source(http);
+    PgpBootstrapClient bootstrapClient(http);
+    PgpRecipientChecker recipientChecker(http);
+    MailRepository mailRepository(source, emailDao, pairingStore, cursorStore);
+    FolderDao folderDao(db.handle());
+    FolderClient folderClient(http);
+    FolderRepository folderRepository(folderClient, folderDao, pairingStore);
+
+    MailController controller(mailRepository, source, keywordRepository, pairingStore, folderRepository,
+                               settingsStore, bootstrapClient, recipientChecker);
+
+    const bool opened = controller.openWebmailDrafts(QStringLiteral("bob@example.com"), QString(), QString(),
+                                                       QStringLiteral("Hi"), QStringLiteral("Body"), {});
+
+    QCOMPARE(opened, false);
+    QVERIFY(controller.lastError().contains(QStringLiteral("insecure connection")));
+    // The actual invariant: no draft POST was made at all.
+    QVERIFY(fake.receivedRequest().isEmpty());
+}
+
+void MailControllerTest::refreshPgpComposeStateFailureHidesEveryControl()
+{
+    // "Couldn't check" is never "no PGP" AND never "client custody" -- a
+    // failed bootstrap must leave every control hidden rather than guess a
+    // custody mode and offer the wrong send path.
+    Database db;
+    QVERIFY(db.open(QStringLiteral(":memory:")));
+    EmailDao emailDao(db.handle());
+
+    FakeRelayServer fake(httpResponse(503, "Service Unavailable", "unavailable", "text/plain"));
+
+    QTemporaryDir secureDir;
+    QVERIFY(secureDir.isValid());
+    SecureStoreFile secureStore(secureDir.path());
+    PairingStore pairingStore(secureStore);
+    savePairing(pairingStore, fake.port());
+
+    QTemporaryDir cursorDir;
+    QVERIFY(cursorDir.isValid());
+    CursorStore cursorStore(cursorDir.filePath(QStringLiteral("cursor.ini")));
+
+    QTemporaryDir settingsDir;
+    QVERIFY(settingsDir.isValid());
+    SettingsStore settingsStore(settingsDir.filePath(QStringLiteral("settings.ini")));
+    KeywordRepository keywordRepository(settingsStore);
+
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    RelayMailSource source(http);
+    PgpBootstrapClient bootstrapClient(http);
+    PgpRecipientChecker recipientChecker(http);
+    MailRepository mailRepository(source, emailDao, pairingStore, cursorStore);
+    FolderDao folderDao(db.handle());
+    FolderClient folderClient(http);
+    FolderRepository folderRepository(folderClient, folderDao, pairingStore);
+
+    MailController controller(mailRepository, source, keywordRepository, pairingStore, folderRepository,
+                               settingsStore, bootstrapClient, recipientChecker);
+
+    controller.refreshPgpComposeState();
+
+    QCOMPARE(controller.pgpCanEncrypt(), false);
+    QCOMPARE(controller.pgpCanSign(), false);
+    QCOMPARE(controller.pgpHandoffToWebmail(), false);
+}
+
+void MailControllerTest::preflightRecipientsFailureClearsRatherThanReassures()
+{
+    // The preflight is an advisory lower bound. A failed check must leave the
+    // list EMPTY -- showing nothing -- rather than a stale answer standing in
+    // for one this call never got.
+    Database db;
+    QVERIFY(db.open(QStringLiteral(":memory:")));
+    EmailDao emailDao(db.handle());
+
+    FakeRelayServer fake(httpResponse(500, "Internal Server Error", "boom", "text/plain"));
+
+    QTemporaryDir secureDir;
+    QVERIFY(secureDir.isValid());
+    SecureStoreFile secureStore(secureDir.path());
+    PairingStore pairingStore(secureStore);
+    savePairing(pairingStore, fake.port());
+
+    QTemporaryDir cursorDir;
+    QVERIFY(cursorDir.isValid());
+    CursorStore cursorStore(cursorDir.filePath(QStringLiteral("cursor.ini")));
+
+    QTemporaryDir settingsDir;
+    QVERIFY(settingsDir.isValid());
+    SettingsStore settingsStore(settingsDir.filePath(QStringLiteral("settings.ini")));
+    KeywordRepository keywordRepository(settingsStore);
+
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    RelayMailSource source(http);
+    PgpBootstrapClient bootstrapClient(http);
+    PgpRecipientChecker recipientChecker(http);
+    MailRepository mailRepository(source, emailDao, pairingStore, cursorStore);
+    FolderDao folderDao(db.handle());
+    FolderClient folderClient(http);
+    FolderRepository folderRepository(folderClient, folderDao, pairingStore);
+
+    MailController controller(mailRepository, source, keywordRepository, pairingStore, folderRepository,
+                               settingsStore, bootstrapClient, recipientChecker);
+
+    controller.preflightRecipients(QStringLiteral("bob@example.com"), QString(), QString());
+
+    QVERIFY(controller.pgpKeylessRecipients().isEmpty());
 }
 
 QTEST_GUILESS_MAIN(MailControllerTest)

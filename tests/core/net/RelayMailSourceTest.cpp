@@ -30,6 +30,7 @@ private slots:
     void sendMailPutsPgpFlagsInTheRequestBody();
     void sendMailParsesKeylessRecipient409();
     void sendMailClientSideNeeded409IsNotAKeylessRefusal();
+    void sendMailDualField409ReportsTheUnrecoverableRefusal();
     void sendMail409WithNeitherPgpFieldStaysAGenericError();
     void sendMailMalformed409BodyDoesNotCrashTheDecode();
 
@@ -513,6 +514,38 @@ void RelayMailSourceTest::sendMailClientSideNeeded409IsNotAKeylessRefusal()
 
     QCOMPARE(result.clientSideNeeded, true);
     QCOMPARE(result.pickupFallbackNeeded, false);
+    QVERIFY(result.keylessRecipients.isEmpty());
+}
+
+// Pins the PRECEDENCE, which currently rests on a single unpinned
+// `if (!out.clientSideNeeded)` guard. The live server refuses a client-custody
+// account (server.go:1207) before it reaches the keyless gate (:1272), so the
+// two fields never arrive together today -- but a refactor that inverted that
+// guard would turn an unrecoverable refusal into a plaintext-link confirmation
+// dialog, i.e. it would ask the user to consent to a server-side plaintext
+// downgrade for a send that cannot succeed either way. clientSideNeeded wins.
+void RelayMailSourceTest::sendMailDualField409ReportsTheUnrecoverableRefusal()
+{
+    FakeRelayServer fake(httpResponse(
+        409, "Conflict",
+        R"({"error":"this account's PGP key is end-to-end protected","clientSideNeeded":true,)"
+        R"("keylessRecipients":["bob@example.com"],"pickupFallbackAvailable":true})"));
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    RelayMailSource source(http);
+
+    const QUrl serverBaseUrl(QStringLiteral("http://127.0.0.1:%1").arg(fake.port()));
+    const RelayAuth auth{ QStringLiteral("device-1"), QStringLiteral("secret-1") };
+    const SendMailResult result =
+        source.sendMail(serverBaseUrl, auth, QStringLiteral("bob@example.com"), QString(), QString(),
+                        QStringLiteral("Hi"), QStringLiteral("Body"), QStringLiteral("plain"), {},
+                        /*sign=*/false, /*encrypt=*/true, /*allowPickupFallback=*/false);
+
+    QCOMPARE(result.ok, false);
+    QCOMPARE(result.clientSideNeeded, true);
+    QCOMPARE(result.pickupFallbackNeeded, false);
+    // Not even parsed: nothing downstream should be able to name these
+    // addresses in a confirmation that must never be offered.
     QVERIFY(result.keylessRecipients.isEmpty());
 }
 

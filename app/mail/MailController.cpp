@@ -440,6 +440,13 @@ bool MailController::saveDraft(const QString& to, const QString& cc, const QStri
 bool MailController::sendMail(const QString& to, const QString& cc, const QString& bcc, const QString& subject,
                                const QString& body, const QStringList& attachmentFilePaths, bool sign, bool encrypt)
 {
+    // FIRST statement, before any early return below: PendingSend's own doc
+    // comment promises the cached plaintext dies when a fresh send starts,
+    // and the guards below (not paired, unreadable/oversized attachment) used
+    // to return without honoring that, leaving a previous refusal's payload
+    // alive past the composition that made it.
+    m_pendingSend = {};
+
     QUrl serverBaseUrl;
     RelayAuth auth;
     if (!requirePairing(serverBaseUrl, auth))
@@ -452,10 +459,11 @@ bool MailController::sendMail(const QString& to, const QString& cc, const QStrin
     setBusy(true);
     const QString sendMode = QStringLiteral("html");
 
-    // Field order matters -- PendingSend is aggregate-initialized. Ten
+    // Field order matters -- PendingSend is aggregate-initialized. Eleven
     // fields: valid, to, cc, bcc, subject, body, mode, attachments, sign,
-    // encrypt.
-    m_pendingSend = PendingSend{ true, to, cc, bcc, subject, body, sendMode, attachments, sign, encrypt };
+    // encrypt, token.
+    m_pendingSend = PendingSend{ true, to, cc, bcc, subject, body, sendMode, attachments, sign, encrypt,
+                                 m_nextPendingSendToken++ };
 
     const SendMailResult result = m_relayMailSource.sendMail(
         serverBaseUrl, auth, to, cc, bcc, subject, body, sendMode, attachments,
@@ -467,13 +475,27 @@ bool MailController::sendMail(const QString& to, const QString& cc, const QStrin
         // confirmed re-send. The server's list is authoritative -- it ran
         // WKD discovery too, and may name an address typed since the last
         // preflight.
-        emit pickupFallbackRequired(result.keylessRecipients);
+        //
+        // A refusal that opens a confirmation is not an error to read: clear
+        // any stale lastError so a leftover red line doesn't sit under the
+        // dialog contradicting it.
+        setLastError(QString());
+        // Emitted synchronously, inside this invokable, on purpose -- that is
+        // what lets a Compose instance tell "this is my send" from "this is
+        // the other window's send". See the signal's declaration.
+        emit pickupFallbackRequired(m_pendingSend.token, result.keylessRecipients);
         return false;
     }
     if (result.clientSideNeeded) {
         // Categorical: no re-send from this client can fix it.
         m_pendingSend = {};
         m_pgpHandoffToWebmail = true;
+        // One source of truth rather than a compound `visible` expression in
+        // QML: a client-custody account must show the handoff block INSTEAD OF
+        // the Encrypt/Sign toggles, never both, so clear the two flags that
+        // draw them here.
+        m_pgpCanEncrypt = false;
+        m_pgpCanSign = false;
         emit pgpComposeStateChanged();
         setLastError(i18n("This account's PGP key is held only in your browser, so this app cannot "
                            "encrypt on its behalf. Continue in webmail to send it."));
@@ -495,10 +517,12 @@ bool MailController::sendMail(const QString& to, const QString& cc, const QStrin
 // Re-sends the exact payload the server refused, with allowPickupFallback
 // set. Byte-identical by construction: nothing is rebuilt, no file is
 // re-read, and the preflight is not re-run. Returns false without sending
-// when there is no pending send, so a stray confirm cannot mail anything.
-bool MailController::confirmPickupFallbackSend()
+// when there is no pending send, or when `token` names a different one, so
+// neither a stray confirm nor a confirmation collected in some other
+// composer's dialog can mail anything.
+bool MailController::confirmPickupFallbackSend(quint64 token)
 {
-    if (!m_pendingSend.valid)
+    if (!m_pendingSend.valid || m_pendingSend.token != token)
         return false;
 
     QUrl serverBaseUrl;
@@ -511,17 +535,30 @@ bool MailController::confirmPickupFallbackSend()
     // failure here must not leave a payload a second confirm could re-send.
     m_pendingSend = {};
 
+    // Bracketed the same way sendMail()/saveDraft() are. Without it the
+    // "Sending…" indicator never appears and Send stays enabled for the whole
+    // 30s HttpClient timeout, so a user who sees nothing happen presses Send
+    // again -- which takes another 409, another confirmation, and delivers
+    // the message twice.
+    setBusy(true);
     const SendMailResult result = m_relayMailSource.sendMail(
         serverBaseUrl, auth, pending.to, pending.cc, pending.bcc, pending.subject, pending.body,
         pending.mode, pending.attachments, pending.sign, pending.encrypt,
         /*allowPickupFallback=*/true);
+    setBusy(false);
 
     if (!result.ok) {
-        setLastError(result.detail);
+        // Same detail-or-localized-fallback shape as every other failure in
+        // this class: a 200 carrying {"ok":false} leaves detail empty, and
+        // reporting that verbatim would fail silently.
+        setLastError(result.detail.isEmpty() ? i18n("Could not send message") : result.detail);
         return false;
     }
     if (!result.warning.isEmpty())
         emit sendWarning(result.warning);
+    // The one send that most needs to read as success: clear any error left
+    // over from the refusal that opened the confirmation.
+    setLastError(QString());
     return true;
 }
 
@@ -532,20 +569,41 @@ void MailController::discardPendingSend()
     m_pendingSend = {};
 }
 
-// Called once when Compose opens. A failure leaves every control hidden --
+// Called when Compose opens. A failure leaves every control hidden --
 // "couldn't check" is never "no PGP".
-void MailController::refreshPgpComposeState()
+void MailController::refreshPgpComposeState(bool force)
 {
+    // Unconditional, ahead of the cache check below: pgpKeylessRecipients is
+    // singleton state belonging to whatever was composed last, so a fresh
+    // composer that ticks Encrypt would otherwise flash the PREVIOUS
+    // message's keyless addresses until this session's debounce lands.
+    if (!m_pgpKeylessRecipients.isEmpty()) {
+        m_pgpKeylessRecipients.clear();
+        emit pgpKeylessRecipientsChanged();
+    }
+
+    // At most one bootstrap fetch per session. This is a synchronous network
+    // call made from Compose.qml's Component.onCompleted, i.e. a nested event
+    // loop while the object tree is still being built; custody mode is fixed
+    // at key creation and cannot change within a session, so re-asking on
+    // every compose open buys nothing.
+    if (m_pgpComposeStateFetched && !force)
+        return;
+
     QUrl serverBaseUrl;
     RelayAuth auth;
     if (!requirePairing(serverBaseUrl, auth))
-        return;
+        return; // not cached: pairing later must still get a real answer
 
     const PgpBootstrapResult bootstrap = m_pgpBootstrapClient.fetch(serverBaseUrl, auth);
     const PgpComposeState state = bootstrap.ok
         ? pgpComposeStateOf(bootstrap.hasIdentity, bootstrap.protection)
         : pgpComposeStateOf(std::nullopt, std::nullopt);
 
+    // Only a real answer is cached. "Couldn't check" is not a custody mode, so
+    // caching a failure would hide the PGP controls for the rest of the
+    // session over one transient 503; the next compose open retries instead.
+    m_pgpComposeStateFetched = bootstrap.ok;
     m_pgpCanEncrypt = state.canEncrypt;
     m_pgpCanSign = state.canSign;
     m_pgpHandoffToWebmail = state.handoffToWebmail;
@@ -557,8 +615,22 @@ void MailController::refreshPgpComposeState()
 // an address named here may still be encrypted to successfully. Never
 // phrase the result as a prediction, and never let it gate the send -- the
 // server's 409 is the gate.
+//
+// Deliberately NOT bracketed with setBusy(): that would disable Send while
+// the user is still typing recipients.
 void MailController::preflightRecipients(const QString& to, const QString& cc, const QString& bcc)
 {
+    // check() below runs a nested QEventLoop (HttpClient::waitForReply), which
+    // keeps processing timers -- so Compose.qml's 500ms debounce fires again
+    // mid-flight and lands right back here, one frame deeper per 500ms of
+    // typing. Results then unwind LIFO, making the LAST write to
+    // m_pgpKeylessRecipients the OLDEST request's answer: an inline warning
+    // naming an address the user already removed. Dropping the overlapping
+    // call is correct here because this is a debounced, advisory lower bound,
+    // not a gate -- the next edit restarts the timer anyway.
+    if (m_preflightInFlight)
+        return;
+
     QUrl serverBaseUrl;
     RelayAuth auth;
     if (!requirePairing(serverBaseUrl, auth))
@@ -573,8 +645,12 @@ void MailController::preflightRecipients(const QString& to, const QString& cc, c
 
     QStringList keyless;
     if (!addresses.isEmpty()) {
+        m_preflightInFlight = true;
         const RecipientKeyCheckResult result = m_pgpRecipientChecker.check(serverBaseUrl, auth, addresses);
-        // A failed preflight shows nothing rather than a false all-clear.
+        m_preflightInFlight = false;
+        // A failed preflight shows nothing rather than a false all-clear --
+        // and clears whatever it showed before, rather than leaving a stale
+        // list standing in for an answer this call did not get.
         if (result.ok)
             keyless = result.keylessRecipients;
     }
@@ -596,6 +672,15 @@ bool MailController::openWebmailDrafts(const QString& to, const QString& cc, con
                                         const QString& subject, const QString& body,
                                         const QStringList& attachmentFilePaths)
 {
+    // Pairing is checked first so the two distinct failures read distinctly:
+    // webmailMailboxUrl() returns an empty URL for an unpaired client just as
+    // it does for a plain-http one, and reporting "paired over an insecure
+    // connection" to someone who is not paired at all is simply wrong.
+    QUrl serverBaseUrl;
+    RelayAuth auth;
+    if (!requirePairing(serverBaseUrl, auth)) // sets "Not paired"
+        return false;
+
     const QUrl url = webmailMailboxUrl(webmailBaseUrl(), QStringLiteral("Drafts"));
     // Checked BEFORE saving: a draft saved for a handoff that cannot open
     // leaves the user with a silently duplicated draft and no browser.

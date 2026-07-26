@@ -169,21 +169,37 @@ public slots:
     // (see keywordTabs()'s own doc comment).
     Q_INVOKABLE void setKeywordVisible(const QString& keyword, bool visible);
 
-    // Called once when Compose opens. Sets pgpCanEncrypt/pgpCanSign/
+    // Called when Compose opens. Sets pgpCanEncrypt/pgpCanSign/
     // pgpHandoffToWebmail from GET /api/pgp/bootstrap. A failed or
     // unreachable bootstrap is never "no PGP" -- it leaves every control
     // hidden rather than guessing a custody mode.
-    Q_INVOKABLE void refreshPgpComposeState();
+    //
+    // The bootstrap fetch happens at most ONCE per session (see
+    // m_pgpComposeStateFetched): this runs synchronously on the GUI thread,
+    // from Compose.qml's Component.onCompleted, so every compose open would
+    // otherwise spin a nested event loop while the object tree is still being
+    // built. Custody mode is fixed at key creation with no downgrade path, so
+    // a cached answer cannot go stale within a session. Pass force = true to
+    // go to the network anyway. Every call still clears
+    // pgpKeylessRecipients, which IS per-composition state.
+    Q_INVOKABLE void refreshPgpComposeState(bool force = false);
     // Inline, non-blocking recipient-key warning. Reads the user's contacts
     // only -- a lower bound, since the send path also runs WKD/keyserver
     // discovery -- so this never gates the send; the server's 409 is the
     // gate. Updates pgpKeylessRecipients.
+    //
+    // Re-entrant by construction (the HTTP call below runs a nested event
+    // loop, which keeps firing Compose.qml's debounce timer), so an in-flight
+    // call makes this a no-op rather than nesting a second one -- see
+    // m_preflightInFlight.
     Q_INVOKABLE void preflightRecipients(const QString& to, const QString& cc, const QString& bcc);
     // Re-sends the exact payload the server refused with 409 +
-    // keylessRecipients, with allowPickupFallback set. Returns false without
-    // sending when there is no pending send (nothing was refused, or it was
-    // already resolved), so a stray confirm cannot mail anything.
-    Q_INVOKABLE bool confirmPickupFallbackSend();
+    // keylessRecipients, with allowPickupFallback set. `token` is the value
+    // pickupFallbackRequired() carried: this returns false without sending
+    // unless it still matches the cached pending send, so a confirmation for
+    // an older, already-resolved or already-replaced send cannot mail
+    // anything. Also returns false when there is no pending send at all.
+    Q_INVOKABLE bool confirmPickupFallbackSend(quint64 token);
     // Drops the cached pending send. Called when the user cancels the
     // pickup-fallback confirmation dialog rather than confirming it.
     Q_INVOKABLE void discardPendingSend();
@@ -205,10 +221,35 @@ signals:
     // Emitted when sendMail() is refused with 409 + keylessRecipients: the
     // server's own list of addresses with no usable PGP key, naming the
     // pending send confirmPickupFallbackSend() would re-send.
-    void pickupFallbackRequired(const QStringList& recipients);
+    //
+    // `token` identifies that one pending send and must be handed back to
+    // confirmPickupFallbackSend(). This class is a QML SINGLETON, so this
+    // signal reaches every live Compose instance -- two coexist easily (a
+    // pop-out compose window plus Ctrl+N in the main window). Two separate
+    // mechanisms keep that from collecting one message's consent in another
+    // message's window, because they answer different questions:
+    //
+    //   * Ownership -- "is this signal mine?" Answered on the QML side by a
+    //     sendInFlight flag, which works because this signal is emitted
+    //     SYNCHRONOUSLY inside sendMail(), so the only instance with a
+    //     sendMail() call on its stack is the true owner. Do not make the
+    //     emit asynchronous (queued/deferred) without replacing that.
+    //   * Staleness/replay -- "is this confirmation still valid?" Answered by
+    //     the token, which the confirm path re-checks against the cached
+    //     pending send. Needed independently: the flag says nothing about a
+    //     confirmation that arrives after the pending send was replaced or
+    //     already resolved.
+    void pickupFallbackRequired(quint64 token, const QStringList& recipients);
     // Emitted on a 200 response carrying a non-empty warning: the message
     // WAS sent, with partial trouble (e.g. the Sent copy failed, or a pickup
     // link did not deliver to everyone). Never a failure signal.
+    //
+    // Deliberately NOT displayed by Compose.qml: a successful send makes the
+    // hosts destroy that component, so a notice parented to it would die in
+    // the same turn it appeared. The sinks live in MobileRoot.qml /
+    // DesktopRoot.qml (and DesktopRoot's pop-out compose Window), which
+    // outlive the composer. This class is a singleton, so those receive it
+    // regardless of which composer sent.
     void sendWarning(const QString& warning);
     void pgpComposeStateChanged();
     void pgpKeylessRecipientsChanged();
@@ -278,8 +319,19 @@ private:
         QVector<MailAttachmentUpload> attachments;
         bool sign = false;
         bool encrypt = false;
+        // Identifies this one pending send across the pickupFallbackRequired
+        // -> confirmPickupFallbackSend round trip. Appended after the ten
+        // fields above so the existing aggregate initialization in the .cpp
+        // keeps reading correctly. Never 0 for a valid pending send: the
+        // counter starts at 1, so a default-constructed PendingSend can never
+        // accidentally match a real token.
+        quint64 token = 0;
     };
     PendingSend m_pendingSend;
+    // Monotonic, per-session. quint64 crosses into QML as a JS number, which
+    // is exact below 2^53 -- unreachable for a counter incremented once per
+    // send attempt.
+    quint64 m_nextPendingSendToken = 1;
 
     MailRepository& m_mailRepository;
     FolderRepository& m_folderRepository;
@@ -299,4 +351,11 @@ private:
     bool m_pgpCanSign = false;
     bool m_pgpHandoffToWebmail = false;
     QStringList m_pgpKeylessRecipients;
+    // True once a bootstrap fetch has actually reached the server this
+    // session -- see refreshPgpComposeState(). A short-circuited pairing
+    // lookup does NOT set it, so pairing later still gets a real answer.
+    bool m_pgpComposeStateFetched = false;
+    // Guards preflightRecipients() against re-entering through the nested
+    // event loop its own HTTP call runs.
+    bool m_preflightInFlight = false;
 };
