@@ -17,12 +17,14 @@
 
 #include "domain/PgpComposeState.h"
 #include "mail/PgpMessagePresentation.h"
+#include "util/ReentrancyGuard.h"
 
 #include <KLocalizedString>
 
 #include <QDesktopServices>
 #include <QDir>
 #include <QFile>
+#include <QHash>
 #include <QTimer>
 #include <QFileInfo>
 #include <QMimeDatabase>
@@ -164,7 +166,24 @@ bool MailController::requirePairing(QUrl& serverBaseUrl, RelayAuth& auth)
     return true;
 }
 
+// Guarded public entry points delegate to the *Internal bodies below.
+//
+// The split exists because several of these legitimately call each other
+// (deleteFolder -> selectFolder -> refresh, openWebmailDrafts -> saveDraft),
+// and a single flag shared by both the outer and inner call would make the
+// inner one a no-op -- deleting the current folder would leave the app
+// showing a mailbox that no longer exists. Only the QML-facing boundary is
+// guarded; internal callers use the unguarded bodies, which is safe because
+// the outer guard is already held for the whole chain.
 void MailController::selectFolder(const QString& wireFolder)
+{
+    ReentrancyGuard guard(m_inNetworkCall);
+    if (!guard.entered())
+        return;
+    selectFolderInternal(wireFolder);
+}
+
+void MailController::selectFolderInternal(const QString& wireFolder)
 {
     if (m_currentFolder != wireFolder) {
         m_currentFolder = wireFolder;
@@ -177,7 +196,7 @@ void MailController::selectFolder(const QString& wireFolder)
     m_currentFolderEmails = m_mailRepository.cachedEmails(m_currentFolder);
     emit keywordTabsChanged();
     applyFilter();
-    refresh();
+    refreshInternal(false);
 }
 
 void MailController::selectKeyword(const QString& keyword)
@@ -190,6 +209,14 @@ void MailController::selectKeyword(const QString& keyword)
 }
 
 void MailController::refresh(bool forceFullResync)
+{
+    ReentrancyGuard guard(m_inNetworkCall);
+    if (!guard.entered())
+        return;
+    refreshInternal(forceFullResync);
+}
+
+void MailController::refreshInternal(bool forceFullResync)
 {
     setBusy(true);
     const MailFetchOutcome outcome = m_mailRepository.refreshFolder(m_currentFolder, forceFullResync);
@@ -208,6 +235,10 @@ void MailController::refresh(bool forceFullResync)
 bool MailController::performActionCommon(const QStringList& messageIds, const QString& action,
                                           const std::optional<QString>& targetMailbox)
 {
+    ReentrancyGuard guard(m_inNetworkCall);
+    if (!guard.entered())
+        return false;
+
     QUrl serverBaseUrl;
     RelayAuth auth;
     if (!requirePairing(serverBaseUrl, auth))
@@ -343,6 +374,10 @@ QVariantList MailController::mailFolders() const
 
 void MailController::refreshFolders()
 {
+    ReentrancyGuard guard(m_inNetworkCall);
+    if (!guard.entered())
+        return;
+
     // Only Archive today, matching Android's folder picker: the other five
     // standard mailboxes have no subfolder UI, so listing them would be
     // five extra synchronous round-trips (this call blocks the GUI thread --
@@ -362,6 +397,10 @@ void MailController::refreshFolders()
 
 bool MailController::createFolder(const QString& parent, const QString& name)
 {
+    ReentrancyGuard guard(m_inNetworkCall);
+    if (!guard.entered())
+        return false;
+
     setBusy(true);
     const FolderRepository::FolderMutationOutcome outcome = m_folderRepository.create(parent, name);
     setBusy(false);
@@ -377,6 +416,10 @@ bool MailController::createFolder(const QString& parent, const QString& name)
 
 bool MailController::renameFolder(const QString& folder, const QString& name)
 {
+    ReentrancyGuard guard(m_inNetworkCall);
+    if (!guard.entered())
+        return false;
+
     setBusy(true);
     const FolderRepository::FolderMutationOutcome outcome = m_folderRepository.rename(folder, name);
     setBusy(false);
@@ -390,13 +433,17 @@ bool MailController::renameFolder(const QString& folder, const QString& name)
     // fetch an empty mailbox, so fall back to Inbox when the current
     // selection was the one renamed.
     if (m_currentFolder == folder)
-        selectFolder(outcome.folder.isEmpty() ? standardFolderWireName(StandardFolder::Inbox) : outcome.folder);
+        selectFolderInternal(outcome.folder.isEmpty() ? standardFolderWireName(StandardFolder::Inbox) : outcome.folder);
     emit foldersChanged();
     return true;
 }
 
 bool MailController::deleteFolder(const QString& folder)
 {
+    ReentrancyGuard guard(m_inNetworkCall);
+    if (!guard.entered())
+        return false;
+
     setBusy(true);
     const FolderRepository::FolderMutationOutcome outcome = m_folderRepository.remove(folder);
     setBusy(false);
@@ -407,13 +454,23 @@ bool MailController::deleteFolder(const QString& folder)
     }
     setLastError(QString());
     if (m_currentFolder == folder)
-        selectFolder(standardFolderWireName(StandardFolder::Inbox));
+        selectFolderInternal(standardFolderWireName(StandardFolder::Inbox));
     emit foldersChanged();
     return true;
 }
 
 bool MailController::saveDraft(const QString& to, const QString& cc, const QString& bcc, const QString& subject,
                                 const QString& body, const QStringList& attachmentFilePaths)
+{
+    ReentrancyGuard guard(m_inNetworkCall);
+    if (!guard.entered())
+        return false;
+    return saveDraftInternal(to, cc, bcc, subject, body, attachmentFilePaths);
+}
+
+bool MailController::saveDraftInternal(const QString& to, const QString& cc, const QString& bcc,
+                                        const QString& subject, const QString& body,
+                                        const QStringList& attachmentFilePaths)
 {
     QUrl serverBaseUrl;
     RelayAuth auth;
@@ -440,6 +497,15 @@ bool MailController::saveDraft(const QString& to, const QString& cc, const QStri
 bool MailController::sendMail(const QString& to, const QString& cc, const QString& bcc, const QString& subject,
                                const QString& body, const QStringList& attachmentFilePaths, bool sign, bool encrypt)
 {
+    // The guard, not the token below, is what actually prevents a second
+    // composer's Send from starting an inner send while this one is
+    // suspended in HttpClient's nested event loop. The token stays as the
+    // second line of defence for the pickup-fallback round trip, which
+    // crosses back out to QML and can be confirmed by a different composer.
+    ReentrancyGuard guard(m_inNetworkCall);
+    if (!guard.entered())
+        return false;
+
     // FIRST statement, before any early return below: PendingSend's own doc
     // comment promises the cached plaintext dies when a fresh send starts,
     // and the guards below (not paired, unreadable/oversized attachment) used
@@ -534,6 +600,10 @@ bool MailController::sendMail(const QString& to, const QString& cc, const QStrin
 // composer's dialog can mail anything.
 bool MailController::confirmPickupFallbackSend(quint64 token)
 {
+    ReentrancyGuard guard(m_inNetworkCall);
+    if (!guard.entered())
+        return false;
+
     if (!m_pendingSend.valid || m_pendingSend.token != token)
         return false;
 
@@ -585,6 +655,10 @@ void MailController::discardPendingSend()
 // "couldn't check" is never "no PGP".
 void MailController::refreshPgpComposeState(bool force)
 {
+    ReentrancyGuard guard(m_inNetworkCall);
+    if (!guard.entered())
+        return;
+
     // Unconditional, ahead of the cache check below: pgpKeylessRecipients is
     // singleton state belonging to whatever was composed last, so a fresh
     // composer that ticks Encrypt would otherwise flash the PREVIOUS
@@ -684,6 +758,10 @@ bool MailController::openWebmailDrafts(const QString& to, const QString& cc, con
                                         const QString& subject, const QString& body,
                                         const QStringList& attachmentFilePaths)
 {
+    ReentrancyGuard guard(m_inNetworkCall);
+    if (!guard.entered())
+        return false;
+
     // Pairing is checked first so the two distinct failures read distinctly:
     // webmailMailboxUrl() returns an empty URL for an unpaired client just as
     // it does for a plain-http one, and reporting "paired over an insecure
@@ -701,7 +779,7 @@ bool MailController::openWebmailDrafts(const QString& to, const QString& cc, con
                            "webmail for you. Open your mail in a browser to send this message."));
         return false;
     }
-    if (!saveDraft(to, cc, bcc, subject, body, attachmentFilePaths))
+    if (!saveDraftInternal(to, cc, bcc, subject, body, attachmentFilePaths))
         return false;
     if (!QDesktopServices::openUrl(url)) {
         setLastError(i18n("Saved to Drafts, but KyPost could not open your browser."));
@@ -712,6 +790,10 @@ bool MailController::openWebmailDrafts(const QString& to, const QString& cc, con
 
 QVariantList MailController::listAttachments(const QString& mailbox, const QString& messageId)
 {
+    ReentrancyGuard guard(m_inNetworkCall);
+    if (!guard.entered())
+        return {};
+
     QUrl serverBaseUrl;
     RelayAuth auth;
     if (!requirePairing(serverBaseUrl, auth))
@@ -746,20 +828,62 @@ QString MailController::dedupedFilePath(const QString& directory, const QString&
     const QString baseName = info.completeBaseName();
     const QString suffix = info.suffix();
 
+    // Bounded. The original loop had no cap, so a directory already holding
+    // every candidate name (or a filesystem whose exists() keeps answering
+    // true) spun forever on the GUI thread.
+    static constexpr int kMaxDedupeAttempts = 1000;
+
     QString candidate = fileName;
-    int suffixCounter = 1;
-    while (QFile::exists(directory + QStringLiteral("/") + candidate)) {
+    for (int suffixCounter = 1; suffixCounter <= kMaxDedupeAttempts; ++suffixCounter) {
+        if (!QFile::exists(directory + QStringLiteral("/") + candidate))
+            return directory + QStringLiteral("/") + candidate;
         candidate = suffix.isEmpty()
             ? QStringLiteral("%1 (%2)").arg(baseName).arg(suffixCounter)
             : QStringLiteral("%1 (%2).%3").arg(baseName).arg(suffixCounter).arg(suffix);
-        ++suffixCounter;
     }
-    return directory + QStringLiteral("/") + candidate;
+    return QString(); // caller reports "could not write"
+}
+
+// Creates `path` for writing, failing rather than truncating if something is
+// already there.
+//
+// QFile::open(WriteOnly) happily clobbers an existing file, which turns
+// dedupedFilePath()'s exists() check into a check-then-use race: two
+// downloads of the same attachment name resolve to the same path (entirely
+// reachable given how easily these blocking calls interleave) and one
+// silently overwrites the other. QIODevice::NewOnly is Qt's O_EXCL
+// equivalent and closes it by construction.
+bool MailController::openForExclusiveWrite(QFile& file, const QString& path)
+{
+    if (path.isEmpty())
+        return false;
+    file.setFileName(path);
+    return file.open(QIODevice::WriteOnly | QIODevice::NewOnly);
+}
+
+// Writes `data` in full or leaves nothing behind.
+//
+// Every attachment write used to discard both the mkpath() result and the
+// qint64 that write() returns, so a full disk produced a truncated file on
+// disk and a "saved" message in the UI.
+bool MailController::writeAllOrRemove(QFile& file, const QByteArray& data)
+{
+    const qint64 written = file.write(data);
+    const bool flushed = file.flush();
+    file.close();
+    if (written == data.size() && flushed)
+        return true;
+    file.remove();
+    return false;
 }
 
 bool MailController::downloadAttachment(const QString& mailbox, const QString& messageId, int index,
                                          const QString& suggestedName)
 {
+    ReentrancyGuard guard(m_inNetworkCall);
+    if (!guard.entered())
+        return false;
+
     QUrl serverBaseUrl;
     RelayAuth auth;
     if (!requirePairing(serverBaseUrl, auth))
@@ -791,22 +915,54 @@ bool MailController::downloadAttachment(const QString& mailbox, const QString& m
         name = QStringLiteral("attachment");
 
     if (m_settingsStore.hostileLocationProtectionEnabled())
-        return openAttachmentEphemerally(name, result.data);
+        return openAttachmentEphemerally(name, result.mimeType, result.data);
 
     const QString downloadDir = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
-    QDir().mkpath(downloadDir);
-    const QString targetPath = dedupedFilePath(downloadDir, name);
-
-    QFile outFile(targetPath);
-    if (!outFile.open(QIODevice::WriteOnly)) {
-        setLastError(i18n("Could not write attachment to %1", targetPath));
+    if (!QDir().mkpath(downloadDir)) {
+        setLastError(i18n("Could not create the download folder %1", downloadDir));
         return false;
     }
-    outFile.write(result.data);
-    outFile.close();
+    const QString targetPath = dedupedFilePath(downloadDir, name);
+
+    QFile outFile;
+    if (!openForExclusiveWrite(outFile, targetPath)) {
+        setLastError(i18n("Could not write attachment to %1", downloadDir));
+        return false;
+    }
+    if (!writeAllOrRemove(outFile, result.data)) {
+        setLastError(i18n("The attachment could not be written in full (is the disk full?)."));
+        return false;
+    }
 
     setLastError(QString());
     return true;
+}
+
+// Attachment types this app is willing to hand to the desktop's own handler.
+//
+// Deliberately short and deliberately not derived from the filename. The
+// ephemeral-open path below invokes QDesktopServices::openUrl on bytes that
+// came out of a mail message, and the handler the desktop picks is chosen by
+// suffix -- so "Invoice.pdf.desktop", "notes.pdf.html" or any of the other
+// double-extension classics used to be enough to get an arbitrary handler
+// launched with the user's full session privileges. Worse, this only ever
+// happened in Hostile Location Protection mode: the one mode meant for users
+// who expect to be attacked was the only one that auto-opened hostile input.
+//
+// The declared MIME type from the server's attachment listing is the gate,
+// and the extension is then forced to match it, so a mismatch cannot smuggle
+// a different handler in.
+static const QHash<QString, QString>& viewableAttachmentTypes()
+{
+    static const QHash<QString, QString> kTypes = {
+        { QStringLiteral("application/pdf"), QStringLiteral("pdf") },
+        { QStringLiteral("image/png"), QStringLiteral("png") },
+        { QStringLiteral("image/jpeg"), QStringLiteral("jpg") },
+        { QStringLiteral("image/gif"), QStringLiteral("gif") },
+        { QStringLiteral("image/webp"), QStringLiteral("webp") },
+        { QStringLiteral("text/plain"), QStringLiteral("txt") },
+    };
+    return kTypes;
 }
 
 // Hostile Location Protection: never write an attachment to Downloads.
@@ -819,8 +975,20 @@ bool MailController::downloadAttachment(const QString& mailbox, const QString& m
 // XDG_RUNTIME_DIR differently would lose the property entirely. The UI says
 // "View (temporary)" rather than "Save" so the weaker guarantee is not
 // oversold.
-bool MailController::openAttachmentEphemerally(const QString& name, const QByteArray& data)
+bool MailController::openAttachmentEphemerally(const QString& name, const QString& declaredMimeType,
+                                                const QByteArray& data)
 {
+    // Type gate, before a single byte is written. See
+    // viewableAttachmentTypes() for why the server-declared type decides and
+    // the filename does not.
+    const auto typeEntry = viewableAttachmentTypes().constFind(declaredMimeType.trimmed().toLower());
+    if (typeEntry == viewableAttachmentTypes().constEnd()) {
+        setLastError(i18n("KyPost will not open attachments of this type (%1). Turn off Hostile "
+                           "Location Protection to save it and open it yourself.",
+                           declaredMimeType.isEmpty() ? i18n("unknown") : declaredMimeType));
+        return false;
+    }
+
     // Prefer XDG_RUNTIME_DIR (tmpfs, 0700, per-user) over TempLocation,
     // which is usually /tmp and usually disk-backed and world-traversable.
     QString baseDir = qEnvironmentVariable("XDG_RUNTIME_DIR");
@@ -834,17 +1002,27 @@ bool MailController::openAttachmentEphemerally(const QString& name, const QByteA
     }
     QFile::setPermissions(dir, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
 
-    const QString path = dedupedFilePath(dir, name);
-    QFile outFile(path);
-    if (!outFile.open(QIODevice::WriteOnly)) {
+    // Force the extension to the one the allowlisted MIME type implies,
+    // rather than keeping whatever the message asked for. Without this,
+    // "report.pdf.desktop" declared as application/pdf would pass the gate
+    // above and still be launched as a .desktop file.
+    const QString safeBaseName = QFileInfo(name).completeBaseName();
+    const QString safeName = (safeBaseName.isEmpty() ? QStringLiteral("attachment") : safeBaseName)
+        + QLatin1Char('.') + typeEntry.value();
+
+    const QString path = dedupedFilePath(dir, safeName);
+    QFile outFile;
+    if (!openForExclusiveWrite(outFile, path)) {
         setLastError(i18n("Could not open the attachment"));
         return false;
     }
     // Owner-only before any bytes are written, so the content is never
     // briefly readable by other local users.
     outFile.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner);
-    outFile.write(data);
-    outFile.close();
+    if (!writeAllOrRemove(outFile, data)) {
+        setLastError(i18n("The attachment could not be written in full (is the disk full?)."));
+        return false;
+    }
 
     m_ephemeralAttachments.append(path);
     QDesktopServices::openUrl(QUrl::fromLocalFile(path));

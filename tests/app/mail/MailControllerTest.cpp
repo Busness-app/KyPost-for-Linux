@@ -41,6 +41,8 @@ private slots:
     void sendMailUsesHtmlSendMode();
     void downloadAttachmentSanitizesPathTraversalInSuggestedName();
     void downloadAttachmentSanitizesPathTraversalInServerFilename();
+    void hostileLocationRefusesToOpenNonAllowlistedAttachmentTypes();
+    void hostileLocationForcesTheExtensionToMatchTheDeclaredType();
     void findByMessageIdReturnsMapForCachedEmailAndEmptyMapWhenMissing();
     void allKeywordSettingsReflectsInboxCacheAndSetKeywordVisibleRoundTrips();
     void sendMailEmitsPickupFallbackRequiredWithTheServersAddressList();
@@ -1012,6 +1014,133 @@ void MailControllerTest::preflightRecipientsFailureClearsRatherThanReassures()
     controller.preflightRecipients(QStringLiteral("bob@example.com"), QString(), QString());
 
     QVERIFY(controller.pgpKeylessRecipients().isEmpty());
+}
+
+
+// Hostile Location Protection routes attachments through
+// openAttachmentEphemerally(), which ends in QDesktopServices::openUrl --
+// i.e. it hands attacker-supplied bytes to whatever handler the desktop has
+// registered for the file's extension. There was no type check at all, so
+// "Invoice.pdf.desktop" or "notes.pdf.html" got an arbitrary handler
+// launched with the user's full session privileges. The mode built for
+// people who expect to be attacked was the only mode that auto-opened
+// hostile input.
+void MailControllerTest::hostileLocationRefusesToOpenNonAllowlistedAttachmentTypes()
+{
+    QStandardPaths::setTestModeEnabled(true);
+
+    Database db;
+    QVERIFY(db.open(QStringLiteral(":memory:")));
+    EmailDao emailDao(db.handle());
+
+    // Declared type is not on the allowlist, whatever the name claims.
+    FakeRelayServer fake(httpResponse(200, "OK", "#!/bin/sh\necho pwned", "application/x-desktop",
+                                       { { "Content-Disposition",
+                                           "attachment; filename=\"Invoice.pdf.desktop\"" } }));
+
+    QTemporaryDir secureDir;
+    QVERIFY(secureDir.isValid());
+    SecureStoreFile secureStore(secureDir.path());
+    PairingStore pairingStore(secureStore);
+    savePairing(pairingStore, fake.port());
+
+    QTemporaryDir cursorDir;
+    QVERIFY(cursorDir.isValid());
+    CursorStore cursorStore(cursorDir.filePath(QStringLiteral("cursor.ini")));
+
+    QTemporaryDir settingsDir;
+    QVERIFY(settingsDir.isValid());
+    SettingsStore settingsStore(settingsDir.filePath(QStringLiteral("settings.ini")));
+    settingsStore.setHostileLocationProtectionEnabled(true);
+    KeywordRepository keywordRepository(settingsStore);
+
+    QTemporaryDir runtimeDir;
+    QVERIFY(runtimeDir.isValid());
+    qputenv("XDG_RUNTIME_DIR", runtimeDir.path().toUtf8());
+
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    RelayMailSource source(http);
+    PgpBootstrapClient bootstrapClient(http);
+    PgpRecipientChecker recipientChecker(http);
+    MailRepository mailRepository(source, emailDao, pairingStore, cursorStore);
+    FolderDao folderDao(db.handle());
+    FolderClient folderClient(http);
+    FolderRepository folderRepository(folderClient, folderDao, pairingStore);
+
+    MailController controller(mailRepository, source, keywordRepository, pairingStore, folderRepository,
+                               settingsStore, bootstrapClient, recipientChecker);
+
+    const bool ok = controller.downloadAttachment(QStringLiteral("Inbox"), QStringLiteral("42"), 0,
+                                                    QStringLiteral("Invoice.pdf.desktop"));
+
+    QCOMPARE(ok, false);
+    QVERIFY2(!controller.lastError().isEmpty(), "the refusal must be explained, not silent");
+
+    // Nothing was written anywhere for a handler to pick up.
+    const QDir attachmentDir(runtimeDir.filePath(QStringLiteral("kypost-attachments")));
+    QVERIFY(attachmentDir.entryList(QDir::Files).isEmpty());
+}
+
+// Even for an allowlisted type, the filename must not decide the handler:
+// a .desktop name declared as application/pdf would otherwise pass the gate
+// and still be launched as a .desktop file.
+void MailControllerTest::hostileLocationForcesTheExtensionToMatchTheDeclaredType()
+{
+    QStandardPaths::setTestModeEnabled(true);
+
+    Database db;
+    QVERIFY(db.open(QStringLiteral(":memory:")));
+    EmailDao emailDao(db.handle());
+
+    FakeRelayServer fake(httpResponse(200, "OK", "%PDF-1.4 fake", "application/pdf",
+                                       { { "Content-Disposition",
+                                           "attachment; filename=\"Invoice.pdf.desktop\"" } }));
+
+    QTemporaryDir secureDir;
+    QVERIFY(secureDir.isValid());
+    SecureStoreFile secureStore(secureDir.path());
+    PairingStore pairingStore(secureStore);
+    savePairing(pairingStore, fake.port());
+
+    QTemporaryDir cursorDir;
+    QVERIFY(cursorDir.isValid());
+    CursorStore cursorStore(cursorDir.filePath(QStringLiteral("cursor.ini")));
+
+    QTemporaryDir settingsDir;
+    QVERIFY(settingsDir.isValid());
+    SettingsStore settingsStore(settingsDir.filePath(QStringLiteral("settings.ini")));
+    settingsStore.setHostileLocationProtectionEnabled(true);
+    KeywordRepository keywordRepository(settingsStore);
+
+    QTemporaryDir runtimeDir;
+    QVERIFY(runtimeDir.isValid());
+    qputenv("XDG_RUNTIME_DIR", runtimeDir.path().toUtf8());
+
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    RelayMailSource source(http);
+    PgpBootstrapClient bootstrapClient(http);
+    PgpRecipientChecker recipientChecker(http);
+    MailRepository mailRepository(source, emailDao, pairingStore, cursorStore);
+    FolderDao folderDao(db.handle());
+    FolderClient folderClient(http);
+    FolderRepository folderRepository(folderClient, folderDao, pairingStore);
+
+    MailController controller(mailRepository, source, keywordRepository, pairingStore, folderRepository,
+                               settingsStore, bootstrapClient, recipientChecker);
+
+    QVERIFY(controller.downloadAttachment(QStringLiteral("Inbox"), QStringLiteral("42"), 0,
+                                           QStringLiteral("Invoice.pdf.desktop")));
+
+    const QDir attachmentDir(runtimeDir.filePath(QStringLiteral("kypost-attachments")));
+    const QStringList written = attachmentDir.entryList(QDir::Files);
+    QCOMPARE(written.size(), 1);
+    QVERIFY2(written.first().endsWith(QStringLiteral(".pdf")),
+             "the extension must come from the declared MIME type, not the message");
+    QVERIFY(!written.first().contains(QStringLiteral(".desktop")));
+
+    controller.clearEphemeralAttachments();
 }
 
 QTEST_GUILESS_MAIN(MailControllerTest)

@@ -19,6 +19,8 @@
     <file>components/TokenField.qml</file>
     <file>components/AutocompleteDropdown.qml</file>
     <file>components/Toast.qml</file>
+    <file>components/LockOverlay.qml</file>
+    <file>components/StatusBanner.qml</file>
     <file>components/AddressBookPickerDialog.qml</file>
     <file>components/RichBodyEditor.qml</file>
     <file>components/HyperlinkDialog.qml</file>

@@ -872,12 +872,14 @@ Kirigami.ApplicationWindow {
         }
     }
 
-    Loader {
-        id: unlockOverlay
-        anchors.fill: parent
-        z: 1000
-        active: AppLock.locked
-        visible: active
-        source: "pages/Unlock.qml"
-    }
+    // Persistent warnings for an expired pairing / undecryptable credentials
+    // -- see components/StatusBanner.qml. Declared before the lock overlay so
+    // it paints underneath it: a locked app must not leak account state.
+    StatusBanner {}
+
+    // Same component the desktop root and its pop-out windows use, so there
+    // is one definition of "what the lock screen covers" rather than two
+    // hand-maintained copies. Mobile has no pop-out windows, so this single
+    // instance covers everything here.
+    LockOverlay { id: unlockOverlay }
 }

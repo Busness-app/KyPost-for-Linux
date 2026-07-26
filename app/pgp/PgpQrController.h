@@ -105,4 +105,9 @@ private:
     QString m_scannedFingerprint;
     QString m_scannedPublicKey;
     Contact m_scannedContactCard;
+    // Guards this controller's network-calling slots against re-entering
+    // through the nested QEventLoop HttpClient runs -- QML keeps delivering
+    // clicks while a blocking call is suspended. See
+    // core/util/ReentrancyGuard.h.
+    bool m_inNetworkCall = false;
 };

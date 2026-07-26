@@ -30,9 +30,15 @@ void requestRelaunch();
 
 bool relaunchPending();
 
-// Spawns the detached replacement process, preserving argv[1..]. Call only
-// after the event loop has returned and the D-Bus name has been released.
-// No-op when no relaunch was requested.
-void performPendingRelaunch();
+// Spawns the detached replacement process, preserving argv[1..] EXCEPT any
+// kypost:// deep link -- see the .cpp for why a live pairing token must not
+// be replayed unattended into a freshly-wiped process. Call only after the
+// event loop has returned and the D-Bus name has been released.
+//
+// Returns false when the spawn failed (and logs), true otherwise including
+// the no-relaunch-requested case. main() reports a non-zero exit on false:
+// silently vanishing right after wiping the user's data is the one outcome
+// worse than the wipe itself.
+bool performPendingRelaunch();
 
 } // namespace AppRelauncher

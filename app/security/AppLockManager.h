@@ -4,6 +4,7 @@
 #include <QString>
 
 class AppLockStore;
+class CredentialSealer;
 class SettingsStore;
 
 // QML-facing app lock ("AppLock" singleton), backing Settings > Security's
@@ -20,6 +21,13 @@ class SettingsStore;
 // walked away" differ between Desktop (hide-to-tray, suspend, session lock)
 // and Mobile (application state leaving Active), and this repo already
 // branches those at the GeneralController::isDesktopMode boundary.
+//
+// Sealing the device secret goes through an injected CredentialSealer whose
+// methods return bool, NOT through a signal the host handles in a lambda.
+// See core/security/CredentialSealer.h for the two data-loss bugs the signal
+// version caused; the short version is that a void-returning signal cannot
+// tell this class whether the operation it ordered succeeded, so the stored
+// gate flag and the real state of the secret could disagree.
 class AppLockManager : public QObject
 {
     Q_OBJECT
@@ -31,9 +39,20 @@ class AppLockManager : public QObject
     Q_PROPERTY(int failedAttempts READ failedAttempts NOTIFY lockoutChanged)
     Q_PROPERTY(bool credentialPinGateEnabled READ credentialPinGateEnabled NOTIFY lockStateChanged)
     Q_PROPERTY(bool hostileLocationEnabled READ hostileLocationEnabled NOTIFY lockStateChanged)
+    // True when the correct PIN was accepted but the sealed device secret
+    // could not be opened (secret store unavailable/corrupt). The app is
+    // unlocked, but every authenticated request will 401 until this clears,
+    // so the roots surface it as a banner rather than letting the user
+    // conclude the server is down. See tryUnlock().
+    Q_PROPERTY(bool credentialsUnavailable READ credentialsUnavailable NOTIFY credentialsUnavailableChanged)
+    // Minimum PIN length, exposed so Settings.qml can enforce and explain
+    // the same rule the C++ side enforces, instead of hardcoding a second
+    // copy that could drift.
+    Q_PROPERTY(int minimumPinLength READ minimumPinLength CONSTANT)
 
 public:
-    AppLockManager(AppLockStore& store, SettingsStore& settingsStore, QObject* parent = nullptr);
+    AppLockManager(AppLockStore& store, SettingsStore& settingsStore, CredentialSealer& sealer,
+                   QObject* parent = nullptr);
 
     bool lockEnabled() const;
     bool locked() const;
@@ -41,25 +60,44 @@ public:
     int failedAttempts() const;
     bool credentialPinGateEnabled() const;
     bool hostileLocationEnabled() const;
+    bool credentialsUnavailable() const;
+    int minimumPinLength() const;
 
     // Returns true and clears `locked` on the right PIN. On a wrong PIN,
     // increments the attempt count, applies the backoff, and -- at the wipe
     // threshold -- emits wipeRequested() and returns false.
+    //
+    // Fails closed if the attempt count cannot be persisted: without a
+    // durable counter there is no backoff and no wipe threshold, i.e. an
+    // unlimited guessing oracle, so this refuses further attempts for the
+    // rest of the process instead.
     Q_INVOKABLE bool tryUnlock(const QString& pin);
 
     // Turns the lock on (or changes the PIN). Changing an existing PIN
     // requires the current one; `currentPin` is ignored when no lock is set
-    // yet. Returns false if the current PIN is wrong or the store write
-    // fails.
+    // yet. Returns false if the current PIN is wrong, the new PIN fails
+    // PinPolicy, or the store write fails.
     Q_INVOKABLE bool setPin(const QString& currentPin, const QString& newPin);
+
+    // PinPolicy::validate() as a localized reason string, or "" when the PIN
+    // is acceptable. Lets the Settings dialog explain a rejection before the
+    // user commits to it rather than only reporting a bare failure.
+    Q_INVOKABLE QString pinRejectionReason(const QString& pin) const;
 
     // Turns the lock off. Requires the current PIN -- otherwise anyone with
     // the app open could remove the protection that the lock exists to
     // provide.
+    //
+    // Refuses (returns false, lock stays on) if the credential gate is
+    // enabled and the device secret cannot be unsealed: destroying the PIN
+    // in that state would strand the pairing behind a key that no longer
+    // exists anywhere.
     Q_INVOKABLE bool disableLock(const QString& currentPin);
 
     // Requires the current PIN in BOTH directions: enabling seals the device
-    // secret under the PIN, disabling unseals it, and both need the key.
+    // secret under the PIN, disabling unseals it, and both need the key. The
+    // stored flag is only written once the seal/unseal has actually
+    // succeeded.
     Q_INVOKABLE bool setCredentialPinGateEnabled(bool enabled, const QString& currentPin);
 
     // Hostile Location Protection. Requires the current PIN in both
@@ -80,27 +118,12 @@ signals:
     void lockedChanged();
     void lockStateChanged();
     void lockoutChanged();
+    void credentialsUnavailableChanged();
 
     // Emitted when failed attempts reach the wipe threshold. The host owns
     // what "wipe" means (database, caches, pairing) -- this class knows only
     // that the threshold was crossed.
     void wipeRequested();
-
-    // Emitted when the credential gate is toggled, so the host can seal or
-    // unseal the stored device secret. Carries the PIN because the host
-    // needs it to derive the key, and holding it here would keep it in
-    // memory longer than the operation needs.
-    void credentialGateChanged(bool enabled, const QString& pin);
-
-    // Emitted on a successful unlock, carrying the PIN so the host can open
-    // the sealed device secret for this session. Carried rather than stored
-    // so the PIN lives no longer than the operation needs.
-    void unlockedWithPin(const QString& pin);
-
-    // Emitted when the app re-locks, so the host can drop the in-memory
-    // plaintext secret. No PIN: re-locking needs no key, because the sealed
-    // blob on disk was never destroyed.
-    void relockRequested();
 
     // Emitted when a setting has been persisted that only takes effect at
     // startup. The host wipes on-disk data if `wipeDisk` is set, then
@@ -109,7 +132,21 @@ signals:
     void relaunchRequired(bool wipeDisk);
 
 private:
+    void setCredentialsUnavailable(bool unavailable);
+    // Records a failed attempt durably. False means the store refused, which
+    // this class treats as a hard stop -- see tryUnlock().
+    bool recordFailedAttempt(qint64 nowEpochMs);
+
     AppLockStore& m_store;
     SettingsStore& m_settingsStore;
+    CredentialSealer& m_sealer;
     bool m_locked = false;
+    bool m_credentialsUnavailable = false;
+    // Latched once the attempt counter could not be persisted. Never
+    // cleared: a store that failed to record a guess cannot be trusted to
+    // rate-limit the next one, and a relaunch is a cheap recovery.
+    bool m_attemptRecordingBroken = false;
+    // In-process floor under the persisted counter, so even a store that
+    // accepts writes and silently loses them still caps guessing per launch.
+    int m_sessionFailedAttempts = 0;
 };

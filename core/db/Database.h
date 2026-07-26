@@ -2,6 +2,19 @@
 
 #include <QSqlDatabase>
 #include <QString>
+#include <QStringList>
+
+// Splits a migration file into individual statements on top-level semicolons.
+//
+// Not sql.split(';'): a semicolon inside a 'string literal', a "quoted
+// identifier", a comment, or a CREATE TRIGGER's BEGIN ... END body is not a
+// statement separator. The naive split worked only because no migration has
+// yet contained one of those, i.e. it was one ordinary schema change away
+// from silently producing invalid SQL fragments.
+//
+// Exposed (rather than file-local) so DatabaseTest can cover those cases
+// directly instead of only through a live migration.
+QStringList splitSqlStatements(const QString& sql);
 
 // Opens a SQLite connection (":memory:" or a real file path) and applies
 // core/db/migrations/*.sql in order, idempotently, guarded by

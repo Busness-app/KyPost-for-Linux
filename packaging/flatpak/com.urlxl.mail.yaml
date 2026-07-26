@@ -77,11 +77,37 @@ finish-args:
   # portal, so the narrower --socket=pipewire (sufficient for a
   # GStreamer/pipewire-portal backend) is NOT enough here --
   # confirmed by which qt6-multimedia-* backend package is actually
-  # installed (ffmpeg, not gstreamer) on this dev machine. Flag for
-  # re-verification against whichever backend org.kde.Sdk 6.10's
-  # runtime actually ships if pipewire access alone turns out to
-  # work there instead.
-  - --device=all
+  # installed (ffmpeg, not gstreamer) on this dev machine.
+  #
+  # NARROWED from --device=all (2026-07-26 review). --device=all is
+  # not "cameras": it exposes every device node in /dev to the
+  # sandbox, including /dev/input, i.e. the ability to read every
+  # keystroke going to every other application in the session. That
+  # is a strictly larger grant than the GPU + camera this app needs,
+  # and it was reached for because it was the flag that made the
+  # camera work, not because the surface was intended.
+  #
+  # --device=dri covers the GPU nodes the Qt Quick scenegraph and
+  # WebEngine use. Camera access rides on --socket=pipewire plus the
+  # camera portal where the backend supports it; the remaining
+  # V4L2-direct case is handled by the far narrower --device=input
+  # substitute below being ABSENT on purpose -- if the ffmpeg backend
+  # in org.kde.Sdk 6.10 turns out to need raw V4L2, add
+  # `--device=all` back ONLY with a dated note recording that it was
+  # re-verified as necessary against that runtime, rather than
+  # inherited from this dev machine.
+  - --device=dri
+  - --socket=pipewire
+
+  # Attachment downloads. Without a filesystem grant, $HOME inside the
+  # sandbox is ~/.var/app/com.urlxl.mail, so
+  # QStandardPaths::DownloadLocation resolved to a directory the user
+  # has no way to find -- "Save attachment" reported success and put
+  # the file nowhere they would ever look. (Compose's file picker was
+  # unaffected: it goes through the portal, which grants access per
+  # file.) xdg-download is the narrowest grant that makes the save
+  # path mean what the UI says it means.
+  - --filesystem=xdg-download
 
   # Desktop notifications (KF6::Notifications, NotificationDispatcher.cpp,
   # KNotification("newMail")): deliberately NOT adding

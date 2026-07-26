@@ -30,6 +30,11 @@ public:
     NtfySubscriber(QNetworkAccessManager& manager, const QString& baseUrl, const QString& topic,
                     QObject* parent = nullptr, int reconnectDelayMs = 5000);
 
+    // Ceiling for the exponential reconnect backoff. Without a backoff at
+    // all (the original fixed 5s retry), a hard-down or misconfigured push
+    // server got a request every five seconds for as long as the app ran.
+    static constexpr int kMaxReconnectDelayMs = 5 * 60 * 1000;
+
     // Starts (or restarts) the long-poll GET to
     // {baseUrl}/{topic}/json?since={since}. since is a unix-seconds
     // timestamp or ntfy message id -- the resume point after a reconnect;
@@ -37,6 +42,16 @@ public:
     // semantics -- 0 is not translated into "all history").
     void start(qint64 since = 0);
     void stop();
+
+    // Repoints the subscription at a different topic. Needed because the
+    // topic is rotated on every re-pair (main.cpp), and without this the
+    // running subscriber stayed on whatever topic existed at startup -- the
+    // rotation only took effect at the next launch, which made "rotated on
+    // re-pair" true of the stored value and false of the live connection.
+    // Reconnects immediately when currently running; otherwise the new topic
+    // is used by the next start().
+    void setTopic(const QString& topic);
+    QString topic() const;
 
 signals:
     // One emission per "event":"message" line -- this class only demuxes
@@ -49,9 +64,17 @@ signals:
     // transport error). Also fired for the long-poll connection's own
     // server-side timeout close -- v1 does not distinguish "expected
     // timeout" from "real failure". NtfySubscriber reconnects on its own
-    // after reconnectDelayMs using the last successfully-processed
-    // message's `time` as the new since, so no messages are lost.
-    void connectionLost(const QString& reason);
+    // with exponential backoff (reconnectDelayMs doubling to
+    // kMaxReconnectDelayMs), using the last successfully-processed message's
+    // `time` as the new since, so no messages are lost.
+    //
+    // `consecutiveFailures` counts reconnect attempts since the last
+    // successful message: TransportStateMachine uses it to distinguish a
+    // single blip (retry, stay on this tier) from a genuinely unreachable
+    // server (demote to polling). A fixed reconnect delay with no such
+    // signal is why one dropped connection used to permanently demote the
+    // app to 90-second polling.
+    void connectionLost(const QString& reason, int consecutiveFailures);
 
 private slots:
     void onReadyRead();
@@ -61,6 +84,10 @@ private:
     void sendRequest();
     void processLine(const QByteArray& line);
 
+    // Current backoff delay, doubling per consecutive failure and reset by
+    // the first message that arrives on a fresh connection.
+    int currentReconnectDelayMs() const;
+
     QNetworkAccessManager& m_manager;
     QString m_baseUrl;
     QString m_topic;
@@ -69,4 +96,5 @@ private:
     qint64 m_since = 0;
     QByteArray m_lineBuffer; // partial line across onReadyRead calls
     bool m_stopped = true;
+    int m_consecutiveFailures = 0;
 };

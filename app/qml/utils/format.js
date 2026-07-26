@@ -9,6 +9,37 @@ function escapeHtml(s) {
     return (s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
 }
 
+// Schemes a URL taken from message content may be handed to
+// Qt.openUrlExternally.
+//
+// Everything else is refused. openUrlExternally goes to xdg-open, which
+// dispatches on scheme to whatever handler the desktop registered -- and
+// this app registers itself for kypost:// (packaging's .desktop MimeType),
+// so an <a href="kypost://native-pair?...&srv=attacker"> in a message used
+// to route straight back into PairingController and raise this app's own
+// pairing-confirm dialog for the attacker's server. Every other scheme with
+// a handler on the session was reachable the same way.
+//
+// Lives here rather than inside EmailDetail.qml so it is testable without
+// standing up the whole singleton graph that file needs.
+var externallyOpenableSchemes = ["http", "https", "mailto"]
+
+function isExternallyOpenableUrl(url) {
+    const s = String(url === undefined || url === null ? "" : url)
+    const colon = s.indexOf(":")
+    if (colon <= 0)
+        return false // relative or scheme-less: nothing to hand to the desktop
+    return externallyOpenableSchemes.indexOf(s.substring(0, colon).toLowerCase()) !== -1
+}
+
+// The scheme part of a URL, lowercased, or "" -- used only to tell the user
+// which kind of link was refused.
+function urlScheme(url) {
+    const s = String(url === undefined || url === null ? "" : url)
+    const colon = s.indexOf(":")
+    return colon <= 0 ? "" : s.substring(0, colon).toLowerCase()
+}
+
 // Splits a plain display name on whitespace and returns up to its first two
 // initials, uppercased. Returns "?" when no initials can be derived (empty
 // or whitespace-only input) -- this is the exact "up to 2 characters from

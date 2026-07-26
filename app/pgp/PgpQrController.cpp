@@ -5,6 +5,7 @@
 #include "net/NetworkError.h"
 #include "net/PgpQrClient.h"
 #include "pgp/PgpQrTargetValidator.h"
+#include "util/ReentrancyGuard.h"
 
 #include <KLocalizedString>
 
@@ -79,6 +80,10 @@ void PgpQrController::setLastError(const QString& error)
 
 void PgpQrController::refreshMyQrCode()
 {
+    ReentrancyGuard guard(m_inNetworkCall);
+    if (!guard.entered())
+        return;
+
     setBusy(true);
     const PgpQrTokenOutcome outcome = m_repository.fetchMyToken();
     setBusy(false);
@@ -138,6 +143,10 @@ QString PgpQrController::myQrImageDataUrl() const
 
 void PgpQrController::scanQrPayload(const QString& decodedText)
 {
+    ReentrancyGuard guard(m_inNetworkCall);
+    if (!guard.entered())
+        return;
+
     // No RelayAuth -- the token in the URL is the sole credential, and the
     // scan target may be a different server than this device's own paired
     // one, so this deliberately doesn't route through m_repository at all.

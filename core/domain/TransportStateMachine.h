@@ -30,7 +30,14 @@ public:
     // 90 real seconds to exercise the polling tier's timer-driven fetch
     // path.
     TransportStateMachine(NtfySubscriber& subscriber, PushRepository& pushRepository,
-                           QObject* parent = nullptr, int pollIntervalMs = 90000);
+                           QObject* parent = nullptr, int pollIntervalMs = 90000,
+                           int subscriberRetryAfterMs = 5 * 60 * 1000);
+
+    // Consecutive subscriber reconnect failures tolerated before demoting to
+    // Polling. NtfySubscriber retries with its own exponential backoff in
+    // between, so this is "the server has been unreachable for a while", not
+    // "one packet was lost".
+    static constexpr int kSubscriberFailureBudget = 3;
 
     // Called by app-layer code (a later phase) when the KUnifiedPush
     // distributor path is confirmed working (endpoint acquired, registered)
@@ -48,6 +55,11 @@ public:
 
     TransportTier currentTier() const;
 
+    // Re-runs the tier decision from the current inputs. Called internally
+    // on the retry timer after a demotion to Polling; public so a host can
+    // also force a re-evaluation (e.g. on a network-came-back signal).
+    void reevaluateTier();
+
 signals:
     void tierChanged(TransportTier tier);
     // Forwards NtfySubscriber::messageReceived while in the
@@ -60,7 +72,7 @@ signals:
     void pollTick(QVector<PushNotification> delivered);
 
 private slots:
-    void onSubscriberConnectionLost(const QString& reason);
+    void onSubscriberConnectionLost(const QString& reason, int consecutiveFailures);
     void onPollTimer();
 
 private:
@@ -77,6 +89,13 @@ private:
     NtfySubscriber& m_subscriber;
     PushRepository& m_pushRepository;
     QTimer m_pollTimer; // 90s interval, per the plan doc's stated cadence
+    // Fires once after a subscriber-driven demotion to Polling, to try the
+    // EmbeddedSubscriber tier again. Without it the demotion was a one-way
+    // ratchet: selectTier() only ran from setDistributorAvailable/
+    // setForegrounded, so a single dropped connection left a still-
+    // foregrounded app on 90-second polling until the user alt-tabbed away
+    // and back.
+    QTimer m_subscriberRetryTimer;
     bool m_distributorAvailable = false;
     bool m_foregrounded = false;
     TransportTier m_tier = TransportTier::Polling;

@@ -45,6 +45,12 @@ ctest --test-dir build
 
 A change is not verified until this builds cleanly and `ctest` is green.
 
+`ctest` covers both the C++ tests and the QML suite (`QmlTests`, Qt Quick
+Test, added 2026-07-26 — see `tests/qml/`). The QML tests run against fake
+`com.urlxl.mail` singletons (`tests/qml/FakeSingletons.h`) and load their
+components from the shipped `app/qml/qml.qrc`, so a component missing from
+the resource bundle fails there rather than at runtime.
+
 ## 4. Locked decisions (do not relitigate)
 
 Carried forward verbatim (in substance) from `Linux_QT_Client_Plan.md`'s own
@@ -147,6 +153,43 @@ Use the smallest correct change.
 
 Non-trivial logic must include one runnable check (unit test or minimal self-check).
 
+## 6b. Rules added by the 2026-07-26 hostile review
+
+These are not style preferences. Each one is here because breaking it
+already produced a real defect in this repo.
+
+- **Never discard a `bool`/`std::optional` returned by a store, a
+  filesystem call, or a network service.** `SecureStoreKeychain::set()`
+  returns false on any machine with no Secret Service provider running, and
+  every caller ignoring it is how "pairing succeeded" could coexist with an
+  empty keychain, and how the credential gate could report itself ON with
+  the device secret still in plaintext. `QFile::write`, `QDir::mkpath` and
+  `QProcess::startDetached` are the same story.
+- **Do not use a Qt signal to order an operation whose result you need.**
+  A signal returns `void`. `AppLockManager` used to announce seal/unseal
+  through `credentialGateChanged` and could not learn whether it happened;
+  that is now the `CredentialSealer` interface
+  (`core/security/CredentialSealer.h`). If the caller must branch on
+  success, inject a collaborator, not a connection.
+- **Security controls are enforced in C++, not only in QML.** QML is a
+  presentation layer. The PIN policy lives in `core/security/PinPolicy.h`
+  and `AppLockManager` enforces it; `Settings.qml` explains it.
+- **Every `Window` that can display mail or contact data instantiates
+  `components/LockOverlay.qml`.** DesktopRoot creates real top-level
+  Windows for pop-outs; an overlay anchored to the main window does not
+  cover them. This shipped as a total app-lock bypass.
+- **Anything QML-side that is a security control needs a QML test**
+  (`tests/qml/`, ctest target `QmlTests`). The lock bypass above shipped
+  because 73 C++ tests could not see a single `.qml` file.
+- **Guard network-calling invokables with `ReentrancyGuard`**
+  (`core/util/ReentrancyGuard.h`). `HttpClient` runs a nested `QEventLoop`,
+  so QML keeps delivering clicks while a call is suspended. Where a guarded
+  method legitimately calls another, split out an unguarded `*Internal`
+  body rather than removing the guard.
+- **Migrations are transactional.** `Database::open()` wraps each migration
+  and its `user_version` bump in one transaction; statement splitting goes
+  through `splitSqlStatements()`, not `QString::split(';')`.
+
 ## 7. DOX framework
 
 ### Core Contract
@@ -177,6 +220,13 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   rotation after pairing never reaches the server (latent, unfixed
   server-side). Don't re-register on every launch and assume it worked —
   handle the 401 explicitly.
+  **Handled 2026-07-26:** both `reregisterIfPaired()` call sites in
+  `main.cpp` go through a `reregisterAndReport` lambda that inspects the
+  `std::optional<NativeRegistrationResult>` and sets
+  `PairingController::reregistrationRejected`, which both QML roots bind to
+  a persistent banner (`components/StatusBanner.qml`). Before that, both
+  sites discarded the result and the only symptom was push silently
+  stopping behind a green "Paired" badge.
 - **`mail.urlxl.com` sits behind Cloudflare** (bare `urlxl.com` → 530) and
   needs a real, non-default User-Agent set on QNAM for every request from
   day one — a bare/default UA gets blocked.

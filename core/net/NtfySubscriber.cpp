@@ -24,7 +24,37 @@ void NtfySubscriber::start(qint64 since)
 {
     m_since = since;
     m_stopped = false;
+    m_consecutiveFailures = 0;
     sendRequest();
+}
+
+void NtfySubscriber::setTopic(const QString& topic)
+{
+    if (m_topic == topic)
+        return;
+    m_topic = topic;
+    m_consecutiveFailures = 0;
+    // A rotated topic has no shared history with the old one, so resuming
+    // from the previous `since` would be meaningless. Start fresh.
+    m_since = 0;
+    if (!m_stopped)
+        sendRequest();
+}
+
+QString NtfySubscriber::topic() const
+{
+    return m_topic;
+}
+
+int NtfySubscriber::currentReconnectDelayMs() const
+{
+    // Doubling, capped. m_consecutiveFailures is already >= 1 when this is
+    // read (incremented in onFinished before the retry is scheduled), so the
+    // first retry waits exactly m_reconnectDelayMs.
+    qint64 delay = m_reconnectDelayMs;
+    for (int i = 1; i < m_consecutiveFailures && delay < kMaxReconnectDelayMs; ++i)
+        delay *= 2;
+    return static_cast<int>(qMin<qint64>(delay, kMaxReconnectDelayMs));
 }
 
 void NtfySubscriber::stop()
@@ -87,12 +117,20 @@ void NtfySubscriber::onFinished()
     if (m_stopped)
         return;
 
-    emit connectionLost(reason);
+    ++m_consecutiveFailures;
+    emit connectionLost(reason, m_consecutiveFailures);
+
+    // A listener may have called stop() from the signal above (that is
+    // exactly what TransportStateMachine does once the failure budget is
+    // spent) -- re-check before scheduling, or a demoted tier would keep a
+    // zombie reconnect running underneath the polling tier.
+    if (m_stopped)
+        return;
 
     // m_since was already advanced to the last processed message's `time`
     // by processLine(), so the retry below resumes from there rather than
     // from 0 -- no messages are lost across a reconnect.
-    QTimer::singleShot(m_reconnectDelayMs, this, [this]() {
+    QTimer::singleShot(currentReconnectDelayMs(), this, [this]() {
         if (!m_stopped)
             sendRequest();
     });
@@ -117,6 +155,11 @@ void NtfySubscriber::processLine(const QByteArray& line)
 
     if (obj.contains(QStringLiteral("time")))
         m_since = static_cast<qint64>(obj.value(QStringLiteral("time")).toDouble());
+
+    // A real message proves the connection works: reset the backoff so a
+    // long-lived subscription that drops after hours retries promptly rather
+    // than at whatever delay an earlier outage had escalated to.
+    m_consecutiveFailures = 0;
 
     emit messageReceived(obj);
 }

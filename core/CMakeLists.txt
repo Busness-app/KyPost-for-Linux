@@ -40,6 +40,8 @@ add_library(kypostcore STATIC
   domain/PushRepository.h
   domain/TransportStateMachine.cpp
   domain/TransportStateMachine.h
+  domain/PairingStoreCredentialSealer.cpp
+  domain/PairingStoreCredentialSealer.h
   db/Database.cpp
   db/Database.h
   db/EmailDao.cpp
@@ -65,6 +67,9 @@ add_library(kypostcore STATIC
   security/CredentialCipher.h
   security/LockoutPolicy.cpp
   security/LockoutPolicy.h
+  security/PinPolicy.cpp
+  security/PinPolicy.h
+  security/CredentialSealer.h
   stores/SettingsStore.cpp
   stores/SettingsStore.h
   stores/CursorStore.cpp

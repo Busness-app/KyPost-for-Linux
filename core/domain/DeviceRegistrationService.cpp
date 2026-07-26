@@ -72,7 +72,26 @@ NativeRegistrationResult DeviceRegistrationService::pair(const PairingParams& pa
     // testing case -- enforcement then stays off rather than failing every
     // later request.
     pairing.certificateSpkiSha256 = QString::fromLatin1(m_httpClient.lastPeerSpkiSha256().toBase64());
-    m_pairingStore.save(pairing);
+
+    // Checked, not fire-and-forget. SecureStoreKeychain::set() returns false
+    // whenever no Secret Service provider is running -- a bare WM session, a
+    // locked wallet, a Flatpak on a host without gnome-keyring/kwalletd --
+    // which is not exotic on Linux. Ignoring it meant the server minted and
+    // burned a one-shot deviceSecret, nothing reached disk, and the UI still
+    // reported "paired". The next launch was unpaired, and re-pairing then
+    // failed too because the pairing token had already been consumed.
+    if (!m_pairingStore.save(pairing)) {
+        NativeRegistrationResult persistFailed = result;
+        persistFailed.outcome = RegistrationOutcome::Failure;
+        persistFailed.detail = QStringLiteral(
+            "Registered with the server, but the credentials could not be saved to this "
+            "system's secret store. Check that a keyring service (gnome-keyring or "
+            "kwallet) is running, then pair again.");
+        // Leave nothing half-written: a partial record whose `sub` key
+        // landed would make isPaired() true with an unusable secret.
+        m_pairingStore.clear();
+        return persistFailed;
+    }
 
     // Enforce immediately, so even the requests made later in this same
     // session are checked rather than waiting for the next launch.

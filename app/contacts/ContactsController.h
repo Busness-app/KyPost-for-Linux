@@ -149,4 +149,12 @@ private:
     bool m_isBusy = false;
     QString m_lastError;
     QString m_statusMessage;
+    // Unguarded body behind the guarded sync() slot -- dedupe() chains into
+    // this so the outer ReentrancyGuard doesn't suppress it. See the .cpp.
+    void syncInternal();
+    // Guards this controller's network-calling slots against re-entering
+    // through the nested QEventLoop HttpClient runs -- QML keeps delivering
+    // clicks while a blocking call is suspended. See
+    // core/util/ReentrancyGuard.h.
+    bool m_inNetworkCall = false;
 };

@@ -148,6 +148,18 @@ jobs:
       # find_package landing without its apt line, because the dev machine
       # already had the package. The Flatpak needs no matching module --
       # org.kde.Platform already ships OpenSSL.
+      #
+      # No package was added for the QmlTests target (Qt Quick Test, added
+      # 2026-07-26): Qt6QuickTestConfig.cmake ships in the same upstream
+      # qtdeclarative module as Qt6Quick/Qt6Qml, i.e. qt6-declarative-dev,
+      # which is already in the list below -- verified against the installed
+      # package on the dev machine rather than assumed. QmlTests runs under
+      # QT_QPA_PLATFORM=offscreen (set on the ctest test itself in
+      # tests/CMakeLists.txt), so this job still needs no display server.
+      #
+      # NOTE for whoever edits the list below: it is one shell command with
+      # backslash continuations. A `#` comment between the continued lines
+      # terminates it and breaks the job -- put notes here instead.
       - name: Install build dependencies
         run: |
           sudo apt-get update

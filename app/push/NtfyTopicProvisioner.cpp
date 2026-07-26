@@ -3,6 +3,7 @@
 #include "stores/SecureStore.h"
 
 #include <QByteArray>
+#include <QLoggingCategory>
 #include <QRandomGenerator>
 
 namespace NtfyTopicProvisioner {
@@ -44,7 +45,17 @@ QString getOrCreateTopic(SecureStore& secureStore)
 QString rotateTopic(SecureStore& secureStore)
 {
     const QString topic = generateTopic();
-    secureStore.set(QLatin1String(kNtfyTopicKey), topic);
+    // Checked, not fire-and-forget. Returning an unpersisted topic meant
+    // every launch generated a fresh one, the backend kept the address from
+    // whichever launch last managed to register, and push simply never
+    // arrived -- with no error anywhere, because the caller had a
+    // plausible-looking string in hand. An empty return tells the caller the
+    // EmbeddedSubscriber tier has no usable address.
+    if (!secureStore.set(QLatin1String(kNtfyTopicKey), topic)) {
+        qWarning("NtfyTopicProvisioner: could not persist the ntfy topic -- the embedded push "
+                 "subscriber will be unavailable this session");
+        return QString();
+    }
     return topic;
 }
 

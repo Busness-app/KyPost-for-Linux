@@ -684,6 +684,11 @@ Kirigami.ApplicationWindow {
                 border.color: Theme.line
             }
 
+            // A popped-out window is a separate top-level Window, so the
+            // main window's overlay does not cover it. Without this one, mail
+            // stayed readable here while the app was locked.
+            LockOverlay {}
+
             onClosing: emailWindow.destroy()
         }
     }
@@ -725,6 +730,11 @@ Kirigami.ApplicationWindow {
                 border.color: Theme.line
             }
 
+            // A popped-out window is a separate top-level Window, so the
+            // main window's overlay does not cover it. Without this one, mail
+            // stayed readable here while the app was locked.
+            LockOverlay {}
+
             onClosing: composeWindow.destroy()
         }
     }
@@ -763,6 +773,11 @@ Kirigami.ApplicationWindow {
                 border.width: 2
                 border.color: Theme.line
             }
+
+            // A popped-out window is a separate top-level Window, so the
+            // main window's overlay does not cover it. Without this one, mail
+            // stayed readable here while the app was locked.
+            LockOverlay {}
 
             onClosing: contactWindow.destroy()
         }
@@ -1418,16 +1433,13 @@ Kirigami.ApplicationWindow {
         anchors.horizontalCenter: parent.horizontalCenter
     }
 
+    // Persistent warnings for an expired pairing / undecryptable credentials
+    // -- see components/StatusBanner.qml. Declared before the lock overlay so
+    // it paints underneath it: a locked app must not leak account state.
+    StatusBanner {}
+
     // ---- app lock -----------------------------------------------------
-    // Highest z in the window and anchored over everything, so no mail,
-    // subject line or contact is readable behind it. Loader, so the PIN
-    // screen doesn't exist at all when the lock is off.
-    Loader {
-        id: unlockOverlay
-        anchors.fill: parent
-        z: 1000
-        active: AppLock.locked
-        visible: active
-        source: "pages/Unlock.qml"
-    }
+    // One per Window, including every pop-out below -- see
+    // components/LockOverlay.qml for why this cannot live only here.
+    LockOverlay { id: unlockOverlay }
 }

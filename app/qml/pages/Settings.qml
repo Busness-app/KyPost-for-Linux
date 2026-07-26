@@ -462,6 +462,26 @@ Item {
                             wrapMode: Text.WordWrap
                         }
                     }
+
+                    // Said plainly, because it was not said at all before.
+                    // When no UnifiedPush distributor is installed, this
+                    // client falls back to an ntfy topic and registers that
+                    // public URL with the relay as its delivery address --
+                    // so the relay POSTs notification titles and bodies,
+                    // which for mail means the sender and subject, to
+                    // whoever operates that server. It defaults to the
+                    // public ntfy.sh. A user running a self-hosted relay
+                    // specifically to avoid third parties deserves to know
+                    // that before it happens, not after.
+                    MutedHint {
+                        Layout.fillWidth: true
+                        Layout.topMargin: 4
+                        wrapMode: Text.WordWrap
+                        text: i18n("When no UnifiedPush distributor is available, KyPost receives "
+                                    "notifications through this push server. Sender names and "
+                                    "subject lines pass through it. Point it at your own ntfy "
+                                    "instance if you would rather they did not.")
+                    }
                 }
             }
 
@@ -747,8 +767,20 @@ Item {
             securityPrompt.errorText = ""
             currentPinField.text = ""
             newPinField.text = ""
+            confirmPinField.text = ""
             securityPrompt.open()
         }
+
+        // Live PinPolicy verdict for whatever is currently typed, from the
+        // same C++ rule AppLock.setPin() enforces -- so the dialog explains
+        // a rejection before the user commits instead of just refusing.
+        readonly property string newPinProblem:
+            !securityPrompt.needsNew || newPinField.text.length === 0
+                ? ""
+                : AppLock.pinRejectionReason(newPinField.text)
+        readonly property bool confirmMismatch:
+            securityPrompt.needsNew && confirmPinField.text.length > 0
+            && confirmPinField.text !== newPinField.text
 
         onOpened: {
             if (securityPrompt.needsCurrent)
@@ -786,11 +818,37 @@ Item {
                 id: newPinField
                 Layout.fillWidth: true
                 visible: securityPrompt.needsNew
-                placeholderText: i18n("New PIN")
+                placeholderText: i18np("New PIN (at least %1 digit)",
+                                       "New PIN (at least %1 digits)", AppLock.minimumPinLength)
                 Component.onCompleted: {
                     inputField.echoMode = TextInput.Password
                     inputField.inputMethodHints = Qt.ImhDigitsOnly
                 }
+            }
+
+            // Second entry, because the PIN is unrecoverable by design: get
+            // it wrong once and the only way back in is ten failed attempts
+            // and a full local wipe. A single masked field with no
+            // confirmation was one typo away from that.
+            ThemedTextField {
+                id: confirmPinField
+                Layout.fillWidth: true
+                visible: securityPrompt.needsNew
+                placeholderText: i18n("Confirm new PIN")
+                Component.onCompleted: {
+                    inputField.echoMode = TextInput.Password
+                    inputField.inputMethodHints = Qt.ImhDigitsOnly
+                }
+            }
+
+            MutedHint {
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
+                visible: securityPrompt.newPinProblem !== "" || securityPrompt.confirmMismatch
+                color: Theme.dangerColor
+                text: securityPrompt.confirmMismatch
+                          ? i18n("The two PINs do not match.")
+                          : securityPrompt.newPinProblem
             }
 
             Text {
@@ -814,7 +872,10 @@ Item {
                 PrimaryButton {
                     text: i18n("Confirm")
                     enabled: (!securityPrompt.needsCurrent || currentPinField.text.length > 0)
-                             && (!securityPrompt.needsNew || newPinField.text.length > 0)
+                             && (!securityPrompt.needsNew
+                                 || (securityPrompt.newPinProblem === ""
+                                     && newPinField.text.length > 0
+                                     && confirmPinField.text === newPinField.text))
                     onClicked: securityPrompt.submit()
                 }
             }
@@ -842,10 +903,20 @@ Item {
                 securityPrompt.close()
                 return
             }
-            // Stay open so the user can retry without re-navigating. The
-            // only failure these calls report is a wrong PIN or a store
-            // write failure; both read the same to the user.
-            securityPrompt.errorText = i18n("Incorrect PIN, or the change could not be saved.")
+            // Stay open so the user can retry without re-navigating.
+            //
+            // These calls now also refuse when the device secret could not
+            // be re-wrapped under the new PIN (or unwrapped from the old
+            // one), which is a different situation from a mistyped PIN and
+            // has a different fix -- so the wording covers both rather than
+            // implying the user got the PIN wrong. AppLockManager
+            // deliberately fails closed there: leaving the lock on is
+            // recoverable, stranding the pairing behind a destroyed key is
+            // not.
+            securityPrompt.errorText = AppLock.credentialPinGateEnabled
+                ? i18n("Incorrect PIN, or the stored credentials could not be re-encrypted. If the "
+                       "PIN is right, check that your system keyring is unlocked and try again.")
+                : i18n("Incorrect PIN, or the change could not be saved.")
             currentPinField.text = ""
         }
     }

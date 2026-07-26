@@ -156,8 +156,27 @@ HttpClient::HttpResult HttpClient::waitForReply(QNetworkReply* reply, const Redi
         const QSslCertificate peer = reply->sslConfiguration().peerCertificate();
         if (peer.isNull())
             return;
-        const QByteArray spki =
-            QCryptographicHash::hash(peer.publicKey().toDer(), QCryptographicHash::Sha256);
+
+        // QSslCertificate::publicKey() returns a NULL QSslKey when the
+        // backend cannot represent the key type, and QSslKey::toDer() on a
+        // null key returns an empty QByteArray. Hashing that yields
+        // SHA256("") = e3b0c442... -- a fixed, public constant. Pinning it
+        // would mean every other certificate Qt also fails to parse
+        // satisfies the pin, silently degrading TOFU to trust-on-every-use.
+        // Never derive a pin from nothing: refuse the connection when
+        // enforcing, and leave lastPeerSpkiSha256 empty so the pairing flow
+        // records "no pin" (enforcement off) rather than a bogus one.
+        const QByteArray spkiDer = peer.publicKey().toDer();
+        if (spkiDer.isEmpty()) {
+            m_lastPeerSpkiSha256.clear();
+            if (!m_certificatePin.isEmpty()) {
+                pinMismatch = true;
+                reply->abort();
+            }
+            return;
+        }
+
+        const QByteArray spki = QCryptographicHash::hash(spkiDer, QCryptographicHash::Sha256);
         // Recorded even on mismatch: the pairing flow reads this to capture
         // the very first pin, and a caller diagnosing a mismatch wants to
         // know what was actually presented.

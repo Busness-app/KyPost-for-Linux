@@ -8,9 +8,40 @@
 
 #include "../net/FakeRelayServer.h"
 
+#include "stores/SecureStore.h"
+
+#include <QHash>
 #include <QNetworkAccessManager>
 #include <QTemporaryDir>
 #include <QTest>
+
+namespace {
+
+// A SecureStore that accepts reads but refuses every write -- what
+// SecureStoreKeychain does on a system with no Secret Service provider
+// running (a bare WM session, a locked wallet, a Flatpak on a host with
+// neither gnome-keyring nor kwalletd).
+class UnwritableSecureStore : public SecureStore
+{
+public:
+    bool set(const QString&, const QString&) override { return false; }
+    std::optional<QString> get(const QString& key) const override
+    {
+        const auto it = m_values.constFind(key);
+        return it == m_values.constEnd() ? std::nullopt : std::optional<QString>(*it);
+    }
+    bool remove(const QString& key) override
+    {
+        m_values.remove(key);
+        return true;
+    }
+    bool contains(const QString& key) const override { return m_values.contains(key); }
+
+private:
+    QHash<QString, QString> m_values;
+};
+
+} // namespace
 
 class DeviceRegistrationServiceTest : public QObject
 {
@@ -23,6 +54,9 @@ private slots:
     void reregisterIfPairedSendsStoredCredentialsAndUpdatesDeviceId();
     void reregisterIfPairedWithNoPriorPairingMakesNoRequest();
     void reregisterIfPairedOn401LeavesStoredPairingUnchanged();
+
+    // Review-finding regression.
+    void pairFailsWhenCredentialsCannotBePersisted();
 
 private:
     static PairingParams sampleParams(quint16 port);
@@ -269,6 +303,42 @@ void DeviceRegistrationServiceTest::reregisterIfPairedOn401LeavesStoredPairingUn
     const std::optional<DevicePairing> loaded = pairingStore.load();
     QVERIFY(loaded.has_value());
     QCOMPARE(*loaded, existing);
+}
+
+
+// A registration that reaches the server but cannot be written to disk must
+// NOT report success.
+//
+// The save() result used to be discarded. The server minted and burned a
+// one-shot deviceSecret, nothing landed in the store, and PairingController
+// went to pairingState="paired" and showed the user a success screen. The
+// next launch was unpaired -- and re-pairing failed too, because the pairing
+// token had already been consumed by the attempt that "worked".
+void DeviceRegistrationServiceTest::pairFailsWhenCredentialsCannotBePersisted()
+{
+    const QByteArray body = R"({"ok":true,"synced":true,"deviceId":"dev-1","deviceSecret":"fresh-device-secret",)"
+                             R"("devices":1,"deliveryMode":"pull","transport":"unifiedpush"})";
+    FakeRelayServer fake(httpResponse(200, "OK", body));
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    NativeRegistrationClient client(http);
+
+    UnwritableSecureStore secureStore;
+    PairingStore pairingStore(secureStore);
+
+    QTemporaryDir settingsDir;
+    QVERIFY(settingsDir.isValid());
+    SettingsStore settingsStore(settingsDir.filePath(QStringLiteral("settings.ini")));
+
+    DeviceRegistrationService service(client, pairingStore, settingsStore, http);
+    const NativeRegistrationResult result = service.pair(sampleParams(fake.port()), QStringLiteral("tok"));
+
+    QCOMPARE(result.outcome, RegistrationOutcome::Failure);
+    QVERIFY2(!result.detail.isEmpty(), "the user needs to be told WHY, not just that it failed");
+    QVERIFY(result.detail.contains(QStringLiteral("secret store")));
+
+    // And nothing half-written is left behind claiming to be a pairing.
+    QVERIFY(!pairingStore.isPaired());
 }
 
 QTEST_GUILESS_MAIN(DeviceRegistrationServiceTest)

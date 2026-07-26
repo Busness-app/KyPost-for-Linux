@@ -56,6 +56,14 @@ Item {
     onFolderChanged: reload()
     Component.onCompleted: reload()
 
+    // Clears the refused-link notice a few seconds after it appears.
+    Timer {
+        id: blockedLinkTimer
+        interval: 4000
+        running: root.blockedLinkScheme !== ""
+        onTriggered: root.blockedLinkScheme = ""
+    }
+
     // ---- data loading -------------------------------------------------
 
     function reload() {
@@ -159,6 +167,18 @@ Item {
     // followed by whitespace/'>'/'/' is treated as "this is already HTML";
     // anything else is escaped and wrapped in <pre> so it renders literally.
     readonly property var htmlSniffRegex: /<(html|head|body|div|p|br|table|tr|td|a|img|span|ul|ol|li|h[1-6])[\s>/]/i
+
+    // Schemes a message is allowed to open in the outside world live in
+    // Format (utils/format.js) so the rule is testable on its own -- see
+    // isExternallyOpenableUrl() there for what it protects against.
+    function isExternallyOpenable(url) {
+        return Format.isExternallyOpenableUrl(url)
+    }
+
+    // Non-empty for a moment after a link with a refused scheme was clicked,
+    // so the user gets told the click did something rather than silently
+    // nothing. Cleared by the notice's own timer.
+    property string blockedLinkScheme: ""
 
     function renderedHtml(body) {
         const inner = htmlSniffRegex.test(body) ? body : ("<pre>" + Format.escapeHtml(body) + "</pre>")
@@ -384,6 +404,17 @@ Item {
             }
         }
 
+        // Refused-link notice. A click that does nothing at all reads as a
+        // broken app and invites the user to go find the link some other
+        // way, which is exactly the outcome the refusal is trying to avoid.
+        MutedHint {
+            Layout.fillWidth: true
+            visible: root.blockedLinkScheme !== ""
+            wrapMode: Text.WordWrap
+            text: i18n("That link uses an address type KyPost will not open (%1:). It was blocked.",
+                       root.blockedLinkScheme)
+        }
+
         Text {
             Layout.fillWidth: true
             visible: !root.imagesLoaded && (root.email.body || root.email.preview)
@@ -565,7 +596,23 @@ Item {
                 onNavigationRequested: function (request) {
                     if (request.navigationType === WebEngineNavigationRequest.LinkClickedNavigation) {
                         request.reject()
-                        Qt.openUrlExternally(request.url)
+                        // Scheme allowlist, not a bare handoff. This URL is
+                        // written by whoever sent the message, and
+                        // Qt.openUrlExternally hands it to xdg-open, which
+                        // dispatches on scheme to whatever handler the
+                        // desktop has registered. This app registers itself
+                        // for kypost:// (packaging's .desktop MimeType), so
+                        // an <a href="kypost://native-pair?...&srv=evil">
+                        // in a message used to bounce straight back into
+                        // PairingController and raise this app's own
+                        // pairing-confirm dialog for an attacker's server --
+                        // phishing wearing the trusted UI. Every other
+                        // scheme the session happens to have a handler for
+                        // was reachable the same way.
+                        if (root.isExternallyOpenable(request.url))
+                            Qt.openUrlExternally(request.url)
+                        else
+                            root.blockedLinkScheme = Format.urlScheme(request.url)
                         return
                     }
                     if (awaitingInitialLoad) {

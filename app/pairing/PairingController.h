@@ -41,6 +41,9 @@ class PairingController : public QObject
     // security review.
     Q_PROPERTY(QString pairedServerHost READ pairedServerHost NOTIFY pairingChanged)
     Q_PROPERTY(QString deviceId READ deviceId NOTIFY pairingChanged)
+    Q_PROPERTY(State state READ state NOTIFY pairingStateChanged)
+    // Kept for the existing QML bindings; derived from `state` above, never
+    // assigned independently.
     Q_PROPERTY(QString pairingState READ pairingState NOTIFY pairingStateChanged) // "idle" | "confirm" | "working" | "paired" | "failed"
     Q_PROPERTY(QString pairingError READ pairingError NOTIFY pairingStateChanged) // meaningful only when pairingState == "failed"
     // Host of the server a not-yet-confirmed pairFromDeepLink()/
@@ -50,6 +53,17 @@ class PairingController : public QObject
     // call. See PairingController.cpp's pairFromDeepLink() doc comment for
     // why this gate exists.
     Q_PROPERTY(QString pendingPairHost READ pendingPairHost NOTIFY pairingStateChanged)
+    // True once a background re-registration was rejected with 401.
+    //
+    // AGENTS.md section 8 records this as a known live-system gotcha ("Re-
+    // registration silently 401s once the pairing token expires ... handle
+    // the 401 explicitly") and both call sites in main.cpp used to discard
+    // the std::optional<NativeRegistrationResult> that reports it. The
+    // consequence is invisible and total: the relay keeps publishing to a
+    // dead endpoint, push stops arriving, and the UI still shows a healthy
+    // "Paired" badge. The roots bind this to a persistent banner telling the
+    // user to pair again.
+    Q_PROPERTY(bool reregistrationRejected READ reregistrationRejected NOTIFY reregistrationRejectedChanged)
     // Task 39: read-only display fields for Settings > Notifications.
     // Sourced straight from SettingsStore on every read (no local cache).
     // deliveryMode/transport only ever change together with isPaired/
@@ -69,18 +83,34 @@ class PairingController : public QObject
     Q_PROPERTY(QString pushServerBaseUrl READ pushServerBaseUrl NOTIFY pairingChanged) // "https://ntfy.sh" default; read-only display only, see Settings.qml's Notifications pane
 
 public:
+    // The pairing state machine, as a type rather than five string literals
+    // compared with == across three files. main.cpp used to test
+    // `pairingState() == QStringLiteral("paired")` against a literal written
+    // in PairingController.cpp: rename one and the other silently stops
+    // matching, with no compiler error and no test failure -- just a feature
+    // (ntfy topic rotation on re-pair) that quietly never happens again.
+    //
+    // Q_ENUM so QML can say Pairing.Paired. The `pairingState` string
+    // property below is kept, and is now produced from this enum in exactly
+    // one place (stateToString), so the existing QML comparisons keep
+    // working without five more literals to maintain.
+    enum class State { Idle, Confirm, Working, Paired, Failed };
+    Q_ENUM(State)
+
     PairingController(DeviceRegistrationService& service, PairingStore& pairingStore, SettingsStore& settingsStore,
                        DeregisterClient& deregisterClient, QObject* parent = nullptr);
 
     bool isPaired() const;
     QString pairedServerHost() const;
     QString deviceId() const;
-    QString pairingState() const;
+    State state() const;
+    QString pairingState() const; // stateToString(state()) -- for existing QML bindings
     QString pairingError() const;
     QString pendingPairHost() const;
     QString deliveryMode() const;
     QString transport() const;
     QString pushServerBaseUrl() const;
+    bool reregistrationRejected() const;
 
 public slots:
     // Re-reads pairingStore.load(), updates isPaired/pairedServerHost/
@@ -142,9 +172,16 @@ public slots:
     // whatever this holds, empty or not, rather than always QString().
     void setDeviceToken(const QString& token);
 
+    // Called by main.cpp with the outcome of every background
+    // reregisterIfPaired() -- true only for RegistrationOutcome::
+    // Unauthorized, which is the expired-pairing-token case. Cleared by any
+    // later successful (re-)pair.
+    void setReregistrationRejected(bool rejected);
+
 signals:
     void pairingChanged();
     void pairingStateChanged();
+    void reregistrationRejectedChanged();
 
 private:
     // Builds a PairingParams from already-validated fields, sets
@@ -158,13 +195,13 @@ private:
     // NOTIFY-bound state (e.g. m_pendingPair) changed too, since QML
     // property bindings only re-evaluate on the declared NOTIFY signal, not
     // on every call to this setter. See pairFromDeepLink()'s call site.
-    void setPairingState(const QString& state, const QString& error = QString(), bool forceNotify = false);
+    void setPairingState(State state, const QString& error = QString(), bool forceNotify = false);
 
     DeviceRegistrationService& m_service;
     PairingStore& m_pairingStore;
     SettingsStore& m_settingsStore;
     DeregisterClient& m_deregisterClient;
-    QString m_pairingState = QStringLiteral("idle");
+    State m_state = State::Idle;
     QString m_pairingError;
     bool m_isPaired = false;
     QString m_pairedServerHost;
@@ -175,4 +212,10 @@ private:
     // by a fresh pairFromDeepLink()/pairFromPastedLink() call. Meaningful
     // only while pairingState == "confirm".
     std::optional<PairingParams> m_pendingPair;
+    // Guards this controller's network-calling slots against re-entering
+    // through the nested QEventLoop HttpClient runs -- QML keeps delivering
+    // clicks while a blocking call is suspended. See
+    // core/util/ReentrancyGuard.h.
+    bool m_inNetworkCall = false;
+    bool m_reregistrationRejected = false;
 };

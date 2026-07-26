@@ -12,6 +12,8 @@
 #include <QVector>
 #include <optional>
 
+class QFile;
+
 class MailRepository;
 class FolderRepository;
 class SettingsStore;
@@ -278,10 +280,35 @@ private:
     // Shared by sendMail() and saveDraft() -- see the .cpp.
     bool readAttachments(const QStringList& paths, QVector<MailAttachmentUpload>& out);
 
+    // Unguarded bodies behind the guarded public entry points of the same
+    // name. Internal callers (deleteFolder -> selectFolder -> refresh,
+    // openWebmailDrafts -> saveDraft) go through these so the outer call's
+    // ReentrancyGuard doesn't turn its own nested step into a no-op. See the
+    // comment above selectFolder() in the .cpp.
+    void selectFolderInternal(const QString& wireFolder);
+    void refreshInternal(bool forceFullResync);
+    bool saveDraftInternal(const QString& to, const QString& cc, const QString& bcc, const QString& subject,
+                            const QString& body, const QStringList& attachmentFilePaths);
+
     // Hostile Location Protection's replacement for save-to-Downloads: a
     // tmpfs-backed temporary file, opened with the OS handler and removed
     // shortly after. See the .cpp for the honest limits of the guarantee.
-    bool openAttachmentEphemerally(const QString& name, const QByteArray& data);
+    //
+    // `declaredMimeType` is the server's own type for the attachment and is
+    // the gate: only an allowlisted type is opened at all, and the file's
+    // extension is forced to match it. This path hands attacker-supplied
+    // bytes to the desktop's handler for that extension, so trusting the
+    // filename would make "Invoice.pdf.desktop" an execution primitive.
+    bool openAttachmentEphemerally(const QString& name, const QString& declaredMimeType,
+                                    const QByteArray& data);
+
+    // Creates `path` with O_EXCL semantics (fails if it exists) -- closes the
+    // check-then-use race between dedupedFilePath()'s exists() test and the
+    // open that follows it. See the .cpp.
+    static bool openForExclusiveWrite(QFile& file, const QString& path);
+    // Writes `data` in full or removes the partial file and returns false, so
+    // a full disk cannot produce a truncated attachment reported as saved.
+    static bool writeAllOrRemove(QFile& file, const QByteArray& data);
 
     // How long an ephemeral attachment survives before it is deleted. Long
     // enough for a viewer to open and read it, short enough not to linger.
@@ -358,4 +385,17 @@ private:
     // Guards preflightRecipients() against re-entering through the nested
     // event loop its own HTTP call runs.
     bool m_preflightInFlight = false;
+    // Guards every OTHER network-calling method here against the same
+    // re-entrancy, via ReentrancyGuard (core/util/ReentrancyGuard.h).
+    // preflightRecipients keeps its own separate flag because it is called
+    // from within those methods' own flows and must not be blocked by them.
+    //
+    // HttpClient runs a nested QEventLoop, so QML keeps delivering clicks
+    // and timers keep firing while any of these are suspended mid-call --
+    // two of them interleaving means the outer one resumes reading member
+    // state the inner one replaced. sendMail's pendingSendToken exists
+    // because that already happened once, in a way that mailed a message to
+    // the wrong recipient list. This flag makes the whole class safe rather
+    // than that one method.
+    bool m_inNetworkCall = false;
 };

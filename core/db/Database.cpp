@@ -3,6 +3,7 @@
 #include "MigrationSql.h"
 
 #include <QAtomicInteger>
+#include <QRegularExpression>
 #include <QSqlQuery>
 #include <QStringList>
 #include <QVariant>
@@ -12,6 +13,92 @@ namespace {
 QAtomicInteger<quint64> g_connectionCounter{0};
 
 } // namespace
+
+QStringList splitSqlStatements(const QString& sql)
+{
+    QStringList statements;
+    QString current;
+    // Depth of unterminated BEGIN blocks. A CREATE TRIGGER body is
+    // BEGIN ... END; with internal semicolons that are NOT statement
+    // separators -- the previous plain sql.split(';') shattered any such
+    // migration into invalid fragments the moment somebody wrote one.
+    int blockDepth = 0;
+
+    for (int i = 0; i < sql.size(); ++i) {
+        const QChar c = sql.at(i);
+
+        // -- line comment: skip to end of line.
+        if (c == QLatin1Char('-') && i + 1 < sql.size() && sql.at(i + 1) == QLatin1Char('-')) {
+            while (i < sql.size() && sql.at(i) != QLatin1Char('\n'))
+                ++i;
+            current += QLatin1Char('\n');
+            continue;
+        }
+
+        // /* block comment */
+        if (c == QLatin1Char('/') && i + 1 < sql.size() && sql.at(i + 1) == QLatin1Char('*')) {
+            i += 2;
+            while (i + 1 < sql.size()
+                   && !(sql.at(i) == QLatin1Char('*') && sql.at(i + 1) == QLatin1Char('/')))
+                ++i;
+            ++i; // land on '/', loop's ++i steps past it
+            continue;
+        }
+
+        // 'string literal', with '' as the embedded-quote escape, and
+        // "quoted identifier" with "" likewise. Semicolons inside either are
+        // ordinary characters.
+        if (c == QLatin1Char('\'') || c == QLatin1Char('"')) {
+            const QChar quote = c;
+            current += c;
+            ++i;
+            while (i < sql.size()) {
+                if (sql.at(i) == quote) {
+                    if (i + 1 < sql.size() && sql.at(i + 1) == quote) {
+                        current += quote;
+                        current += quote;
+                        i += 2;
+                        continue;
+                    }
+                    break;
+                }
+                current += sql.at(i);
+                ++i;
+            }
+            if (i < sql.size())
+                current += quote;
+            continue;
+        }
+
+        if (c == QLatin1Char(';') && blockDepth == 0) {
+            const QString trimmed = current.trimmed();
+            if (!trimmed.isEmpty())
+                statements.append(trimmed);
+            current.clear();
+            continue;
+        }
+
+        current += c;
+
+        // Track BEGIN/END only on whole-word boundaries, so a column named
+        // "beginner" or "legend" can't move the depth counter.
+        static const QRegularExpression kBeginAtEnd(
+            QStringLiteral("(?:^|[^A-Za-z0-9_])BEGIN$"), QRegularExpression::CaseInsensitiveOption);
+        static const QRegularExpression kEndAtEnd(
+            QStringLiteral("(?:^|[^A-Za-z0-9_])END$"), QRegularExpression::CaseInsensitiveOption);
+        if (i + 1 >= sql.size() || !(sql.at(i + 1).isLetterOrNumber() || sql.at(i + 1) == QLatin1Char('_'))) {
+            if (kBeginAtEnd.match(current).hasMatch())
+                ++blockDepth;
+            else if (blockDepth > 0 && kEndAtEnd.match(current).hasMatch())
+                --blockDepth;
+        }
+    }
+
+    const QString trailing = current.trimmed();
+    if (!trailing.isEmpty())
+        statements.append(trailing);
+    return statements;
+}
 
 Database::Database() = default;
 
@@ -40,20 +127,44 @@ bool Database::open(const QString& path)
         return false;
     const int version = versionQuery.value(0).toInt();
 
+    // One transaction per migration, covering both its statements AND the
+    // user_version bump. SQLite has transactional DDL, so this is real: a
+    // migration either applies whole or not at all.
+    //
+    // Without it, a statement failing part-way (disk full, a column an
+    // earlier aborted attempt already added) left the schema half-applied
+    // with user_version still pointing at the PREVIOUS version. The next
+    // launch replayed the same migration from its first statement, which
+    // then failed on the objects the aborted run had already created --
+    // permanently, so main()'s qFatal on a failed open() bricked the
+    // profile with no recovery short of deleting the database by hand.
     for (int nextVersion = version + 1; nextVersion <= kKyPostMigrationCount; ++nextVersion) {
         const QString sql = kKyPostMigrationSql[nextVersion - 1]();
-        const QStringList statements = sql.split(QLatin1Char(';'), Qt::SkipEmptyParts);
-        for (const QString& rawStatement : statements) {
-            const QString statement = rawStatement.trimmed();
-            if (statement.isEmpty())
-                continue;
-            QSqlQuery schemaQuery(m_db);
-            if (!schemaQuery.exec(statement))
-                return false;
-        }
-        QSqlQuery setVersionQuery(m_db);
-        if (!setVersionQuery.exec(QStringLiteral("PRAGMA user_version = %1").arg(nextVersion)))
+        const QStringList statements = splitSqlStatements(sql);
+
+        if (!m_db.transaction())
             return false;
+
+        for (const QString& statement : statements) {
+            QSqlQuery schemaQuery(m_db);
+            if (!schemaQuery.exec(statement)) {
+                m_db.rollback();
+                return false;
+            }
+        }
+
+        // Inside the same transaction as the statements above: a bumped
+        // version with unapplied statements is the same brick, mirrored.
+        QSqlQuery setVersionQuery(m_db);
+        if (!setVersionQuery.exec(QStringLiteral("PRAGMA user_version = %1").arg(nextVersion))) {
+            m_db.rollback();
+            return false;
+        }
+
+        if (!m_db.commit()) {
+            m_db.rollback();
+            return false;
+        }
     }
 
     return true;

@@ -36,6 +36,10 @@ kypost_add_test(PushNotificationTest core/models/PushNotificationTest.cpp)
 kypost_add_test(LockoutPolicyTest core/security/LockoutPolicyTest.cpp)
 kypost_add_test(CredentialCipherTest core/security/CredentialCipherTest.cpp)
 kypost_add_test(AppLockStoreTest core/security/AppLockStoreTest.cpp)
+# PinPolicy: what counts as an acceptable PIN. Enforced in C++ because
+# the PIN is the key-encryption key for the relay device secret whenever
+# the credential gate is on, and QML is not a security boundary.
+kypost_add_test(PinPolicyTest core/security/PinPolicyTest.cpp)
 
 kypost_add_test(DatabaseTest core/db/DatabaseTest.cpp)
 kypost_add_test(SecurityWipeTest core/db/SecurityWipeTest.cpp)
@@ -123,10 +127,15 @@ kypost_add_app_test(EmailListModelTest
 # core/'s QtCore/QtNetwork/QtSql-only boundary forbids.
 # AppLockManager: unlock/lockout/wipe transitions and the "prove the PIN
 # even to turn protection off" rule. Needs no extra LIBS -- plain QObject.
+# KF6::I18n: AppLockManager::pinRejectionReason() returns user-facing copy
+# explaining why a PIN was refused, so it goes through i18n()/i18np() like
+# every other string a user reads.
 kypost_add_app_test(AppLockManagerTest
   SOURCES
     app/security/AppLockManagerTest.cpp
     ${CMAKE_SOURCE_DIR}/app/security/AppLockManager.cpp
+  LIBS
+    KF6::I18n
 )
 
 kypost_add_app_test(PgpMessagePresentationTest
@@ -271,3 +280,44 @@ kypost_add_app_test(NtfyTopicProvisionerTest
     app/push/NtfyTopicProvisionerTest.cpp
     ${CMAKE_SOURCE_DIR}/app/push/NtfyTopicProvisioner.cpp
 )
+
+# ---- QML tests -------------------------------------------------------
+#
+# Qt Quick Test, added 2026-07-26. This suite previously had 73 C++ tests and
+# zero QML tests, while four of the five defences standing between a hostile
+# email and the user lived in .qml files -- the app-lock overlay, the email
+# viewer's javascriptEnabled/autoLoadImages settings, its navigation gate,
+# and the compose sanitizer. The app-lock bypass fixed in this same pass
+# (pop-out Windows were never covered by the overlay) shipped exactly because
+# nothing here could go red.
+#
+# The runner registers fake "com.urlxl.mail" singletons (tests/qml/
+# FakeSingletons.h) rather than the real controllers, which would drag in a
+# Database, a SecureStore and a live QNetworkAccessManager. That keeps these
+# tests about QML behaviour -- bindings, gating, visibility -- which is the
+# layer that had no coverage at all.
+#
+# The QML under test is loaded from the same qrc the app ships
+# (app/qml/qml.qrc), not from source paths, so a component that builds but is
+# missing from the resource bundle fails here rather than at runtime.
+find_package(Qt6 REQUIRED COMPONENTS QuickTest Quick Qml)
+
+add_executable(QmlTests
+  qml/main.cpp
+  qml/FakeSingletons.h
+  ${CMAKE_SOURCE_DIR}/app/qml/qml.qrc
+)
+target_include_directories(QmlTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/qml)
+# KF6::I18nQml: the pages under test call i18n(), which needs the same
+# KLocalizedQmlContext main.cpp installs -- without it they fail to
+# construct with ReferenceError rather than testing anything.
+target_link_libraries(QmlTests PRIVATE Qt6::QuickTest Qt6::Quick Qt6::Qml KF6::I18n KF6::I18nQml)
+# QUICK_TEST_SOURCE_DIR tells the runner where the tst_*.qml files live.
+target_compile_definitions(QmlTests PRIVATE
+  QUICK_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/qml"
+)
+
+# offscreen: CI has no display, and these tests only assert on bindings and
+# item state, never on rendered pixels.
+add_test(NAME QmlTests COMMAND QmlTests)
+set_tests_properties(QmlTests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")

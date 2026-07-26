@@ -5,6 +5,7 @@
 #include "domain/PairingStore.h"
 #include "net/DeregisterClient.h"
 #include "stores/SettingsStore.h"
+#include "util/ReentrancyGuard.h"
 
 #include <KLocalizedString>
 
@@ -61,6 +62,27 @@ bool isAcceptablePairingScheme(const QUrl& url)
         return true;
     QHostAddress addr;
     return addr.setAddress(host) && addr.isLoopback();
+}
+
+// The one place a State becomes a string. Every QML comparison and the
+// pairingState property read through here, so the five literals that used to
+// be scattered across this file (and one in main.cpp) now have a single
+// definition the compiler checks the enum side of.
+QString stateToString(PairingController::State state)
+{
+    switch (state) {
+    case PairingController::State::Idle:
+        return QStringLiteral("idle");
+    case PairingController::State::Confirm:
+        return QStringLiteral("confirm");
+    case PairingController::State::Working:
+        return QStringLiteral("working");
+    case PairingController::State::Paired:
+        return QStringLiteral("paired");
+    case PairingController::State::Failed:
+        return QStringLiteral("failed");
+    }
+    return QStringLiteral("idle");
 }
 
 bool sameOrigin(const QUrl& a, const QUrl& b)
@@ -140,9 +162,14 @@ QString PairingController::deviceId() const
     return m_deviceId;
 }
 
+PairingController::State PairingController::state() const
+{
+    return m_state;
+}
+
 QString PairingController::pairingState() const
 {
-    return m_pairingState;
+    return stateToString(m_state);
 }
 
 QString PairingController::pairingError() const
@@ -170,10 +197,10 @@ QString PairingController::pushServerBaseUrl() const
     return m_settingsStore.pushServerBaseUrl();
 }
 
-void PairingController::setPairingState(const QString& state, const QString& error, bool forceNotify)
+void PairingController::setPairingState(State state, const QString& error, bool forceNotify)
 {
-    const bool unchanged = (m_pairingState == state && m_pairingError == error);
-    m_pairingState = state;
+    const bool unchanged = (m_state == state && m_pairingError == error);
+    m_state = state;
     m_pairingError = error;
     if (!unchanged || forceNotify)
         emit pairingStateChanged();
@@ -200,7 +227,7 @@ bool PairingController::pairFromDeepLink(const QUrl& url)
     const std::optional<ParsedPairingLink> parsed = parseNativePairLink(url);
     if (!parsed.has_value()) {
         m_pendingPair.reset();
-        setPairingState(QStringLiteral("failed"), i18n("This pairing link is invalid or incomplete."));
+        setPairingState(State::Failed, i18n("This pairing link is invalid or incomplete."));
         return false;
     }
 
@@ -219,7 +246,7 @@ bool PairingController::pairFromDeepLink(const QUrl& url)
     // is NOTIFY-bound to pairingStateChanged, so without forcing the emit
     // here the dialog would keep showing the FIRST link's host while
     // confirmPendingPair() would actually act on the SECOND link's params.
-    setPairingState(QStringLiteral("confirm"), QString(), /*forceNotify=*/true);
+    setPairingState(State::Confirm, QString(), /*forceNotify=*/true);
     return true;
 }
 
@@ -230,8 +257,12 @@ bool PairingController::pairFromPastedLink(const QString& text)
 
 bool PairingController::confirmPendingPair()
 {
+    ReentrancyGuard guard(m_inNetworkCall);
+    if (!guard.entered())
+        return false;
+
     if (!m_pendingPair.has_value()) {
-        setPairingState(QStringLiteral("failed"), i18n("There is no pending pairing request to confirm."));
+        setPairingState(State::Failed, i18n("There is no pending pairing request to confirm."));
         return false;
     }
 
@@ -244,17 +275,21 @@ bool PairingController::confirmPendingPair()
 void PairingController::cancelPendingPair()
 {
     m_pendingPair.reset();
-    setPairingState(QStringLiteral("idle"));
+    setPairingState(State::Idle);
 }
 
 void PairingController::reset()
 {
     m_pendingPair.reset();
-    setPairingState(QStringLiteral("idle"));
+    setPairingState(State::Idle);
 }
 
 void PairingController::removePairing()
 {
+    ReentrancyGuard guard(m_inNetworkCall);
+    if (!guard.entered())
+        return;
+
     const std::optional<DevicePairing> pairing = m_pairingStore.load();
     if (pairing.has_value() && !pairing->deviceId.isEmpty() && !pairing->deviceSecret.isEmpty()) {
         // Best-effort: the result is intentionally ignored -- local state
@@ -270,10 +305,23 @@ void PairingController::setDeviceToken(const QString& token)
     m_deviceToken = token;
 }
 
+bool PairingController::reregistrationRejected() const
+{
+    return m_reregistrationRejected;
+}
+
+void PairingController::setReregistrationRejected(bool rejected)
+{
+    if (m_reregistrationRejected == rejected)
+        return;
+    m_reregistrationRejected = rejected;
+    emit reregistrationRejectedChanged();
+}
+
 bool PairingController::pairFromParsedParams(const QString& sub, const QString& srv, const QString& pt,
                                               const QString& reg)
 {
-    setPairingState(QStringLiteral("working"));
+    setPairingState(State::Working);
 
     PairingParams params;
     params.subscriberId = sub;
@@ -298,17 +346,18 @@ bool PairingController::pairFromParsedParams(const QString& sub, const QString& 
     switch (result.outcome) {
     case RegistrationOutcome::Success:
         refreshFromStore();
-        setPairingState(QStringLiteral("paired"));
+        setReregistrationRejected(false);
+        setPairingState(State::Paired);
         return true;
     case RegistrationOutcome::Unauthorized:
-        setPairingState(QStringLiteral("failed"),
+        setPairingState(State::Failed,
                          i18n("This pairing link was rejected. Check the link and try again."));
         return false;
     case RegistrationOutcome::BackendMisconfigured:
-        setPairingState(QStringLiteral("failed"), i18n("The server is not configured for pairing yet."));
+        setPairingState(State::Failed, i18n("The server is not configured for pairing yet."));
         return false;
     case RegistrationOutcome::Failure:
-        setPairingState(QStringLiteral("failed"),
+        setPairingState(State::Failed,
                          result.detail.isEmpty() ? i18n("Pairing failed, please try again.") : result.detail);
         return false;
     }

@@ -43,10 +43,24 @@ public:
     FakeNtfyServer()
     {
         m_server.listen(QHostAddress::LocalHost);
+        m_port = m_server.serverPort();
         connect(&m_server, &QTcpServer::newConnection, this, &FakeNtfyServer::onNewConnection);
     }
 
-    quint16 port() const { return m_server.serverPort(); }
+    // Cached: stopAccepting() closes the listening socket, after which
+    // QTcpServer::serverPort() reports 0.
+    quint16 port() const { return m_port; }
+
+    // Takes the listening socket down entirely, so further connection
+    // attempts are refused outright rather than hanging. That is what makes
+    // NtfySubscriber's reconnects fail fast enough to spend the failure
+    // budget in a test.
+    void stopAccepting() { m_server.close(); }
+
+    // Brings it back on the same port, so the subscriber's next retry
+    // succeeds and TransportStateMachine can climb back to the
+    // EmbeddedSubscriber tier on its own.
+    bool resumeAccepting() { return m_server.listen(QHostAddress::LocalHost, m_port); }
 
     int readyRequestCount() const
     {
@@ -126,6 +140,7 @@ private:
     }
 
     QTcpServer m_server;
+    quint16 m_port = 0;
     QList<QTcpSocket*> m_sockets;
     QList<QByteArray> m_requestBuffers;
     QList<bool> m_headersSent;
@@ -193,7 +208,8 @@ private slots:
     void distributorAvailableEntersDistributorAndStopsPolling();
     void distributorUnavailableWithNoForegroundFallsBackToPolling();
     void foregroundedEntersEmbeddedSubscriberAndBackgroundedReturnsToPolling();
-    void connectionLostWhileEmbeddedSubscriberDropsToPollingImmediately();
+    void connectionLostWhileEmbeddedSubscriberRetriesThenDropsToPolling();
+    void pollingRetriesTheSubscriberWithoutUserInteraction();
     void enterTierIdempotencyEmitsTierChangedOnce();
     void distributorAlwaysWinsOverForegrounded();
     void pollTimerFetchesAndEmitsPollTick();
@@ -278,12 +294,26 @@ void TransportStateMachineTest::foregroundedEntersEmbeddedSubscriberAndBackgroun
     QVERIFY(ntfyServer.waitForAllDisconnected());
 }
 
-void TransportStateMachineTest::connectionLostWhileEmbeddedSubscriberDropsToPollingImmediately()
+// Behaviour change, deliberate: a SINGLE dropped connection no longer demotes.
+//
+// It used to. That made a two-second Wi-Fi blip or a suspend/resume cycle
+// park a still-foregrounded app on 90-second polling permanently, because
+// selectTier() only ran from setDistributorAvailable/setForegrounded and
+// neither fires again on its own. On a machine with no UnifiedPush
+// distributor -- the exact case this tier exists for -- that was the normal
+// steady state after the first network hiccup.
+//
+// Now NtfySubscriber retries with exponential backoff and reports how many
+// consecutive failures it has seen; the tier only drops once that budget is
+// spent, and a retry timer arms so even the drop is temporary.
+void TransportStateMachineTest::connectionLostWhileEmbeddedSubscriberRetriesThenDropsToPolling()
 {
     FakeNtfyServer ntfyServer;
     QNetworkAccessManager manager;
+    // 10 ms reconnect delay so the failure budget is spent in milliseconds
+    // rather than the 5 s production default times three.
     NtfySubscriber subscriber(manager, QStringLiteral("http://127.0.0.1:%1").arg(ntfyServer.port()),
-                               QStringLiteral("mytopic"));
+                               QStringLiteral("mytopic"), nullptr, /*reconnectDelayMs=*/10);
     RepoHarness repo;
 
     TransportStateMachine machine(subscriber, repo.repository);
@@ -293,11 +323,24 @@ void TransportStateMachineTest::connectionLostWhileEmbeddedSubscriberDropsToPoll
     QCOMPARE(machine.currentTier(), TransportTier::EmbeddedSubscriber);
     QVERIFY(ntfyServer.waitForAtLeastConnections(1));
 
+    // First drop: retried, NOT demoted. This is the regression the budget
+    // exists to prevent.
     ntfyServer.closeAll();
-    QVERIFY(QTest::qWaitFor([&]() { return machine.currentTier() == TransportTier::Polling; }, 2000));
+    QVERIFY(ntfyServer.waitForAtLeastConnections(2));
+    QCOMPARE(machine.currentTier(), TransportTier::EmbeddedSubscriber);
+
+    // Keep dropping until the budget is spent. Each close has to be followed
+    // by the reconnect it triggers, or successive closeAll() calls in the
+    // same event-loop turn all act on the one already-dead socket and only
+    // count as a single failure.
+    for (int i = 2; i <= TransportStateMachine::kSubscriberFailureBudget; ++i) {
+        QVERIFY(ntfyServer.waitForAtLeastConnections(i));
+        ntfyServer.closeAll();
+    }
+    QVERIFY(QTest::qWaitFor([&]() { return machine.currentTier() == TransportTier::Polling; }, 5000));
 
     // Reported foreground state itself did not change -- only the
-    // subscriber's own connectionLost drove this transition.
+    // subscriber's own repeated connectionLost drove this transition.
     QCOMPARE(tierSpy.size(), 2);
     QCOMPARE(qvariant_cast<TransportTier>(tierSpy.at(0).at(0)), TransportTier::EmbeddedSubscriber);
     QCOMPARE(qvariant_cast<TransportTier>(tierSpy.at(1).at(0)), TransportTier::Polling);
@@ -306,7 +349,39 @@ void TransportStateMachineTest::connectionLostWhileEmbeddedSubscriberDropsToPoll
     // embedded subscriber rather than being swallowed as a no-op change.
     machine.setForegrounded(true);
     QCOMPARE(machine.currentTier(), TransportTier::EmbeddedSubscriber);
-    QVERIFY(ntfyServer.waitForAtLeastConnections(2));
+}
+
+// The demotion above must not be permanent: the retry timer promotes back to
+// EmbeddedSubscriber on its own, with no user interaction. Previously the
+// only route back was the user backgrounding and re-foregrounding the app.
+void TransportStateMachineTest::pollingRetriesTheSubscriberWithoutUserInteraction()
+{
+    FakeNtfyServer ntfyServer;
+    QNetworkAccessManager manager;
+    NtfySubscriber subscriber(manager, QStringLiteral("http://127.0.0.1:%1").arg(ntfyServer.port()),
+                               QStringLiteral("mytopic"), nullptr, /*reconnectDelayMs=*/10);
+    RepoHarness repo;
+
+    // Long poll interval (so the polling tier's own network call stays out of
+    // the way), short subscriber-retry interval.
+    TransportStateMachine machine(subscriber, repo.repository, nullptr, /*pollIntervalMs=*/600000,
+                                   /*subscriberRetryAfterMs=*/50);
+
+    machine.setForegrounded(true);
+    QCOMPARE(machine.currentTier(), TransportTier::EmbeddedSubscriber);
+    QVERIFY(ntfyServer.waitForAtLeastConnections(1));
+
+    // Listener down + existing connections closed: every reconnect attempt is
+    // refused immediately, so the budget is spent in a few tens of ms.
+    ntfyServer.stopAccepting();
+    ntfyServer.closeAll();
+    QVERIFY(QTest::qWaitFor([&]() { return machine.currentTier() == TransportTier::Polling; }, 5000));
+
+    // Nothing calls setForegrounded/setDistributorAvailable here -- the
+    // machine has to climb back on its own.
+    QVERIFY(ntfyServer.resumeAccepting());
+    QVERIFY(QTest::qWaitFor([&]() { return machine.currentTier() == TransportTier::EmbeddedSubscriber; },
+                            5000));
 }
 
 void TransportStateMachineTest::enterTierIdempotencyEmitsTierChangedOnce()

@@ -33,6 +33,7 @@
 #include "security/AppLockStore.h"
 #include "domain/MailRepository.h"
 #include "domain/PairingStore.h"
+#include "domain/PairingStoreCredentialSealer.h"
 #include "domain/PgpQrRepository.h"
 #include "domain/PushRepository.h"
 #include "domain/TransportStateMachine.h"
@@ -423,6 +424,27 @@ int main(int argc, char* argv[])
     // UnifiedPushConnector already use above, for consistency.
     SecureStoreKeychain secureStore(QStringLiteral("com.urlxl.mail"));
 
+    // Probe the secret store before anything depends on it.
+    //
+    // SecureStoreKeychain::set() returns false whenever no Secret Service
+    // provider is reachable -- a bare WM session, a locked wallet, a Flatpak
+    // on a host with neither gnome-keyring nor kwalletd. Every caller used
+    // to discard that bool, so pairing "succeeded" while nothing reached
+    // disk: the server minted and burned a one-shot deviceSecret, the next
+    // launch was unpaired, and re-pairing then failed too because the
+    // pairing token had already been consumed. DeviceRegistrationService now
+    // reports that failure properly, but a one-line canary here means the
+    // user learns before they try rather than after.
+    const QString kSecureStoreCanaryKey = QStringLiteral("startup.canary");
+    const bool secureStoreWritable = secureStore.set(kSecureStoreCanaryKey, QStringLiteral("1"))
+        && secureStore.get(kSecureStoreCanaryKey).has_value();
+    secureStore.remove(kSecureStoreCanaryKey);
+    if (!secureStoreWritable) {
+        qCritical("main: the system secret store is not writable -- pairing and the app lock "
+                  "cannot persist. Start a keyring service (gnome-keyring or kwallet) and "
+                  "relaunch KyPost.");
+    }
+
     // 4. CursorStore -- reuses settingsDir (already computed for
     // SettingsStore above), not a second directory-resolution block.
     CursorStore cursorStore(settingsDir + QStringLiteral("/cursors.ini"));
@@ -538,7 +560,14 @@ int main(int argc, char* argv[])
     // transport=unifiedpush value -- no backend change needed for ntfy.sh
     // itself to be that URL.
     PushNotificationClient pushNotificationClient(httpClient);
+    // Empty when the topic could not be persisted (see
+    // NtfyTopicProvisioner::rotateTopic). An unpersisted topic is worse than
+    // none: the subscriber would listen on an address the backend was never
+    // told about, so the EmbeddedSubscriber tier is left with no URL to
+    // register rather than a plausible-looking dead one.
     const QString ntfyTopic = NtfyTopicProvisioner::getOrCreateTopic(secureStore);
+    if (ntfyTopic.isEmpty())
+        qWarning("main: no ntfy topic available -- the embedded push subscriber tier is disabled");
     // pushServerBaseUrl() defaults to "https://ntfy.sh" (no trailing slash)
     // but is user-configurable via SettingsStore::setPushServerBaseUrl(), so
     // this defensively strips one if present rather than assuming the
@@ -546,7 +575,10 @@ int main(int argc, char* argv[])
     QString ntfyBaseUrl = settingsStore.pushServerBaseUrl();
     while (ntfyBaseUrl.endsWith(QLatin1Char('/')))
         ntfyBaseUrl.chop(1);
-    const QString ntfyUrl = ntfyBaseUrl + QLatin1Char('/') + ntfyTopic;
+    // Mutable and re-derived on rotation below -- it used to be const,
+    // computed once at startup, so a topic rotated on re-pair left this
+    // pointing at the old one until the next launch.
+    QString ntfyUrl = ntfyTopic.isEmpty() ? QString() : ntfyBaseUrl + QLatin1Char('/') + ntfyTopic;
     NtfySubscriber ntfySubscriber(networkManager, settingsStore.pushServerBaseUrl(), ntfyTopic);
     PushRepository pushRepository(pushDao, cursorStore, pushNotificationClient, pairingStore, settingsStore);
     TransportStateMachine transportStateMachine(ntfySubscriber, pushRepository);
@@ -569,7 +601,15 @@ int main(int argc, char* argv[])
     // App lock ("AppLock"). Registered here rather than beside
     // Theme/General above because AppLockStore is part of the composition
     // graph built in this section, not the app-shell preferences block.
-    AppLockManager appLockManager(appLockStore, settingsStore);
+    //
+    // The sealer is injected rather than wired through a signal. See
+    // core/security/CredentialSealer.h: the previous credentialGateChanged
+    // signal could not report whether the seal/unseal it ordered actually
+    // happened, which let the stored "credential gate on" flag coexist with
+    // a plaintext secret, and let disableLock() erase the PIN while the
+    // secret was still sealed under it -- an unrecoverable pairing.
+    PairingStoreCredentialSealer credentialSealer(pairingStore);
+    AppLockManager appLockManager(appLockStore, settingsStore, credentialSealer);
     qmlRegisterSingletonInstance<AppLockManager>(
         "com.urlxl.mail", 1, 0, "AppLock", &appLockManager);
 
@@ -593,30 +633,12 @@ int main(int argc, char* argv[])
                           AppRelauncher::requestRelaunch();
                       });
 
-    // Sealing/unsealing the device secret when the credential gate is
-    // toggled. Kept out of AppLockManager because only the host knows where
-    // the pairing credential lives.
-    QObject::connect(&appLockManager, &AppLockManager::credentialGateChanged, &appLockManager,
-                      [&pairingStore](bool enabled, const QString& pin) {
-                          if (enabled)
-                              pairingStore.sealDeviceSecret(pin);
-                          else
-                              // Permanent, not session-only: the PIN may be
-                              // about to be destroyed (disableLock), and a
-                              // blob left sealed under it would strand the
-                              // pairing.
-                              pairingStore.unsealDeviceSecretPermanently(pin);
-                      });
-
-    // With the credential gate on, the device secret sits sealed on disk and
-    // every authenticated request 401s until the PIN has been entered. This
-    // is what makes unlocking restore service: the secret is unsealed into
-    // the store for the rest of the session, then re-sealed the moment the
-    // app re-locks.
-    QObject::connect(&appLockManager, &AppLockManager::unlockedWithPin, &appLockManager,
-                      [&pairingStore](const QString& pin) { pairingStore.unsealDeviceSecret(pin); });
-    QObject::connect(&appLockManager, &AppLockManager::relockRequested, &appLockManager,
-                      [&pairingStore]() { pairingStore.lockDeviceSecret(); });
+    // Sealing/unsealing the device secret is no longer wired here: it goes
+    // through credentialSealer above, which AppLockManager calls directly so
+    // it can act on the result. The three lambdas that used to live here
+    // (credentialGateChanged / unlockedWithPin / relockRequested) all
+    // discarded the bool their PairingStore call returned, which is exactly
+    // how the gate flag and the real state of the secret could disagree.
 
     // Hostile Location Protection was toggled. The setting is already
     // persisted; this erases on-disk data when switching the mode ON, then
@@ -710,10 +732,27 @@ int main(int argc, char* argv[])
     // would touch core/net/NtfySubscriber's core logic, also out of scope),
     // so a rotation here takes effect starting from the next app launch, not
     // mid-session.
+    //
+    // The rotation now also reaches the LIVE subscriber and the URL that
+    // gets registered as the deviceToken, via NtfySubscriber::setTopic().
+    // Previously only the persisted value changed, so "rotated on re-pair"
+    // was true of the stored secret and false of the running connection
+    // until the next launch.
     QObject::connect(&pairingController, &PairingController::pairingStateChanged, &pairingController,
-                      [&pairingController, &secureStore]() {
-                          if (pairingController.pairingState() == QStringLiteral("paired"))
-                              NtfyTopicProvisioner::rotateTopic(secureStore);
+                      [&pairingController, &secureStore, &ntfySubscriber, &ntfyUrl, ntfyBaseUrl]() {
+                          if (pairingController.state() != PairingController::State::Paired)
+                              return;
+                          const QString rotated = NtfyTopicProvisioner::rotateTopic(secureStore);
+                          if (rotated.isEmpty()) {
+                              // Could not persist the new topic. Keep the
+                              // old one running rather than switching the
+                              // live subscriber to an address the backend
+                              // will never be told about.
+                              qWarning("main: ntfy topic rotation failed, keeping the previous topic");
+                              return;
+                          }
+                          ntfyUrl = ntfyBaseUrl + QLatin1Char('/') + rotated;
+                          ntfySubscriber.setTopic(rotated);
                       });
 
     // pairingController now exists -- point the pointer the KDBusService
@@ -825,9 +864,28 @@ int main(int argc, char* argv[])
     // constructed above (before pushConnector exists), so this is the same
     // late-bound wiring shape as main.cpp's existing
     // pairingControllerForDeepLinks pointer.
+    //
+    // The result is now inspected rather than discarded. AGENTS.md section 8
+    // flags this exact case in bold ("Re-registration silently 401s once the
+    // pairing token expires ... handle the 401 explicitly"), and both call
+    // sites used to throw the std::optional away -- leaving the relay
+    // publishing to a dead endpoint behind a UI that still said "Paired".
+    const auto reregisterAndReport = [&deviceRegistrationService,
+                                       &pairingController](const QString& endpoint) {
+        const std::optional<NativeRegistrationResult> result =
+            deviceRegistrationService.reregisterIfPaired(endpoint);
+        if (!result.has_value())
+            return; // not paired yet -- an ordinary state, not a failure
+        if (result->outcome == RegistrationOutcome::Unauthorized) {
+            qWarning("main: re-registration was rejected (401) -- the pairing token has expired, "
+                     "push delivery is now broken until the user pairs again");
+            pairingController.setReregistrationRejected(true);
+        }
+    };
+
     QObject::connect(&pushConnector, &UnifiedPushConnector::endpointChanged, &pushConnector,
-                      [&deviceRegistrationService, &pairingController](const QString& endpoint) {
-                          deviceRegistrationService.reregisterIfPaired(endpoint);
+                      [&pairingController, reregisterAndReport](const QString& endpoint) {
+                          reregisterAndReport(endpoint);
                           pairingController.setDeviceToken(endpoint);
                       });
     // Apply whatever endpoint is already known (if any) immediately, same
@@ -925,14 +983,19 @@ int main(int argc, char* argv[])
     // chance of receiving a push again once that tier returns, and
     // deviceToken has no meaningful "unset" wire value to fall back to.
     QObject::connect(&transportStateMachine, &TransportStateMachine::tierChanged, &transportStateMachine,
-                      [&deviceRegistrationService, &pairingController, &pushConnector, &ntfyUrl](TransportTier tier) {
+                      [&pairingController, &pushConnector, &ntfyUrl, reregisterAndReport](TransportTier tier) {
                           switch (tier) {
                           case TransportTier::Distributor:
-                              deviceRegistrationService.reregisterIfPaired(pushConnector.endpoint());
+                              reregisterAndReport(pushConnector.endpoint());
                               pairingController.setDeviceToken(pushConnector.endpoint());
                               break;
                           case TransportTier::EmbeddedSubscriber:
-                              deviceRegistrationService.reregisterIfPaired(ntfyUrl);
+                              // Empty when no topic could be persisted --
+                              // registering an empty deviceToken would just
+                              // overwrite a working one with nothing.
+                              if (ntfyUrl.isEmpty())
+                                  break;
+                              reregisterAndReport(ntfyUrl);
                               pairingController.setDeviceToken(ntfyUrl);
                               break;
                           case TransportTier::Polling:
@@ -970,6 +1033,11 @@ int main(int argc, char* argv[])
     // exit -- leaving the user staring at a closed app. Sequencing it here
     // removes that race by construction rather than papering over it with a
     // sleep. See app/security/AppRelauncher.h.
-    AppRelauncher::performPendingRelaunch();
+    // A failed relaunch is reported, not swallowed: the two paths that reach
+    // it (Hostile Location Protection, and the wipe-after-10-failures reset)
+    // both just destroyed local state, so a silent disappearance is the
+    // worst possible ending.
+    if (!AppRelauncher::performPendingRelaunch())
+        return exitCode != 0 ? exitCode : 1;
     return exitCode;
 }

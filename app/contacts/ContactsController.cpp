@@ -6,6 +6,7 @@
 #include "domain/GroupsRepository.h"
 #include "models/Contact.h"
 #include "models/Group.h"
+#include "util/ReentrancyGuard.h"
 
 #include <KLocalizedString>
 
@@ -216,7 +217,19 @@ bool ContactsController::isSynced(const QString& uid)
     return !m_repository.isPending(uid);
 }
 
+// Guarded public entry point; dedupe() below reaches the body through
+// syncInternal() instead, because it legitimately chains into a sync and the
+// shared guard would otherwise turn that chained call into a no-op. Same
+// split, for the same reason, as MailController's *Internal methods.
 void ContactsController::sync()
+{
+    ReentrancyGuard guard(m_inNetworkCall);
+    if (!guard.entered())
+        return;
+    syncInternal();
+}
+
+void ContactsController::syncInternal()
 {
     setBusy(true);
     const ContactSyncOutcome outcome = m_repository.sync();
@@ -259,6 +272,10 @@ void ContactsController::sync()
 
 void ContactsController::dedupe()
 {
+    ReentrancyGuard guard(m_inNetworkCall);
+    if (!guard.entered())
+        return;
+
     setBusy(true);
     const ContactDedupeOutcome outcome = m_repository.dedupe();
     setBusy(false);
@@ -272,7 +289,7 @@ void ContactsController::dedupe()
             // succeeded -- if the follow-up sync() itself fails, leave its
             // failure message/lastError as-is rather than mask it behind a
             // misleadingly cheerful "Merged N duplicate(s)" prefix.
-            sync();
+            syncInternal();
             if (lastError().isEmpty())
                 setStatusMessage(i18n("Merged %1 duplicate(s) -- %2", outcome.mergedCount, statusMessage()));
         } else {
