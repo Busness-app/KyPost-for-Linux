@@ -110,16 +110,16 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
-  # flatpak-build below is gated to these two trigger types only (see its
-  # own `if:` condition) -- a real flatpak-builder run is minutes, not the
-  # hours once feared before base/base-version replaced a from-source
-  # WebEngine rebuild (see packaging/flatpak/com.urlxl.mail.yaml's own
-  # comments), but it still downloads a real Flathub extension + SDK and
-  # isn't worth the latency/flakiness surface on every push/PR that
-  # build-and-test above already covers.
   workflow_dispatch:
   schedule:
     - cron: "17 5 * * *" # nightly, arbitrary off-peak time
+
+# The flatpak-build job that used to live here moved to
+# .github/workflows/flatpak.yml when the Flatpak build became the actual
+# distribution channel (signed OSTree repo published to gh-pages, so
+# `flatpak update` works). It was removed rather than kept, so the nightly
+# doesn't download the ~600MB SDK twice. This workflow is now purely the
+# native cmake/ctest build.
 
 jobs:
   build-and-test:
@@ -210,47 +210,3 @@ jobs:
       # session required).
       - name: Test
         run: ctest --test-dir build --output-on-failure
-
-  # --- flatpak-builder validation job ---
-  #
-  # Previously omitted entirely: packaging/flatpak/com.urlxl.mail.yaml used
-  # to fail deterministically at the kypost module's CMake configure step
-  # (Could NOT find Qt6WebEngineQuick), and a job that fails on literally
-  # every push/PR is worse than no job. Resolved 2026-07-17 (see
-  # TESTING.md's flatpak-builder checklist item and the manifest's own
-  # comments for the full fix + real from-scratch build+launch confirmation)
-  # -- the manifest now produces a working app. Still not run on every
-  # push/pull_request though: even without a from-source WebEngine rebuild,
-  # a real flatpak-builder run downloads a ~600MB SDK/base-app/runtime set
-  # and takes minutes, which is real latency/flakiness surface routine PRs
-  # shouldn't pay -- gated to manual (workflow_dispatch) and nightly
-  # (schedule) triggers only, matching this file's own `on:` block.
-  flatpak-build:
-    runs-on: ubuntu-24.04
-    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install flatpak-builder
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends flatpak flatpak-builder
-          sudo flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
-
-      - name: Build Flatpak manifest
-        run: |
-          flatpak-builder --user --force-clean --install-deps-from=flathub \
-            build-flatpak packaging/flatpak/com.urlxl.mail.yaml
-
-      # Confirms the built app actually loads/runs inside the sandbox, not
-      # just that flatpak-builder's install step succeeded -- catches
-      # QML-resource-registration gaps (a real one: a component missing from
-      # qml/qml.qrc) that a clean build alone wouldn't surface.
-      - name: Launch smoke test
-        run: |
-          timeout 15 flatpak-builder --run build-flatpak \
-            packaging/flatpak/com.urlxl.mail.yaml kypost --platform offscreen 2>&1 | tee launch.log
-          if grep -qi "is not a type\|unavailable\|QQmlApplicationEngine failed" launch.log; then
-            echo "QML load failure detected in launch output" >&2
-            exit 1
-          fi

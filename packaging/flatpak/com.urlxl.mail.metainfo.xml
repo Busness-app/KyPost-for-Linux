@@ -13,6 +13,10 @@
   <name>KyPost</name>
   <summary>Relay-based email client for KDE Plasma and Plasma Mobile</summary>
 
+  <developer id="com.urlxl">
+    <name>Busnes Games</name>
+  </developer>
+
   <description>
     <p>
       KyPost is a relay-only email client for KDE Plasma and Plasma
@@ -21,12 +25,19 @@
       brokers device pairing and push notifications over UnifiedPush.
     </p>
     <p>
-      The app provides an inbox and message detail view, a plain-text
-      composer for replying, forwarding, and sending new mail, and a
-      contacts list with a detail/edit view. Pairing a new device with the
-      relay account is done by pasting or opening a pairing link, and
-      sensitive account actions can be approved or denied from a
-      multi-factor approval screen delivered via push notification.
+      The app provides an inbox and message detail view, server-side folders,
+      an HTML composer for replying, forwarding, and sending new mail with
+      attachments and drafts, and a contacts list with a detail/edit view.
+      Pairing a new device with the relay account is done by pasting or
+      opening a pairing link. PGP public keys can be exchanged with other
+      devices by QR code, and end-to-end encrypted mail this app cannot read
+      is explained rather than shown blank.
+    </p>
+    <p>
+      Optional security features: a PIN lock with lockout and
+      wipe-on-repeated-failure, encrypting the pairing credential behind that
+      PIN, trust-on-first-use TLS certificate pinning, and a mode that keeps
+      no mail or contacts on disk at all.
     </p>
   </description>
 
@@ -43,5 +54,10 @@
     <release version="0.1.0" date="2026-07-14"/>
   </releases>
 
-  <!-- No public homepage exists yet; omitted rather than inventing one. -->
+  <!-- KyPost is self-distributed and will never be on Flathub (Flathub bans
+       apps that use AI; KyPost's backend does). These URLs point at the
+       GitHub project and the self-hosted Flatpak remote published by
+       .github/workflows/flatpak.yml. See docs/DISTRIBUTION.md. -->
+  <url type="homepage">https://github.com/Yoshiofthewire/KyPost-for-Linux</url>
+  <url type="bugtracker">https://github.com/Yoshiofthewire/KyPost-for-Linux/issues</url>
 </component>

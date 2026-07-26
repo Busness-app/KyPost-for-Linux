@@ -4,5 +4,12 @@
 *.flatpak
 /.worktrees/
 .claude
-.github
 .superpowers
+
+# NOT ignored: .github/ -- CI workflows are tracked. A bare `.github` entry
+# used to live here, which silently swallowed every new workflow file on
+# `git add` (ci.yml survived only because it predated the entry).
+
+# Local flatpak publish staging (the real repo is published to the gh-pages
+# branch by .github/workflows/flatpak.yml, never committed to main).
+/_site/

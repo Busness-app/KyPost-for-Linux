@@ -1,0 +1,284 @@
+# Flatpak build + self-hosted update channel.
+#
+# --- Why this exists separately from ci.yml ---
+#
+# KyPost will never ship on Flathub: Flathub bans applications that use AI,
+# and KyPost's backend does (the Ollama-backed classifier). That is a policy
+# ban, not a packaging gap, so no amount of manifest compliance changes it.
+# This workflow therefore *is* the distribution channel, not a rehearsal for
+# one -- it publishes a signed OSTree repository to the gh-pages branch so
+# users get working `flatpak update`, rather than a one-shot .flatpak bundle
+# that installs once and then rots. See docs/DISTRIBUTION.md.
+#
+# The single-file bundle is still produced, as a PR artifact and as a
+# tagged-release download for people who don't want to add a remote.
+#
+# --- Why a gh-pages branch rather than actions/deploy-pages ---
+#
+# An OSTree repo must *accumulate*: `flatpak update` computes a delta from
+# the commit the user already has, so previous commits have to stay
+# reachable. The artifact-based Pages deploy replaces the published site
+# wholesale each run, which would strand every existing install on a repo
+# whose history had vanished. So each run clones the currently-published
+# repo, exports the new build *into* it, and force-pushes the result back as
+# a single orphan commit -- OSTree keeps its own history inside the repo,
+# while git history stays one commit deep so the branch doesn't grow without
+# bound as pruned objects pile up.
+#
+# --- Size ---
+#
+# GitHub Pages caps a published site at 1 GB. The runtime is NOT in here
+# (users get org.kde.Platform//6.10 from Flathub); this repo holds only
+# KyPost plus its three from-source modules. --prune-depth below bounds
+# growth; if the site ever approaches the cap, lower it.
+
+name: Flatpak
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: "17 5 * * *" # nightly, matches ci.yml's off-peak slot
+
+# Two publishing runs must never race the gh-pages force-push, so every
+# publishing run shares one group and is never cancelled mid-flight (a
+# half-finished publish is worse than a queued one). PR builds publish
+# nothing, so they get a per-ref group instead -- otherwise a slow PR build
+# would sit in front of a release.
+concurrency:
+  group: >-
+    ${{ github.event_name == 'pull_request'
+        && format('flatpak-pr-{0}', github.ref)
+        || 'flatpak-publish' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: write # push the gh-pages branch; attach tagged-release assets
+
+env:
+  APP_ID: com.urlxl.mail
+  MANIFEST: packaging/flatpak/com.urlxl.mail.yaml
+  PAGES_URL: https://yoshiofthewire.github.io/KyPost-for-Linux
+
+jobs:
+  flatpak:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      # Publishing needs the signing key, which pull_request events from
+      # forks never get. Those runs still build and smoke-test; they just
+      # produce an unsigned local repo and a bundle artifact.
+      - name: Decide whether this run publishes
+        id: mode
+        env:
+          HAS_KEY: ${{ secrets.FLATPAK_GPG_PRIVATE_KEY != '' }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT_NAME" != "pull_request" ] && [ "$HAS_KEY" = "true" ]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            if [ "$EVENT_NAME" != "pull_request" ]; then
+              echo "::warning::FLATPAK_GPG_PRIVATE_KEY is not set - building only, not publishing. See docs/DISTRIBUTION.md."
+            fi
+          fi
+
+      - name: Install flatpak tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            flatpak flatpak-builder ostree appstream desktop-file-utils
+          # Added to both installations deliberately: flatpak-builder runs
+          # with --user below, but the pre-existing system-wide remote is
+          # what the nightly job has been resolving --install-deps-from
+          # against since 2026-07-17. Keep both so neither path regresses.
+          sudo flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+          flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+
+      # Cheap, and it runs before the multi-minute build so metadata typos
+      # fail in seconds. This metadata is the software-centre listing users
+      # actually see, which matters more for a self-hosted remote than it
+      # would for a store-reviewed one.
+      - name: Validate AppStream and desktop metadata
+        run: |
+          appstreamcli validate --no-net packaging/flatpak/com.urlxl.mail.metainfo.xml
+          desktop-file-validate packaging/flatpak/com.urlxl.mail.desktop
+
+      # Without this, qtkeychain 0.17.0, zxing-cpp v3.1.0 and kunifiedpush
+      # 26.04.3 rebuild from source on every single run.
+      - name: Cache flatpak-builder state
+        uses: actions/cache@v4
+        with:
+          path: .flatpak-builder
+          key: flatpak-builder-${{ hashFiles('packaging/flatpak/com.urlxl.mail.yaml') }}-${{ github.run_id }}
+          restore-keys: |
+            flatpak-builder-${{ hashFiles('packaging/flatpak/com.urlxl.mail.yaml') }}-
+            flatpak-builder-
+
+      - name: Import signing key
+        if: steps.mode.outputs.publish == 'true'
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.FLATPAK_GPG_PRIVATE_KEY }}
+        run: |
+          GNUPGHOME="$RUNNER_TEMP/gnupg"
+          mkdir -p "$GNUPGHOME"
+          chmod 700 "$GNUPGHOME"
+          printf '%s\n' "$GPG_PRIVATE_KEY" | gpg --homedir "$GNUPGHOME" --batch --import
+          echo "GNUPGHOME=$GNUPGHOME" >> "$GITHUB_ENV"
+
+      # Clone the currently-published repo so the new commit lands on top of
+      # the existing OSTree history (see the header comment). .git is
+      # discarded because the publish step re-inits an orphan commit.
+      - name: Restore published OSTree repo
+        if: steps.mode.outputs.publish == 'true'
+        run: |
+          if git clone --depth 1 --branch gh-pages \
+              "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" _site; then
+            rm -rf _site/.git
+            echo "Restored existing published repo."
+          else
+            rm -rf _site
+            mkdir -p _site
+            echo "No gh-pages branch yet - starting a fresh repo."
+          fi
+
+          # git cannot represent an empty directory, so every OSTree scratch
+          # directory that happened to be empty at publish time is missing
+          # from the clone. This is not cosmetic: verified locally that
+          # without this, the *second* publish onto a restored repo dies with
+          #   error: Listing refs: opendir(refs/remotes): No such file or directory
+          # i.e. the very first update would have been the one that broke.
+          # The exact set git drops from a freshly-built repo is
+          # extensions/, state/, tmp/, tmp/cache/, refs/mirrors/,
+          # refs/remotes/ -- recreate all of them plus refs/heads/.
+          if [ -d _site/repo ]; then
+            mkdir -p _site/repo/tmp/cache _site/repo/state _site/repo/extensions \
+                     _site/repo/refs/heads _site/repo/refs/mirrors _site/repo/refs/remotes
+            ostree --repo=_site/repo fsck --quiet \
+              || echo "::warning::Restored OSTree repo failed fsck; continuing (build-update-repo may repair it)."
+          fi
+
+      - name: Build, export, and bundle
+        env:
+          GPG_KEY_ID: ${{ secrets.FLATPAK_GPG_KEY_ID }}
+          PUBLISH: ${{ steps.mode.outputs.publish }}
+        run: |
+          set -euo pipefail
+          mkdir -p _site/repo
+
+          SIGN=()
+          if [ "$PUBLISH" = "true" ]; then
+            SIGN=(--gpg-sign="$GPG_KEY_ID" --gpg-homedir="$GNUPGHOME")
+          fi
+
+          flatpak-builder --user --force-clean --install-deps-from=flathub \
+            --repo=_site/repo "${SIGN[@]}" \
+            build-flatpak "$MANIFEST"
+
+          # --generate-static-deltas is what makes `flatpak update` download a
+          # diff instead of the whole app. --prune-depth bounds how many old
+          # commits stay resolvable, which is the site-size control knob.
+          flatpak build-update-repo \
+            --title="KyPost" \
+            --generate-static-deltas \
+            --prune --prune-depth=3 \
+            "${SIGN[@]}" _site/repo
+
+          # Standalone bundle for people who'd rather not add a remote.
+          # --runtime-repo lets a bundle install pull org.kde.Platform itself.
+          flatpak build-bundle _site/repo kypost.flatpak "$APP_ID" \
+            --runtime-repo=https://flathub.org/repo/flathub.flatpakrepo \
+            "${SIGN[@]}"
+
+      # Confirms the app actually loads inside the sandbox rather than just
+      # that the build succeeded -- catches components missing from
+      # app/qml/qml.qrc, which has bitten this repo for real. Runs before the
+      # publish step, so a broken build never reaches users.
+      - name: Launch smoke test
+        run: |
+          set -o pipefail
+          rc=0
+          timeout 15 flatpak-builder --run build-flatpak \
+            "$MANIFEST" kypost --platform offscreen > launch.log 2>&1 || rc=$?
+          cat launch.log
+
+          # The exit code is the load-bearing check, not the log grep.
+          # main.cpp returns -1 (exit 255) when engine.rootObjects() is empty,
+          # and a QML root that fails to load can do so while printing
+          # NOTHING at all -- verified: an invalid property assignment on a
+          # custom component produced exit 255 with a zero-byte log. A
+          # grep-only test passes that build happily. 124 is `timeout`
+          # killing a still-running app, which is the success case here.
+          if [ "$rc" -ne 124 ]; then
+            echo "App exited with $rc instead of staying up (124 = timeout killed it, i.e. healthy)." >&2
+            echo "Exit 255 usually means the QML root failed to load." >&2
+            exit 1
+          fi
+
+          if grep -qi "is not a type\|unavailable\|QQmlApplicationEngine failed" launch.log; then
+            echo "QML load failure detected in launch output" >&2
+            exit 1
+          fi
+
+      # Generated rather than committed so the embedded public key can never
+      # drift out of sync with the key the repo was actually signed with.
+      - name: Generate .flatpakrepo and landing page
+        if: steps.mode.outputs.publish == 'true'
+        env:
+          GPG_KEY_ID: ${{ secrets.FLATPAK_GPG_KEY_ID }}
+        run: |
+          set -euo pipefail
+          gpg --homedir "$GNUPGHOME" --export "$GPG_KEY_ID" > _site/kypost.gpg
+
+          {
+            echo "[Flatpak Repo]"
+            echo "Title=KyPost"
+            echo "Url=$PAGES_URL/repo/"
+            echo "Homepage=https://github.com/${{ github.repository }}"
+            echo "Comment=Relay-based email client for KDE Plasma and Plasma Mobile"
+            echo "Description=Official self-hosted Flatpak channel for KyPost."
+            echo "GPGKey=$(base64 -w0 < _site/kypost.gpg)"
+          } > _site/kypost.flatpakrepo
+
+          sed "s|@PAGES_URL@|$PAGES_URL|g; s|@REPOSITORY@|${{ github.repository }}|g" \
+            packaging/flatpak/site/index.html.in > _site/index.html
+
+          # GitHub Pages runs Jekyll by default, which skips files and
+          # directories it considers special. An OSTree repo must be served
+          # byte-for-byte, so opt out entirely.
+          touch _site/.nojekyll
+
+      - name: Upload bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kypost-flatpak-${{ github.sha }}
+          path: kypost.flatpak
+          if-no-files-found: error
+
+      - name: Publish OSTree repo to gh-pages
+        if: steps.mode.outputs.publish == 'true'
+        run: |
+          set -euo pipefail
+          cd _site
+          git init -q -b gh-pages
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -qm "Publish ${{ github.sha }}"
+          git push -f \
+            "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" \
+            gh-pages
+          echo "Published to $PAGES_URL"
+          du -sh . | awk '{print "Published site size: " $1 " (GitHub Pages caps at 1 GB)"}'
+
+      - name: Attach bundle to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: kypost.flatpak
+          fail_on_unmatched_files: true

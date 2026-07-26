@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<!-- Template for the published Flatpak channel's landing page.
+     .github/workflows/flatpak.yml substitutes @PAGES_URL@ and @REPOSITORY@
+     and writes the result to the gh-pages branch as index.html. Edit this
+     file, never the generated one. -->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>KyPost — Flatpak channel</title>
+    <style>
+      :root { color-scheme: light dark; }
+      body {
+        font-family: system-ui, sans-serif;
+        line-height: 1.6;
+        max-width: 46rem;
+        margin: 0 auto;
+        padding: 2rem 1.25rem 4rem;
+      }
+      h1 { margin-bottom: 0.25rem; }
+      .sub { opacity: 0.7; margin-top: 0; }
+      pre {
+        background: rgba(127, 127, 127, 0.14);
+        padding: 0.85rem 1rem;
+        border-radius: 6px;
+        overflow-x: auto;
+      }
+      code { font-family: ui-monospace, monospace; }
+      footer { margin-top: 3rem; opacity: 0.7; font-size: 0.9rem; }
+    </style>
+  </head>
+  <body>
+    <h1>KyPost</h1>
+    <p class="sub">Relay-based email client for KDE Plasma and Plasma Mobile.</p>
+
+    <h2>Install</h2>
+    <p>
+      KyPost is distributed from its own Flatpak remote. Adding the remote
+      (rather than installing a one-off bundle) is what makes
+      <code>flatpak update</code> work.
+    </p>
+    <pre><code>flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+flatpak remote-add --if-not-exists kypost @PAGES_URL@/kypost.flatpakrepo
+flatpak install kypost com.urlxl.mail</code></pre>
+    <p>
+      The Flathub remote is needed for the <code>org.kde.Platform</code>
+      runtime KyPost builds against; the app itself is not on Flathub and
+      never will be.
+    </p>
+
+    <h2>Update</h2>
+    <pre><code>flatpak update com.urlxl.mail</code></pre>
+    <p>Or just <code>flatpak update</code>, along with everything else.</p>
+
+    <h2>Uninstall</h2>
+    <pre><code>flatpak uninstall com.urlxl.mail
+flatpak remote-delete kypost</code></pre>
+
+    <h2>Verifying the signature</h2>
+    <p>
+      The repository is GPG-signed. The public key is embedded in the
+      <a href="@PAGES_URL@/kypost.flatpakrepo">.flatpakrepo</a> file above, so
+      the <code>remote-add</code> command installs it automatically and
+      <code>flatpak</code> rejects anything not signed by it. The same key is
+      also published separately as
+      <a href="@PAGES_URL@/kypost.gpg">kypost.gpg</a>.
+    </p>
+
+    <footer>
+      <p>
+        Source and issue tracker:
+        <a href="https://github.com/@REPOSITORY@">github.com/@REPOSITORY@</a>.
+        Licensed GPL-2.0-only.
+      </p>
+    </footer>
+  </body>
+</html>
