@@ -108,8 +108,6 @@ add_library(kypostcore STATIC
   net/PgpRecipientChecker.h
   net/RelayMailSource.cpp
   net/RelayMailSource.h
-  net/NtfySubscriber.cpp
-  net/NtfySubscriber.h
   vcard/VCardContact.cpp
   vcard/VCardContact.h
   theme/ThemePalette.cpp

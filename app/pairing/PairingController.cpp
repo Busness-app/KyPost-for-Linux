@@ -218,11 +218,6 @@ QString PairingController::transport() const
     return m_settingsStore.transport();
 }
 
-QString PairingController::pushServerBaseUrl() const
-{
-    return m_settingsStore.pushServerBaseUrl();
-}
-
 void PairingController::setPairingState(State state, const QString& error, bool forceNotify)
 {
     const bool unchanged = (m_state == state && m_pairingError == error);

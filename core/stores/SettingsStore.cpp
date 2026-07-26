@@ -6,7 +6,6 @@ constexpr auto kPreferredModeKey = "interface/preferredMode";
 constexpr auto kTrayIconEnabledKey = "general/trayIconEnabled";
 constexpr auto kMinimizeToTrayOnCloseKey = "general/minimizeToTrayOnClose";
 constexpr auto kHostileLocationKey = "security/hostileLocationProtection";
-constexpr auto kPushServerBaseUrlKey = "notifications/pushServerBaseUrl";
 constexpr auto kDeliveryModeKey = "push/deliveryMode";
 constexpr auto kPullEndpointKey = "push/pullEndpoint";
 constexpr auto kTransportKey = "push/transport";
@@ -18,7 +17,6 @@ QString keywordVisibleKey(const QString& keyword)
 {
     return QStringLiteral("keywords/%1").arg(keyword);
 }
-const QString kDefaultPushServerBaseUrl = QStringLiteral("https://ntfy.sh");
 } // namespace
 
 SettingsStore::SettingsStore(const QString& filePath)
@@ -77,16 +75,6 @@ void SettingsStore::setHostileLocationProtectionEnabled(bool enabled)
     // Flushed immediately: the caller's very next act is to relaunch the
     // process, and QSettings' lazy write would otherwise be lost.
     m_settings.sync();
-}
-
-QString SettingsStore::pushServerBaseUrl() const
-{
-    return m_settings.value(kPushServerBaseUrlKey, kDefaultPushServerBaseUrl).toString();
-}
-
-void SettingsStore::setPushServerBaseUrl(const QString& baseUrl)
-{
-    m_settings.setValue(kPushServerBaseUrlKey, baseUrl);
 }
 
 QString SettingsStore::deliveryMode() const

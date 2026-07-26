@@ -45,9 +45,11 @@ public:
     bool hostileLocationProtectionEnabled() const;
     void setHostileLocationProtectionEnabled(bool enabled);
 
-    // Notifications
-    QString pushServerBaseUrl() const;
-    void setPushServerBaseUrl(const QString& baseUrl);
+    // pushServerBaseUrl (the embedded ntfy subscriber's server, default
+    // https://ntfy.sh) lived here until 2026-07-26. It went away with that
+    // tier -- see core/domain/TransportStateMachine.h. The key it wrote,
+    // "notifications/pushServerBaseUrl", is simply left unread in any
+    // settings.ini that still has it; nothing migrates or removes it.
 
     // Push delivery (set by DeviceRegistrationService on successful (re-)registration)
     QString deliveryMode() const;      // "push" or "pull", empty if never registered

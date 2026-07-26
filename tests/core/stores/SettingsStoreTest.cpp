@@ -10,7 +10,6 @@ class SettingsStoreTest : public QObject
 private slots:
     void defaultsAreUnset();
     void themeIdRoundTrips();
-    void pushServerBaseUrlRoundTrips();
     void pushDeliveryFieldsRoundTrip();
     void keywordVisibleDefaultsTrueUntilExplicitlyToggled();
 
@@ -30,7 +29,6 @@ void SettingsStoreTest::defaultsAreUnset()
     SettingsStore store(tempFilePath(dir, QStringLiteral("settings.ini")));
 
     QCOMPARE(store.themeId(), QStringLiteral("Patina Ky"));
-    QCOMPARE(store.pushServerBaseUrl(), QStringLiteral("https://ntfy.sh"));
 }
 
 void SettingsStoreTest::themeIdRoundTrips()
@@ -41,16 +39,6 @@ void SettingsStoreTest::themeIdRoundTrips()
 
     store.setThemeId(QStringLiteral("Solar Flare"));
     QCOMPARE(store.themeId(), QStringLiteral("Solar Flare"));
-}
-
-void SettingsStoreTest::pushServerBaseUrlRoundTrips()
-{
-    QTemporaryDir dir;
-    QVERIFY(dir.isValid());
-    SettingsStore store(tempFilePath(dir, QStringLiteral("settings.ini")));
-
-    store.setPushServerBaseUrl(QStringLiteral("https://push.example.com"));
-    QCOMPARE(store.pushServerBaseUrl(), QStringLiteral("https://push.example.com"));
 }
 
 void SettingsStoreTest::pushDeliveryFieldsRoundTrip()

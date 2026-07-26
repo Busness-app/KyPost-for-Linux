@@ -10,7 +10,6 @@
 #include "security/AppLockManager.h"
 #include "security/AppRelauncher.h"
 #include "push/NotificationDispatcher.h"
-#include "push/NtfyTopicProvisioner.h"
 #include "push/PushPayloadParser.h"
 #include "push/UnifiedPushConnector.h"
 #include "theme/ThemeController.h"
@@ -46,7 +45,6 @@
 #include "net/MfaResponseClient.h"
 #include "net/DeregisterClient.h"
 #include "net/NativeRegistrationClient.h"
-#include "net/NtfySubscriber.h"
 #include "net/PgpBootstrapClient.h"
 #include "net/PgpQrClient.h"
 #include "net/PgpRecipientChecker.h"
@@ -525,63 +523,28 @@ int main(int argc, char* argv[])
     // 9. Task 41: the push domain graph deferred by the Phase 4 final-review
     // note above -- PushNotificationClient (over httpClient, same
     // construction pattern as RelayMailSource/ContactSyncClient just above),
-    // NtfySubscriber (over networkManager), PushRepository (over pushDao/
-    // cursorStore/the new PushNotificationClient/pairingStore/settingsStore,
-    // all already constructed above), TransportStateMachine (over the new
-    // NtfySubscriber+PushRepository), and NotificationDispatcher (Task 40,
-    // app/push/ -- KNotifications wrapper, no core/ dependency).
-    // PushPayloadParser (also Task 40) is a pure namespace, not a class --
-    // no instance to construct.
+    // PushRepository (over pushDao/cursorStore/the new PushNotificationClient/
+    // pairingStore/settingsStore, all already constructed above),
+    // TransportStateMachine (over the new PushRepository), and
+    // NotificationDispatcher (Task 40, app/push/ -- KNotifications wrapper,
+    // no core/ dependency). PushPayloadParser (also Task 40) is a pure
+    // namespace, not a class -- no instance to construct.
     //
     // The actual signal wiring (UnifiedPushConnector's distributor-tier
-    // arrivals/re-registration, TransportStateMachine's embedded-subscriber
-    // and polling-tier arrivals, foreground/background reporting) lives
-    // further down, after pushConnector (KUnifiedPush) is constructed --
-    // see the comment block right before pushConnector's construction.
+    // arrivals/re-registration, TransportStateMachine's polling-tier
+    // arrivals) lives further down, after pushConnector (KUnifiedPush) is
+    // constructed -- see the comment block right before pushConnector's
+    // construction.
     //
-    // Task 43 review-finding fix: NtfySubscriber's topic argument used to be
-    // an empty QString() here (see task-41-report.md) -- nothing generated or
-    // persisted a real one. NtfyTopicProvisioner::getOrCreateTopic()
-    // (app/push/, new this task) reads the persisted topic from secureStore
-    // (key "ntfy-topic", per SecureStore.h's own doc comment) if one already
-    // exists, or generates a fresh >=128-bit random one and persists it
-    // otherwise -- Linux_QT_Client_Plan.md's risk #8 design. Never log
-    // ntfyTopic itself (it is a bearer secret on this path, same logging
-    // discipline as endpoint URLs -- phase7-global-constraints.md item 6).
-    //
-    // Registering this topic with the backend as a deviceToken so the relay
-    // actually knows where to publish (previously a documented gap here) is
-    // now wired below via ntfyUrl + the tierChanged connection near
-    // transportStateMachine's construction: deviceToken tracks whichever
-    // tier is actually active (pushConnector.endpoint() for Distributor,
-    // this URL for EmbeddedSubscriber), confirmed against the backend
-    // (kypost-server's UnifiedPushSender.Send) treating deviceToken as an
-    // arbitrary public URL to POST to under the existing
-    // transport=unifiedpush value -- no backend change needed for ntfy.sh
-    // itself to be that URL.
+    // The embedded ntfy subscriber that used to be constructed here (an
+    // NtfySubscriber over networkManager, plus an NtfyTopicProvisioner-issued
+    // bearer topic persisted in secureStore) was cut on 2026-07-26 along with
+    // the whole middle tier -- see TransportStateMachine.h's class comment for
+    // the reasoning. Nothing on the distributor or polling path depended on
+    // it.
     PushNotificationClient pushNotificationClient(httpClient);
-    // Empty when the topic could not be persisted (see
-    // NtfyTopicProvisioner::rotateTopic). An unpersisted topic is worse than
-    // none: the subscriber would listen on an address the backend was never
-    // told about, so the EmbeddedSubscriber tier is left with no URL to
-    // register rather than a plausible-looking dead one.
-    const QString ntfyTopic = NtfyTopicProvisioner::getOrCreateTopic(secureStore);
-    if (ntfyTopic.isEmpty())
-        qWarning("main: no ntfy topic available -- the embedded push subscriber tier is disabled");
-    // pushServerBaseUrl() defaults to "https://ntfy.sh" (no trailing slash)
-    // but is user-configurable via SettingsStore::setPushServerBaseUrl(), so
-    // this defensively strips one if present rather than assuming the
-    // default's shape holds forever.
-    QString ntfyBaseUrl = settingsStore.pushServerBaseUrl();
-    while (ntfyBaseUrl.endsWith(QLatin1Char('/')))
-        ntfyBaseUrl.chop(1);
-    // Mutable and re-derived on rotation below -- it used to be const,
-    // computed once at startup, so a topic rotated on re-pair left this
-    // pointing at the old one until the next launch.
-    QString ntfyUrl = ntfyTopic.isEmpty() ? QString() : ntfyBaseUrl + QLatin1Char('/') + ntfyTopic;
-    NtfySubscriber ntfySubscriber(networkManager, settingsStore.pushServerBaseUrl(), ntfyTopic);
     PushRepository pushRepository(pushDao, cursorStore, pushNotificationClient, pairingStore, settingsStore);
-    TransportStateMachine transportStateMachine(ntfySubscriber, pushRepository);
+    TransportStateMachine transportStateMachine(pushRepository);
     NotificationDispatcher notificationDispatcher;
 
     // 10. Nothing above is registered with QML yet -- Tasks 32-34 each add
@@ -710,10 +673,10 @@ int main(int argc, char* argv[])
     // constructor comment) -- unlike Mail/ContactsController, there's no
     // reasonable "empty until QML asks" state for "are we paired".
     // Task 39: also takes settingsStore directly (constructed at the very
-    // top of main()) so its read-only deliveryMode()/transport()/
-    // pushServerBaseUrl() properties (Settings > Notifications) can read
-    // straight from it -- see PairingController.h's doc comment on why
-    // those three reuse pairingChanged() rather than a new signal.
+    // top of main()) so its read-only deliveryMode()/transport() properties
+    // (Settings > Notifications) can read straight from it -- see
+    // PairingController.h's doc comment on why those reuse pairingChanged()
+    // rather than a new signal.
     PairingController pairingController(deviceRegistrationService, pairingStore, settingsStore, deregisterClient);
     qmlRegisterSingletonInstance<PairingController>(
         "com.urlxl.mail", 1, 0, "Pairing", &pairingController);
@@ -733,42 +696,14 @@ int main(int argc, char* argv[])
                          pairingController.setAppLocked(appLockManager.locked());
                      });
 
-    // Task 43 review-finding fix: rotate the ntfy topic (SecureStore
-    // "ntfy-topic" key, see NtfyTopicProvisioner above) on every successful
-    // (re-)pair, per Linux_QT_Client_Plan.md's risk #8 ("rotated on
-    // re-pair"). pairingStateChanged() is PairingController's own
-    // already-existing signal for exactly this transition -- it fires from
-    // pairFromParsedParams() on every outcome, so the state is checked here
-    // rather than adding new re-pair-specific machinery to PairingController
-    // itself (out of this task's scope per its brief: wire an existing hook,
-    // don't build one). Note this only rotates the *persisted* secret --
-    // ntfySubscriber above was already constructed with whatever topic
-    // existed at startup and has no live topic-update seam (changing that
-    // would touch core/net/NtfySubscriber's core logic, also out of scope),
-    // so a rotation here takes effect starting from the next app launch, not
-    // mid-session.
-    //
-    // The rotation now also reaches the LIVE subscriber and the URL that
-    // gets registered as the deviceToken, via NtfySubscriber::setTopic().
-    // Previously only the persisted value changed, so "rotated on re-pair"
-    // was true of the stored secret and false of the running connection
-    // until the next launch.
-    QObject::connect(&pairingController, &PairingController::pairingStateChanged, &pairingController,
-                      [&pairingController, &secureStore, &ntfySubscriber, &ntfyUrl, ntfyBaseUrl]() {
-                          if (pairingController.state() != PairingController::State::Paired)
-                              return;
-                          const QString rotated = NtfyTopicProvisioner::rotateTopic(secureStore);
-                          if (rotated.isEmpty()) {
-                              // Could not persist the new topic. Keep the
-                              // old one running rather than switching the
-                              // live subscriber to an address the backend
-                              // will never be told about.
-                              qWarning("main: ntfy topic rotation failed, keeping the previous topic");
-                              return;
-                          }
-                          ntfyUrl = ntfyBaseUrl + QLatin1Char('/') + rotated;
-                          ntfySubscriber.setTopic(rotated);
-                      });
+    // The ntfy-topic rotation hook that used to sit here (rotate the
+    // SecureStore "ntfy-topic" bearer secret on every successful re-pair, per
+    // Linux_QT_Client_Plan.md's risk #8) went away with the embedded
+    // subscriber tier it protected -- see TransportStateMachine.h. There is no
+    // longer a client-held bearer secret on the push path to rotate: the
+    // distributor tier's endpoint is issued and re-issued by KUnifiedPush, and
+    // the polling tier authenticates as the paired device like every other
+    // relay call.
 
     // pairingController now exists -- point the pointer the KDBusService
     // activateRequested lambda above captured (by reference) at it, so a
@@ -840,9 +775,9 @@ int main(int argc, char* argv[])
 
     // Task 41: UnifiedPushConnector is now a real emitting wrapper (see
     // app/push/UnifiedPushConnector.h/.cpp) -- the live entry point for the
-    // Distributor tier of the three-tier push pipeline
-    // (core/domain/TransportStateMachine.h: Distributor -> EmbeddedSubscriber
-    // -> Polling). registerClient() below (moved to just before app.exec(),
+    // Distributor tier of the two-tier push pipeline
+    // (core/domain/TransportStateMachine.h: Distributor -> Polling).
+    // registerClient() below (moved to just before app.exec(),
     // after every wiring connection below is already in place) is safe to
     // call on every startup -- KUnifiedPush persists registration state
     // itself.
@@ -938,33 +873,6 @@ int main(int argc, char* argv[])
                           notificationDispatcher.notify(*payload);
                       });
 
-    // EmbeddedSubscriber-tier arrival path. NtfySubscriber emits ntfy's own
-    // flat JSON-stream envelope (id/time/event/topic/title/message -- see
-    // core/net/NtfySubscriber.cpp's processLine() and
-    // tests/core/net/NtfySubscriberTest.cpp's fixtures), which is NOT the
-    // nested {title,body,data:{messageId,...}} envelope PushPayloadParser.h
-    // documents -- the two shapes were confirmed different by reading both,
-    // so this maps ntfy's fields directly instead of round-tripping through
-    // PushPayloadParser (see task-41-report.md for the full analysis: ntfy's
-    // own message id is the only reasonable messageId source here, and the
-    // custom data.* fields this app cares about are not necessarily
-    // preserved by a real ntfy relay). Unlike the Polling tier below,
-    // nothing upstream of this signal persists the arrival -- NtfySubscriber
-    // has no PushDao, and TransportStateMachine's own notificationReceived
-    // forwarding in its .cpp constructor does no persistence either
-    // (verified by reading both files) -- so this lambda calls
-    // recordPushArrival() itself, mirroring the Distributor-tier lambda
-    // above.
-    QObject::connect(&transportStateMachine, &TransportStateMachine::notificationReceived, &transportStateMachine,
-                      [&pushRepository, &notificationDispatcher](const QJsonObject& data) {
-                          PushNotification payload;
-                          payload.messageId = data.value(QStringLiteral("id")).toString();
-                          payload.title = data.value(QStringLiteral("title")).toString();
-                          payload.body = data.value(QStringLiteral("message")).toString();
-                          pushRepository.recordPushArrival(payload, QDateTime::currentMSecsSinceEpoch());
-                          notificationDispatcher.notify(payload);
-                      });
-
     // Polling-tier arrivals: PushRepository::pullOnce() (invoked internally
     // by TransportStateMachine's own poll timer) already persists each
     // delivered item before this signal fires (core/domain/
@@ -977,9 +885,8 @@ int main(int argc, char* argv[])
                       });
 
     // Observability only -- TransportStateMachine.cpp itself has no logging
-    // of its own tier transitions (and constraint item 4/task brief says
-    // don't touch that file), so this is the only place a developer can see
-    // Distributor/EmbeddedSubscriber/Polling transitions in the journal.
+    // of its own tier transitions, so this is the only place a developer can
+    // see Distributor/Polling transitions in the journal.
     // TransportTier is a plain "enum class" (no Q_ENUM), hence the int cast
     // rather than relying on a QDebug enum streaming operator that doesn't
     // exist for it.
@@ -988,50 +895,24 @@ int main(int argc, char* argv[])
                           qDebug() << "main: TransportStateMachine tier changed:" << static_cast<int>(tier);
                       });
 
-    // Registers whichever endpoint the now-active tier can actually be
-    // reached at, closing the gap flagged in the comment above ntfyUrl's
-    // construction. Distributor and EmbeddedSubscriber each have a real
-    // address to register; Polling has none of its own, so the
-    // previously-registered token (from the last Distributor/
-    // EmbeddedSubscriber tier this session saw) is left alone rather than
-    // registering nothing, since a stale-but-real address at least has a
-    // chance of receiving a push again once that tier returns, and
-    // deviceToken has no meaningful "unset" wire value to fall back to.
+    // Registers the endpoint the now-active tier can actually be reached at.
+    // Only Distributor has an address of its own; Polling has none, so the
+    // previously-registered token (from the last Distributor tier this
+    // session saw) is left alone rather than registering nothing, since a
+    // stale-but-real address at least has a chance of receiving a push again
+    // once the distributor returns, and deviceToken has no meaningful "unset"
+    // wire value to fall back to.
     QObject::connect(&transportStateMachine, &TransportStateMachine::tierChanged, &transportStateMachine,
-                      [&pairingController, &pushConnector, &ntfyUrl, reregisterAndReport](TransportTier tier) {
+                      [&pairingController, &pushConnector, reregisterAndReport](TransportTier tier) {
                           switch (tier) {
                           case TransportTier::Distributor:
                               reregisterAndReport(pushConnector.endpoint());
                               pairingController.setDeviceToken(pushConnector.endpoint());
                               break;
-                          case TransportTier::EmbeddedSubscriber:
-                              // Empty when no topic could be persisted --
-                              // registering an empty deviceToken would just
-                              // overwrite a working one with nothing.
-                              if (ntfyUrl.isEmpty())
-                                  break;
-                              reregisterAndReport(ntfyUrl);
-                              pairingController.setDeviceToken(ntfyUrl);
-                              break;
                           case TransportTier::Polling:
                               break;
                           }
                       });
-
-    // Foreground/background is app-layer-owned state TransportStateMachine
-    // needs (constraint item 4's setForegrounded input) -- QGuiApplication
-    // already tracks this natively, no QML binding needed.
-    // TransportStateMachine::m_foregrounded defaults to false (see its
-    // header), so an initial call right after the connection above is
-    // required even though nothing has "changed" yet -- otherwise a launch
-    // that starts already-active would incorrectly stay treated as
-    // backgrounded until the next real focus event.
-    QObject::connect(&app, &QGuiApplication::applicationStateChanged, &app,
-                      [&transportStateMachine](Qt::ApplicationState state) {
-                          qDebug() << "main: applicationStateChanged:" << state;
-                          transportStateMachine.setForegrounded(state == Qt::ApplicationActive);
-                      });
-    transportStateMachine.setForegrounded(app.applicationState() == Qt::ApplicationActive);
 
     pushConnector.registerClient(QStringLiteral("KyPost push notifications"));
 

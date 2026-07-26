@@ -28,12 +28,13 @@ public:
     // buildNativePushData's own field-naming intent that senderName/
     // emailSubject are the friendlier display copies, while sender/subject
     // are the raw fallbacks for when those are absent. The final title/body
-    // tier (Task 43 review-finding fix) exists for the EmbeddedSubscriber
-    // tier: main.cpp's NtfySubscriber-arrival lambda only ever populates
-    // payload.title/payload.body (ntfy's own {title,message} fields have no
-    // sender/subject equivalent), so without this fallback that tier always
-    // rendered an empty KNotification. Confirmed safe for the already-working
-    // Distributor tier too: backend/internal/processor/poller.go's
+    // tier (Task 43 review-finding fix) was added for the embedded ntfy
+    // subscriber tier, whose arrivals only ever carried payload.title/
+    // payload.body; that tier was removed on 2026-07-26 (see
+    // core/domain/TransportStateMachine.h) but the fallback is kept as
+    // defence in depth for any payload that reaches here with only those two
+    // fields set. Confirmed safe for the Distributor tier:
+    // backend/internal/processor/poller.go's
     // buildNativePushData duplicates the same title/body values into
     // data.title/data.body that it derives senderName/emailSubject from
     // (buildNativeNotificationText: title="New Email" / body="You have a new

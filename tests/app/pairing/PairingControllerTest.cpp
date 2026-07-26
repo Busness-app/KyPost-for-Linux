@@ -228,10 +228,6 @@ void PairingControllerTest::pairFromDeepLinkHappyPathPairsAndPersists()
     // body ("deliveryMode":"pull","transport":"unifiedpush" above).
     QCOMPARE(controller.deliveryMode(), QStringLiteral("pull"));
     QCOMPARE(controller.transport(), QStringLiteral("unifiedpush"));
-    // Nothing in this codebase writes pushServerBaseUrl yet (see
-    // PairingController.h's doc comment) -- still SettingsStore's baked-in
-    // default after a successful pair.
-    QCOMPARE(controller.pushServerBaseUrl(), QStringLiteral("https://ntfy.sh"));
     // "confirm" then "working" then "paired" -- at least three transitions.
     QVERIFY(stateChangedSpy.count() >= 3);
     QVERIFY(pairingChangedSpy.count() >= 1);

@@ -8,7 +8,7 @@ namespace {
 
 // Keys are opaque identifiers for a file directly inside the store's
 // directory (see core/stores/SecureStore.h for the fixed set this project
-// actually uses: `sub`, `hash`, `deviceId`, an ntfy-topic key, pairing
+// actually uses: `sub`, `hash`, `deviceId`, pairing
 // credential keys — none of which ever need path separators). QDir::filePath
 // does not sanitize ".." components and returns an absolute second argument
 // verbatim, so any key containing a separator, referring to the current/

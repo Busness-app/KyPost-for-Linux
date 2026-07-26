@@ -449,38 +449,24 @@ Item {
                         }
                     }
 
-                    RowLayout {
-                        Layout.fillWidth: true
-                        spacing: 12
-                        SectionLabel { Layout.preferredWidth: 100; text: i18n("Push Server") }
-                        Text {
-                            Layout.fillWidth: true
-                            text: Pairing.pushServerBaseUrl
-                            color: Theme.inkStrong
-                            font.family: Theme.fontMono
-                            font.pixelSize: 14
-                            wrapMode: Text.WordWrap
-                        }
-                    }
-
-                    // Said plainly, because it was not said at all before.
-                    // When no UnifiedPush distributor is installed, this
-                    // client falls back to an ntfy topic and registers that
-                    // public URL with the relay as its delivery address --
-                    // so the relay POSTs notification titles and bodies,
-                    // which for mail means the sender and subject, to
-                    // whoever operates that server. It defaults to the
-                    // public ntfy.sh. A user running a self-hosted relay
-                    // specifically to avoid third parties deserves to know
-                    // that before it happens, not after.
+                    // The "Push Server" row that used to sit here displayed the
+                    // embedded ntfy subscriber's base URL. Both it and the
+                    // subscriber were removed on 2026-07-26 -- see
+                    // core/domain/TransportStateMachine.h. What replaces it is
+                    // the honest description of where notifications now come
+                    // from: a system UnifiedPush distributor if one is
+                    // installed, otherwise polling the relay directly, which
+                    // involves no third party at all.
                     MutedHint {
                         Layout.fillWidth: true
                         Layout.topMargin: 4
                         wrapMode: Text.WordWrap
-                        text: i18n("When no UnifiedPush distributor is available, KyPost receives "
-                                    + "notifications through this push server. Sender names and "
-                                    + "subject lines pass through it. Point it at your own ntfy "
-                                    + "instance if you would rather they did not.")
+                        text: i18n("KyPost receives notifications through your system's UnifiedPush "
+                                    + "distributor. Sender names and subject lines pass through the "
+                                    + "push server that distributor is configured to use -- change it "
+                                    + "there, not here. With no distributor installed, KyPost instead "
+                                    + "checks the relay directly every 90 seconds and nothing passes "
+                                    + "through a third party.")
                     }
                 }
             }

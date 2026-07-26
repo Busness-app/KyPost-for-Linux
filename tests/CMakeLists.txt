@@ -88,7 +88,6 @@ kypost_add_test(PgpQrClientTest core/net/PgpQrClientTest.cpp)
 kypost_add_test(PgpBootstrapClientTest core/net/PgpBootstrapClientTest.cpp)
 kypost_add_test(PgpRecipientCheckerTest core/net/PgpRecipientCheckerTest.cpp)
 kypost_add_test(RelayMailSourceTest core/net/RelayMailSourceTest.cpp)
-kypost_add_test(NtfySubscriberTest core/net/NtfySubscriberTest.cpp)
 
 kypost_add_test(VCardContactTest core/vcard/VCardContactTest.cpp)
 
@@ -268,17 +267,6 @@ kypost_add_app_test(NotificationDispatcherTest
     app/push/NotificationDispatcherTest.cpp
     ${CMAKE_SOURCE_DIR}/app/push/NotificationDispatcher.cpp
   LIBS KF6::Notifications KF6::I18n
-)
-
-# NtfyTopicProvisioner (Task 43 review-finding fix): generation/persistence
-# logic for the EmbeddedSubscriber tier's ntfy topic, extracted to app/push/
-# per that task's brief. Tests against a real SecureStoreFile (core/stores/,
-# already part of kypostcore), same app/ test pattern as PushPayloadParserTest
-# above -- no extra LIBS needed, plain QtCore (QRandomGenerator).
-kypost_add_app_test(NtfyTopicProvisionerTest
-  SOURCES
-    app/push/NtfyTopicProvisionerTest.cpp
-    ${CMAKE_SOURCE_DIR}/app/push/NtfyTopicProvisioner.cpp
 )
 
 # ---- QML tests -------------------------------------------------------

@@ -22,8 +22,7 @@ UnifiedPushConnector::UnifiedPushConnector(const QString& serviceName, QObject* 
 
     connect(m_connector, &KUnifiedPush::Connector::endpointChanged, this, [this](const QString& endpoint) {
         // The endpoint URL's path/query (e.g. https://unifiedpush.kde.org/upezZkYjE4N2E2?up=1)
-        // is a bearer secret -- see Linux_QT_Client_Plan.md's ntfy-topic discussion, same
-        // property applies here: anyone who obtains it can push arbitrary notifications to
+        // is a bearer secret: anyone who obtains it can push arbitrary notifications to
         // this app instance. Log only the host (not secret -- distributor hostnames like
         // unifiedpush.kde.org are public) so distributor choice is still debuggable without
         // writing the credential to the journal.

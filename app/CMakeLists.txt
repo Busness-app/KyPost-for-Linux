@@ -177,15 +177,6 @@ target_sources(kypost PRIVATE
 )
 target_link_libraries(kypost PRIVATE KF6::Notifications)
 
-# NtfyTopicProvisioner (Task 43 review-finding fix): generates/persists the
-# EmbeddedSubscriber tier's ntfy topic via SecureStore -- plain QtCore
-# (QRandomGenerator), no extra find_package needed. app/ per the core/
-# boundary rule, same as NotificationDispatcher/PushPayloadParser above.
-target_sources(kypost PRIVATE
-  push/NtfyTopicProvisioner.cpp
-  push/NtfyTopicProvisioner.h
-)
-
 # TrayController wraps KStatusNotifierItem (KF6StatusNotifierItem, confirmed
 # installed this session -- kstatusnotifieritem-6.28.0) for the desktop-only
 # system tray icon / minimize-to-tray feature. Its own

@@ -8,7 +8,10 @@
 // ...). Keys this store is expected to hold, so a future phase's
 // DeviceRegistrationService knows the contract without re-deriving it: `sub`
 // (subscriberId), `pairing.deviceSecret` (the per-device pairing secret),
-// `deviceId`, an ntfy-topic bearer secret, and pairing credentials.
+// `deviceId`, and pairing credentials. (An `ntfy-topic` bearer secret was
+// also in this set until 2026-07-26, when the embedded ntfy subscriber tier
+// that owned it was removed -- see core/domain/TransportStateMachine.h. Any
+// file a previous version left behind is simply never read again.)
 class SecureStore
 {
 public:

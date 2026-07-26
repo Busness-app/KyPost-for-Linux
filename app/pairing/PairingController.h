@@ -83,16 +83,11 @@ class PairingController : public QObject
     // writes all of them atomically on RegistrationOutcome::Success, per its
     // own class doc comment), so reusing pairingChanged() as NOTIFY here is
     // correct rather than adding a second signal that would always fire in
-    // lockstep with it anyway. pushServerBaseUrl is different: nothing in
-    // this codebase calls SettingsStore::setPushServerBaseUrl() yet (it's
-    // orphaned plumbing -- see NtfySubscriber.h's own comment) other than
-    // SettingsStore's own baked-in "https://ntfy.sh" default, so this
-    // property always reads that value today, never empty. It's still
-    // wired here read-only (never an editable field, per the task-39
-    // brief's explicit scope cut) so Settings.qml can display it honestly.
+    // lockstep with it anyway. (A third property here, pushServerBaseUrl,
+    // displayed the embedded ntfy subscriber's server; it was removed with
+    // that tier on 2026-07-26 -- see core/domain/TransportStateMachine.h.)
     Q_PROPERTY(QString deliveryMode READ deliveryMode NOTIFY pairingChanged)     // "push" | "pull" | "" (never registered)
     Q_PROPERTY(QString transport READ transport NOTIFY pairingChanged)          // server-normalized transport name, "" if never registered
-    Q_PROPERTY(QString pushServerBaseUrl READ pushServerBaseUrl NOTIFY pairingChanged) // "https://ntfy.sh" default; read-only display only, see Settings.qml's Notifications pane
 
 public:
     // The pairing state machine, as a type rather than five string literals
@@ -100,7 +95,7 @@ public:
     // `pairingState() == QStringLiteral("paired")` against a literal written
     // in PairingController.cpp: rename one and the other silently stops
     // matching, with no compiler error and no test failure -- just a feature
-    // (ntfy topic rotation on re-pair) that quietly never happens again.
+    // that quietly never happens again.
     //
     // Q_ENUM so QML can say Pairing.Paired. The `pairingState` string
     // property below is kept, and is now produced from this enum in exactly
@@ -122,7 +117,6 @@ public:
     bool pendingPairInsecure() const;
     QString deliveryMode() const;
     QString transport() const;
-    QString pushServerBaseUrl() const;
     bool reregistrationRejected() const;
 
 public slots:

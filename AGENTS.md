@@ -116,6 +116,21 @@ Added 2026-07-25 (parity work with `kypost-android`):
 - **Biometric unlock and window-content protection are non-goals** — no
   portable Linux equivalent (no `FLAG_SECURE` analogue on Wayland).
 
+Added 2026-07-26:
+
+- **No client-side push fallback beyond polling.** The push pipeline is two
+  tiers: a system UnifiedPush distributor, else 90 s polling of the relay.
+  The embedded ntfy subscriber that used to sit between them (client acts as
+  its own distributor, registers `https://ntfy.sh/<topic>` as its
+  deviceToken) was removed — `core/net/NtfySubscriber`,
+  `app/push/NtfyTopicProvisioner`, `SettingsStore::pushServerBaseUrl` and the
+  `ntfy-topic` SecureStore key all went with it. It was written as the
+  Ubuntu Touch story (deferred) and was otherwise redundant with polling,
+  which covers the same no-distributor case without sending the sender and
+  subject of every mail through a third party. Don't reintroduce it; if
+  no-distributor latency ever needs improving, shorten the poll interval.
+  Reasoning in full: `core/domain/TransportStateMachine.h`.
+
 ## 5. Single-Qt rules
 
 Qt5/KF5 support was dropped (Qt5 is EOL); Ubuntu Touch is deferred until it

@@ -209,8 +209,8 @@ notification and dedupe).
 | --- | --- | --- | --- |
 | Plasma Desktop | KUnifiedPush distributor (host daemon) via D-Bus | D-Bus activation by distributor | In |
 | Plasma Mobile | same | same (power management still maturing upstream) | In |
-| Any desktop w/o distributor | embedded ntfy subscriber (below) | none — foreground only | In (fallback) |
-| Ubuntu Touch | embedded ntfy subscriber | none — UT suspends backgrounded apps | In (foreground only) |
+| Any desktop w/o distributor | 90 s polling of the relay | none — timer only, app must be running | In (fallback) |
+| ~~Ubuntu Touch~~ | ~~embedded ntfy subscriber~~ | — | Deferred; tier removed 2026-07-26 |
 | Ubuntu Touch v2 | UnifiedPush → lomiri-push-service bridge (community WIP) | lomiri push wake | v2, watch upstream |
 
 **KUnifiedPush path (Flatpak):** link `KUnifiedPush::Connector`
@@ -222,27 +222,36 @@ The distributor D-Bus-activates the app on push — the app must be D-Bus
 activatable (`DBusActivatable=true`; Flatpak exports the `.service` file) and,
 when woken for a push, show a KNotification without raising a window.
 
-**Embedded ntfy subscriber (the universal fallback, and the whole UT v1 story):**
-because our "endpoint" is just an ntfy topic the backend POSTs to, a client can
-be its own distributor: generate a random topic, register
-`https://ntfy.sh/<topic>` as the deviceToken, and subscribe to
-`https://ntfy.sh/<topic>/json?since=<last>` (streaming long-poll over QNAM,
-works identically on Qt 5.15 and Qt 6). Same registration contract, same
-payload, no D-Bus, no distributor dependency. Limits: foreground-only (UT
-suspends background apps anyway — the same limitation its native apps have
-without lomiri push), and the topic name is a bearer secret — generate
-≥128-bit random topics and store them in SecureStore. Ubuntu Touch has **no
-UnifiedPush distributor today** (a UnifiedPush→lomiri-push bridge is under
-community discussion/WIP on the UBports forum); when it ships, swap the
-embedded subscriber for the real distributor on UT and gain background wake.
+**~~Embedded ntfy subscriber~~ — REMOVED 2026-07-26.** This section specified a
+middle tier in which the client acted as its own distributor: generate a
+≥128-bit random topic, register `https://ntfy.sh/<topic>` as the deviceToken,
+and long-poll `https://ntfy.sh/<topic>/json?since=<last>` over QNAM. It was
+built (`core/net/NtfySubscriber`, `app/push/NtfyTopicProvisioner`) and then
+cut, because both things it was for had expired:
+
+- It was written as "the whole UT v1 story" — Ubuntu Touch has no UnifiedPush
+  distributor. **UT is now deferred** (see the Qt5-drop decision in
+  `AGENTS.md` §1/§4), so there is no target that needs a client-side
+  distributor substitute.
+- As a general desktop fallback it was redundant with the polling tier below
+  it, which covers the same "no distributor installed" case with **no third
+  party involved at all**. Because the subscriber was foreground-only, its
+  entire remaining benefit over polling was notification latency while the
+  app was already open on screen.
+
+What that latency cost: the relay POSTs `{"title","body"}` — for mail, the
+sender and subject — to whatever URL is registered as the deviceToken, so
+every notification passed in the clear through ntfy.sh by default, with no UI
+to point it elsewhere. The topic doubled as a bearer credential (anyone who
+learned it could read the stream), which in turn required rotate-on-re-pair
+machinery of its own. Deleting the tier deleted all of that. Distributor-tier
+users were never affected either way — that path never used any of it.
 
 **Transport state machine (shared):** distributor present → KUnifiedPush;
-else → embedded ntfy subscriber while foregrounded; subscriber unreachable →
-90 s polling. Every downgrade is surfaced in Settings → Notifications
-("Push: via distributor / direct (app open only) / polling") and through the
-same syncError channel the pairing UI shows. Even with push, keep the full
-PushRepository seq-dedupe/cursor machinery from the Mac port — pushes and
-polls race, and dedupe-by-seq is what makes that safe.
+else → 90 s polling. The downgrade is surfaced in Settings → Notifications
+and through the same syncError channel the pairing UI shows. Even with push,
+keep the full PushRepository seq-dedupe/cursor machinery from the Mac port —
+pushes and polls race, and dedupe-by-seq is what makes that safe.
 
 ## Stack decisions
 
@@ -250,8 +259,6 @@ polls race, and dedupe-by-seq is what makes that safe.
   QtCore/QtNetwork/QtSql** — this subset compiles identically under Qt 5.15 and
   Qt 6, confining the dual-Qt problem to QML and platform glue. QtDBus/
   KUnifiedPush/KNotifications/lomiri glue lives in the app layer, never in core.
-  The embedded ntfy subscriber is pure QNAM, so it lives in core and both
-  packages share it.
 - **QML dual-version strategy**: Qt 5.15 supports unversioned imports, so
   `import org.kde.kirigami as Kirigami` parses on both. Rules: no KF6-only
   types (no `Kirigami.Delegates`), no removed-in-KF6 types (`BasicListItem`) —
@@ -261,7 +268,7 @@ polls race, and dedupe-by-seq is what makes that safe.
   CMake dual-build via `QT_MAJOR_VERSION` switch + ECM.
 - **Persistence**: SQLite via `QSqlDatabase`, hand-written DAOs mirroring
   EmailDAO/ContactDAO/PushNotificationDAO. No ORM.
-- **Secrets** (sub/hash/deviceId/ntfy-topic/pairing credentials), one
+- **Secrets** (sub/hash/deviceId/pairing credentials), one
   `SecureStore` interface, two backends:
   - Flatpak: QtKeychain → Secret Service portal (bundle QtKeychain).
   - Ubuntu Touch: no Secret Service — AppArmor-confined app data dir, 0600
@@ -318,7 +325,7 @@ kypost-Linux/
     models/                   # Email, Contact, KeywordSettings, MfaChallenge, PushNotification, StandardFolder
     net/                      # HttpClient (QNAM wrapper, stub-injectable, real UA), RelayMailSource,
                               # ContactSyncClient, NativeRegistrationClient (transport-aware),
-                              # MfaResponseClient, NtfySubscriber (streaming long-poll)
+                              # MfaResponseClient
     db/                       # Database bootstrap + EmailDao, ContactDao, PushDao
     stores/                   # SecureStore iface + file backend, settings stores (QSettings), cursor stores
     domain/                   # MailRepository, KeywordRepository, ContactSyncRepository+Reconciliation,
@@ -373,8 +380,9 @@ KeywordRepository tab computation, ContactSyncRepository + reconciliation
 seqs for push-mode arrivals, as on Mac), DeviceRegistrationService (registers
 endpoint; re-registers on endpoint change; does **not** re-register blindly on
 launch given the expired-pairingToken 401), TransportStateMachine
-(distributor → embedded subscriber → polling), NtfySubscriber with reconnect/
-`since` resume. Port MailTests/PushTests/ContactSyncTests/NetworkingTests coverage.
+(distributor → polling; the embedded-subscriber tier this phase originally
+built was removed 2026-07-26, see the push section above). Port
+MailTests/PushTests/ContactSyncTests/NetworkingTests coverage.
 
 **Phase 5 — Theme system + components.** Transcribe the 13 palettes from
 `Style/AppTheme.swift` (copy values — binding contract). ThemeManager as a
@@ -442,8 +450,10 @@ tests under both Qt majors).
 7. **Stale-endpoint deletion**: 404/410 ⇒ server deletes the device row (same
    trap as APNs BadDeviceToken). Re-register immediately on topic/distributor
    change; make re-pair recovery a tested path.
-8. **ntfy topic = bearer secret** on the embedded-subscriber path: ≥128-bit
-   random topics, stored in SecureStore, rotated on re-pair.
+8. ~~**ntfy topic = bearer secret** on the embedded-subscriber path.~~ Moot
+   since 2026-07-26 — that path is gone, and no push credential is minted
+   client-side any more. The distributor endpoint is still a bearer secret,
+   but KUnifiedPush issues and rotates it, not this app.
 9. **QtWebEngine availability**: confirm `io.qt.qtwebengine.BaseApp` branch
    matches the chosen `org.kde.Platform` version; confirm WebEngine is
    linkable from a click. Fallback `Text.RichText` is an emergency option only.

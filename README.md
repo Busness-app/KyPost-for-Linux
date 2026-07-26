@@ -35,9 +35,10 @@ Go relay backend.
   out-of-band fingerprint confirmation), and clear handling of end-to-end encrypted mail this
   client cannot read, with a route to open it in webmail. No private key is ever held here.
 - **Compose autocomplete** — type a name or address in Compose and pick from synced contacts.
-- **Push notifications over [UnifiedPush](https://unifiedpush.org/)** — a three-tier fallback
-  (system distributor → embedded `ntfy` subscriber → 90s polling), so mail arrives promptly
-  whether or not a UnifiedPush distributor is installed.
+- **Push notifications over [UnifiedPush](https://unifiedpush.org/)** — a two-tier fallback
+  (system distributor → 90s polling), so mail still arrives without a UnifiedPush
+  distributor installed, and nothing but your own distributor's push server ever sees a
+  notification.
 - **Security** — an optional PIN lock with lockout and wipe-on-repeated-failure, an option to
   encrypt the pairing credential behind that PIN, trust-on-first-use TLS certificate pinning,
   and Hostile Location Protection (nothing cached on disk at all).

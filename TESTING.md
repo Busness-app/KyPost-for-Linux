@@ -494,15 +494,17 @@ only the last two checks.
       identity behind it.
 - [ ] **Transport tier selection behaves per `TransportStateMachine`'s
       rules** (`core/domain/TransportStateMachine.h`): distributor
-      available → Distributor tier (KUnifiedPush); no distributor, app
-      foregrounded → EmbeddedSubscriber tier (in-process ntfy
-      subscription); subscriber unreachable → Polling tier (90s interval,
-      `PushRepository::pullOnce()`). Confirm each tier's arrivals reach
-      `NotificationDispatcher::notify()` (verify via `journalctl`/`qDebug`
-      — `main.cpp` logs `TransportStateMachine tier changed: <n>` on every
-      transition) and that foregrounding the app again after a
-      polling-tier fallback retries the embedded subscriber rather than
-      staying latched on Polling.
+      available → Distributor tier (KUnifiedPush); no distributor →
+      Polling tier (90s interval, `PushRepository::pullOnce()`). Confirm
+      each tier's arrivals reach `NotificationDispatcher::notify()`
+      (verify via `journalctl`/`qDebug` — `main.cpp` logs
+      `TransportStateMachine tier changed: <n>` on every transition), and
+      that stopping the distributor daemon
+      (`systemctl --user stop kunifiedpush-distributor`) drops the app to
+      Polling while restarting it climbs back to Distributor.
+      The embedded ntfy subscriber that used to sit between those two was
+      removed on 2026-07-26 — there is no longer any foreground-only tier,
+      and the app no longer contacts ntfy.sh on its own behalf.
 
 ## Settings
 
