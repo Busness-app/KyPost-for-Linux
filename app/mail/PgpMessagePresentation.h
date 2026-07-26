@@ -37,3 +37,11 @@ QString pgpBannerBody(PgpMessageState state, const QString& decryptError);
 // externally. Mirrors the containment thinking in
 // app/pgp/PgpQrTargetValidator.
 QUrl webmailReadUrl(const QUrl& serverBaseUrl, const QString& mailbox, const QString& messageId);
+
+// Builds the webmail URL for handing a composition off to webmail, targeting
+// a mailbox rather than one message: POST /api/mail/draft answers with a bare
+// {ok:true} and no UID, so a saved draft has nothing to link to.
+//
+// Same containment rule as webmailReadUrl(): returns an empty QUrl unless
+// `serverBaseUrl` is a valid https URL, or if `mailbox` is empty.
+QUrl webmailMailboxUrl(const QUrl& serverBaseUrl, const QString& mailbox);

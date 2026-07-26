@@ -16,6 +16,9 @@ private slots:
     void buildsWebmailUrl();
     void rejectsUnsafeWebmailBaseUrls_data();
     void rejectsUnsafeWebmailBaseUrls();
+    void webmailMailboxUrlTargetsTheMailboxWithNoMessageId();
+    void webmailMailboxUrlRejectsAnythingButHttps();
+    void webmailMailboxUrlDropsAnyBaseQueryOrFragment();
 };
 
 void PgpMessagePresentationTest::marksOnlyTheUnreadableStates()
@@ -117,6 +120,38 @@ void PgpMessagePresentationTest::rejectsUnsafeWebmailBaseUrls()
     QFETCH(QString, messageId);
 
     QVERIFY(webmailReadUrl(QUrl(base), QStringLiteral("INBOX"), messageId).isEmpty());
+}
+
+void PgpMessagePresentationTest::webmailMailboxUrlTargetsTheMailboxWithNoMessageId()
+{
+    const QUrl url = webmailMailboxUrl(QUrl(QStringLiteral("https://mail.example.com")),
+                                        QStringLiteral("Drafts"));
+
+    QCOMPARE(url.toString(), QStringLiteral("https://mail.example.com/read?mailbox=Drafts"));
+}
+
+// Same containment rule as webmailReadUrl: this URL goes to an external
+// browser, so a pairing holding a file://, javascript: or downgraded http
+// base must never produce one.
+void PgpMessagePresentationTest::webmailMailboxUrlRejectsAnythingButHttps()
+{
+    QVERIFY(webmailMailboxUrl(QUrl(QStringLiteral("http://mail.example.com")),
+                              QStringLiteral("Drafts")).isEmpty());
+    QVERIFY(webmailMailboxUrl(QUrl(QStringLiteral("file:///etc/passwd")),
+                              QStringLiteral("Drafts")).isEmpty());
+    QVERIFY(webmailMailboxUrl(QUrl(QStringLiteral("javascript:alert(1)")),
+                              QStringLiteral("Drafts")).isEmpty());
+    QVERIFY(webmailMailboxUrl(QUrl(), QStringLiteral("Drafts")).isEmpty());
+    QVERIFY(webmailMailboxUrl(QUrl(QStringLiteral("https://")), QStringLiteral("Drafts")).isEmpty());
+}
+
+// A base URL carrying its own query or fragment must not leak into the link.
+void PgpMessagePresentationTest::webmailMailboxUrlDropsAnyBaseQueryOrFragment()
+{
+    const QUrl url = webmailMailboxUrl(
+        QUrl(QStringLiteral("https://mail.example.com/?tracking=1#section")), QStringLiteral("Drafts"));
+
+    QCOMPARE(url.toString(), QStringLiteral("https://mail.example.com/read?mailbox=Drafts"));
 }
 
 QTEST_APPLESS_MAIN(PgpMessagePresentationTest)

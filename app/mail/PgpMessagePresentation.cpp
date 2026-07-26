@@ -4,6 +4,8 @@
 
 #include <QUrlQuery>
 
+#include <optional>
+
 QString pgpRowMarker(PgpMessageState state)
 {
     switch (state) {
@@ -70,34 +72,67 @@ QString pgpBannerBody(PgpMessageState state, const QString& decryptError)
     return {};
 }
 
+namespace {
+
+// The one place the webmail base URL is vetted, shared by webmailReadUrl()
+// and webmailMailboxUrl(). https-only and host-bearing: these URLs are handed
+// to an external browser, so a pairing holding a file://, javascript: or
+// otherwise degraded base must never reach one, and requiring https (not
+// merely "not file") stops a downgraded pairing from putting a mailbox name
+// or message id on the wire in the clear.
+//
+// Returns a URL with /read as the path and any inherited query/fragment
+// cleared, ready for the caller to set its own query.
+std::optional<QUrl> webmailReadBase(const QUrl& serverBaseUrl)
+{
+    if (!serverBaseUrl.isValid() || serverBaseUrl.isRelative())
+        return std::nullopt;
+    if (serverBaseUrl.scheme().compare(QStringLiteral("https"), Qt::CaseInsensitive) != 0)
+        return std::nullopt;
+    if (serverBaseUrl.host().isEmpty())
+        return std::nullopt;
+
+    QUrl url = serverBaseUrl;
+    url.setPath(QStringLiteral("/read"));
+    // Cleared explicitly: a base URL carrying its own query or fragment would
+    // otherwise leak into the link, and setQuery() below only replaces the query.
+    url.setFragment(QString());
+    url.setQuery(QUrlQuery());
+    return url;
+}
+
+} // namespace
+
 QUrl webmailReadUrl(const QUrl& serverBaseUrl, const QString& mailbox, const QString& messageId)
 {
-    // https-only and host-bearing. This URL is handed to
-    // Qt.openUrlExternally(), so a pairing holding a file://, javascript: or
-    // otherwise degraded base URL must never reach a browser. Requiring
-    // https (not merely "not file") also stops a downgraded pairing from
-    // sending the message id over cleartext.
-    if (!serverBaseUrl.isValid() || serverBaseUrl.isRelative())
-        return {};
-    if (serverBaseUrl.scheme().compare(QStringLiteral("https"), Qt::CaseInsensitive) != 0)
-        return {};
-    if (serverBaseUrl.host().isEmpty())
+    const std::optional<QUrl> base = webmailReadBase(serverBaseUrl);
+    if (!base.has_value())
         return {};
     if (messageId.isEmpty())
         return {};
 
-    QUrl url = serverBaseUrl;
-    url.setPath(QStringLiteral("/read"));
-    // Cleared explicitly: a base URL carrying its own query or fragment
-    // would otherwise leak into the link, and setQuery() below only replaces
-    // the query.
-    url.setFragment(QString());
-
+    QUrl url = *base;
     QUrlQuery query;
     if (!mailbox.isEmpty())
         query.addQueryItem(QStringLiteral("mailbox"), mailbox);
     query.addQueryItem(QStringLiteral("message"), messageId);
     url.setQuery(query);
+    return url;
+}
 
+// Targets a mailbox rather than one message: POST /api/mail/draft answers with
+// a bare {ok:true} and no UID, so a saved draft has nothing to link to.
+QUrl webmailMailboxUrl(const QUrl& serverBaseUrl, const QString& mailbox)
+{
+    const std::optional<QUrl> base = webmailReadBase(serverBaseUrl);
+    if (!base.has_value())
+        return {};
+    if (mailbox.isEmpty())
+        return {};
+
+    QUrl url = *base;
+    QUrlQuery query;
+    query.addQueryItem(QStringLiteral("mailbox"), mailbox);
+    url.setQuery(query);
     return url;
 }
