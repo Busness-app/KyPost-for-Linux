@@ -38,12 +38,19 @@ struct NativeRegistrationResponse
 // server-side — persistent, don't retry); Failure covers everything else
 // (Conflict/RateLimited/Server/Transport/InvalidUrl and local JSON decode
 // failures).
+// CredentialsLocked is the one value this client itself never produces --
+// DeviceRegistrationService::pair() returns it WITHOUT making any request,
+// when the credential PIN gate is on and the app is locked, so the rotated
+// secret a successful register would mint could not be re-sealed. It is a
+// deferral, not an error: nothing is wrong with the pairing, and retrying
+// after the user unlocks succeeds.
 enum class RegistrationOutcome
 {
     Success,
     Unauthorized,
     BackendMisconfigured,
     Failure,
+    CredentialsLocked,
 };
 
 struct NativeRegistrationResult

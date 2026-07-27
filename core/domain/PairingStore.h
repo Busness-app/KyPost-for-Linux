@@ -1,6 +1,7 @@
 #pragma once
 
 #include "domain/DevicePairing.h"
+#include "security/CredentialCipher.h"
 
 #include <QString>
 
@@ -27,10 +28,25 @@ public:
     // bool-returning contract) -- on false, some keys may have been
     // written and others not; callers should treat this as "pairing
     // state is now indeterminate", not attempt partial rollback.
+    //
+    // Sealed-aware. When the credential gate is on, `pairing.deviceSecret`
+    // is NOT written out in the clear: it is re-sealed under this session's
+    // key and the plaintext key is left empty, exactly as sealDeviceSecret()
+    // leaves it. Writing it plainly is what re-registration used to do --
+    // the relay mints a fresh secret on every successful register, so the
+    // rotated value landed on disk unencrypted while the stored gate flag
+    // and the old sealed blob both still claimed it was protected. If the
+    // secret is sealed and this session cannot re-seal (the app is locked,
+    // so there is no session key), save() fails rather than downgrading it;
+    // callers must check canResealDeviceSecret() BEFORE doing anything that
+    // rotates the secret server-side.
     bool save(const DevicePairing& pairing);
 
     // Removes all eight keys, including any sealed device-secret blob.
-    void clear();
+    // Returns false if any individual removal failed -- the caller is the
+    // wipe-on-repeated-PIN-failure path, for which "the credential is still
+    // on disk" is the difference between a wipe and the appearance of one.
+    bool clear();
 
     bool isPaired() const; // load().has_value()
 
@@ -75,9 +91,29 @@ public:
     // this session.
     bool deviceSecretSealed() const;
 
+    // True when a rotated secret could be re-sealed right now without the
+    // user re-entering their PIN -- i.e. either nothing is sealed (the gate
+    // is off, plaintext writes are the normal case) or this session has
+    // unsealed the blob and still holds the derived key.
+    //
+    // Anything that causes the relay to mint a NEW device secret must check
+    // this first and refuse before making the network call: registering
+    // invalidates the old secret server-side, so failing afterwards would
+    // leave the device with a credential the server has already retired.
+    bool canResealDeviceSecret() const;
+
 private:
+    // Writes `secret` the way the current gate state requires: re-sealed
+    // under the session key when a sealed blob exists, plaintext otherwise.
+    bool storeDeviceSecret(const QString& secret);
+
     SecureStore& m_secureStore;
     // Session-only plaintext of a sealed device secret. Never persisted --
     // see unsealDeviceSecret().
     QString m_unsealedDeviceSecret;
+    // The PBKDF2 output (and its salt) from this session's unseal, kept so a
+    // rotated secret can be re-sealed without retaining the PIN -- the PIN
+    // is the larger secret, since it also authorizes disabling the lock
+    // outright. Cleared everywhere m_unsealedDeviceSecret is.
+    CredentialCipher::SessionKey m_sessionKey;
 };

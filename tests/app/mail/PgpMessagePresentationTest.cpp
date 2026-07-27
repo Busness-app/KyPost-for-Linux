@@ -69,16 +69,16 @@ void PgpMessagePresentationTest::decryptFailedBannerIncludesTheServersReason()
 
 void PgpMessagePresentationTest::buildsWebmailUrl()
 {
-    const QUrl url = webmailReadUrl(QUrl(QStringLiteral("https://mail.urlxl.com")),
+    const QUrl url = webmailReadUrl(QUrl(QStringLiteral("https://relay.example.com")),
                                      QStringLiteral("INBOX"), QStringLiteral("abc-123"));
     QCOMPARE(url.scheme(), QStringLiteral("https"));
-    QCOMPARE(url.host(), QStringLiteral("mail.urlxl.com"));
+    QCOMPARE(url.host(), QStringLiteral("relay.example.com"));
     QCOMPARE(url.path(), QStringLiteral("/read"));
     QCOMPARE(url.query(), QStringLiteral("mailbox=INBOX&message=abc-123"));
 
     // A message id with URL-significant characters must survive intact
     // rather than splitting the query.
-    const QUrl escaped = webmailReadUrl(QUrl(QStringLiteral("https://mail.urlxl.com")),
+    const QUrl escaped = webmailReadUrl(QUrl(QStringLiteral("https://relay.example.com")),
                                          QStringLiteral("Archive/2026"), QStringLiteral("a&b=c d"));
     QCOMPARE(QUrlQuery(escaped).queryItemValue(QStringLiteral("message"), QUrl::FullyDecoded),
              QStringLiteral("a&b=c d"));
@@ -87,13 +87,13 @@ void PgpMessagePresentationTest::buildsWebmailUrl()
 
     // A base URL carrying its own query or fragment must not leak into the
     // link.
-    const QUrl noisy = webmailReadUrl(QUrl(QStringLiteral("https://mail.urlxl.com/?a=b#frag")),
+    const QUrl noisy = webmailReadUrl(QUrl(QStringLiteral("https://relay.example.com/?a=b#frag")),
                                        QStringLiteral("INBOX"), QStringLiteral("m1"));
     QCOMPARE(noisy.query(), QStringLiteral("mailbox=INBOX&message=m1"));
     QVERIFY(!noisy.hasFragment());
 
     // Mailbox is optional.
-    const QUrl noMailbox = webmailReadUrl(QUrl(QStringLiteral("https://mail.urlxl.com")),
+    const QUrl noMailbox = webmailReadUrl(QUrl(QStringLiteral("https://relay.example.com")),
                                            QString(), QStringLiteral("m1"));
     QCOMPARE(noMailbox.query(), QStringLiteral("message=m1"));
 }
@@ -105,13 +105,13 @@ void PgpMessagePresentationTest::rejectsUnsafeWebmailBaseUrls_data()
 
     // This URL is handed to Qt.openUrlExternally(), so anything that isn't a
     // real https host must produce nothing at all.
-    QTest::newRow("http downgrade") << "http://mail.urlxl.com" << "m1";
+    QTest::newRow("http downgrade") << "http://relay.example.com" << "m1";
     QTest::newRow("file") << "file:///etc/passwd" << "m1";
     QTest::newRow("javascript") << "javascript:alert(1)" << "m1";
     QTest::newRow("no host") << "https:///read" << "m1";
     QTest::newRow("empty") << "" << "m1";
     QTest::newRow("relative") << "/read" << "m1";
-    QTest::newRow("empty message id") << "https://mail.urlxl.com" << "";
+    QTest::newRow("empty message id") << "https://relay.example.com" << "";
 }
 
 void PgpMessagePresentationTest::rejectsUnsafeWebmailBaseUrls()

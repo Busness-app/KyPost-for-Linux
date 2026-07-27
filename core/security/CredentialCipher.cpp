@@ -33,18 +33,23 @@ QByteArray deriveKey(const QString& pin, const QByteArray& salt)
 
 namespace CredentialCipher {
 
-std::optional<QString> seal(const QString& pin, const QByteArray& plaintext)
+namespace {
+
+// The shared body of seal()/sealWithKey(): everything after the key is in
+// hand. A fresh IV is generated here, per call, for both callers -- see
+// sealWithKey()'s header comment for why that is not optional.
+std::optional<QString> sealWithDerivedKey(const QByteArray& key, const QByteArray& salt,
+                                           const QByteArray& plaintext)
 {
     // generate() fills whole quint32 words, so ask for multiples of 4 and
     // trim -- kSaltBytes/kIvBytes are both already word-aligned, but keep
     // the guard so changing them can't silently under-fill.
     static_assert(kSaltBytes % 4 == 0 && kIvBytes % 4 == 0, "randomBytes fills whole 32-bit words");
 
-    const QByteArray salt = randomBytes(kSaltBytes);
-    const QByteArray iv = randomBytes(kIvBytes);
-    const QByteArray key = deriveKey(pin, salt);
-    if (key.size() != kKeyBytes)
+    if (key.size() != kKeyBytes || salt.size() != kSaltBytes)
         return std::nullopt;
+
+    const QByteArray iv = randomBytes(kIvBytes);
 
     EvpCtx ctx(EVP_CIPHER_CTX_new(), &EVP_CIPHER_CTX_free);
     if (!ctx)
@@ -81,7 +86,30 @@ std::optional<QString> seal(const QString& pin, const QByteArray& plaintext)
     return QString::fromLatin1((salt + iv + ciphertext + tag).toBase64());
 }
 
+} // namespace
+
+std::optional<QString> seal(const QString& pin, const QByteArray& plaintext)
+{
+    const QByteArray salt = randomBytes(kSaltBytes);
+    return sealWithDerivedKey(deriveKey(pin, salt), salt, plaintext);
+}
+
+std::optional<QString> sealWithKey(const SessionKey& sessionKey, const QByteArray& plaintext)
+{
+    if (!sessionKey.isValid())
+        return std::nullopt;
+    return sealWithDerivedKey(sessionKey.key, sessionKey.salt, plaintext);
+}
+
 std::optional<QByteArray> open(const QString& pin, const QString& sealed)
+{
+    const std::optional<std::pair<QByteArray, SessionKey>> opened = openWithKey(pin, sealed);
+    if (!opened.has_value())
+        return std::nullopt;
+    return opened->first;
+}
+
+std::optional<std::pair<QByteArray, SessionKey>> openWithKey(const QString& pin, const QString& sealed)
 {
     const QByteArray blob = QByteArray::fromBase64(sealed.toLatin1());
     // Everything but the ciphertext is fixed-size, so anything shorter than
@@ -137,7 +165,7 @@ std::optional<QByteArray> open(const QString& pin, const QString& sealed)
     plainLen += len;
 
     plaintext.resize(plainLen);
-    return plaintext;
+    return std::make_pair(plaintext, SessionKey{ key, salt });
 }
 
 } // namespace CredentialCipher

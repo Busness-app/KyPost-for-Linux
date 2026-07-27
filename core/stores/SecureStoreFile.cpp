@@ -59,9 +59,22 @@ bool SecureStoreFile::set(const QString& key, const QString& value)
         return false;
     }
 
-    const bool wrote = file.write(value.toUtf8()) >= 0;
+    // Full write or nothing. `>= 0` used to be the test, which accepts a
+    // PARTIAL write (QFile::write returns the byte count, and only -1 means
+    // failure) -- a full disk then produced a truncated secret on disk and a
+    // cheerful `true` to the caller. flush() is checked too, because close()
+    // returns void and would swallow the error from the buffered tail.
+    const QByteArray bytes = value.toUtf8();
+    const qint64 written = file.write(bytes);
+    const bool flushed = file.flush();
     file.close();
-    return wrote;
+    if (written == bytes.size() && flushed)
+        return true;
+
+    // Leave nothing half-written: a truncated secret that still parses is
+    // worse than an absent one, because callers treat "present" as usable.
+    file.remove();
+    return false;
 }
 
 std::optional<QString> SecureStoreFile::get(const QString& key) const

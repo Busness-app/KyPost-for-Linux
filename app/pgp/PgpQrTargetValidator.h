@@ -14,24 +14,28 @@
 // handled by the default resolver without any actual DNS query.
 using HostResolver = std::function<QList<QHostAddress>(const QString& host)>;
 
-// Blocks the two classes of scanQrPayload() target that would turn a QR
-// scan into something worse than "fetch a key from wherever it points":
-// non-http(s) schemes (file:// would read local files back as if they were
-// key material) and link-local/cloud-metadata addresses (169.254.0.0/16 --
-// AWS/Azure/DigitalOcean's metadata IP, plus GCP's metadata.google.internal
-// hostname). Arbitrary *http(s)* hosts, including LAN/private IPs and
-// loopback, are intentionally still allowed -- scanQrPayload()'s own
-// comment notes the scanned server is expected to often be a different,
-// independently self-hosted Relay instance than this device's own paired
-// one, and self-hosted instances commonly live on a home LAN or even
-// localhost.
+// Decides whether a scanned QR code's URL may be fetched at all. The input
+// is entirely attacker-chosen -- a QR code is just a picture, and it can be
+// printed on a poster, embedded in a message, or shown on a screen -- so
+// every rule here exists to stop a scan from doing something worse than
+// "fetch a key from wherever it points":
 //
-// VibeSec finding: the link-local check used to only fire when the QR
-// text's host was ALREADY a literal IP string -- QHostAddress::setAddress()
-// returns false for an ordinary hostname, so the check silently
-// short-circuited and any attacker-registered domain whose DNS A record
-// pointed at a link-local/metadata address sailed straight through. This
-// now resolves every host (via resolveHost, real DNS by default) and
-// checks every resolved address, closing that gap. An unresolvable host is
-// rejected (fail closed) rather than treated as safe.
+//  - Scheme: http(s) only (file:// would read local files back as if they
+//    were key material), and https specifically unless the host is
+//    loopback. See the .cpp for why TLS is what actually closes the DNS
+//    rebinding hole, and why loopback is the one safe exemption.
+//  - Address: no link-local (169.254.0.0/16 -- AWS/Azure/DigitalOcean's
+//    metadata IP), no GCP metadata.google.internal, and no RFC1918/
+//    unique-local/multicast/broadcast address. Loopback remains allowed:
+//    a self-hosted relay on localhost is a supported setup and is
+//    test-locked as such.
+//  - Resolution: every host is resolved (via resolveHost, real DNS by
+//    default) and every returned address is checked. An unresolvable host
+//    is rejected -- fail closed rather than treated as safe.
+//
+// The address check used to fire only when the QR text's host was ALREADY a
+// literal IP string, because QHostAddress::setAddress() returns false for an
+// ordinary hostname; any attacker-registered domain whose A record pointed
+// at a metadata address sailed straight through. That is what the
+// resolve-everything rule above fixed.
 bool isSafeQrTarget(const QUrl& url, const HostResolver& resolveHost = {});

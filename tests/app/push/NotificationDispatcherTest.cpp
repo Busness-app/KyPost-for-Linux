@@ -27,6 +27,10 @@ private slots:
     void sanitizeForNotificationEscapesHtmlMarkup();
     void sanitizeForNotificationEscapesImgTag();
     void sanitizeForNotificationLeavesPlainTextUnchanged();
+
+    // Review-finding regression.
+    void hiddenContentRevealsNeitherSenderNorSubject();
+    void visibleContentIsTheSanitizedPickResult();
 };
 
 void NotificationDispatcherTest::titleUsesSenderNameWhenPresent()
@@ -140,6 +144,44 @@ void NotificationDispatcherTest::sanitizeForNotificationLeavesPlainTextUnchanged
 {
     QCOMPARE(NotificationDispatcher::sanitizeForNotification(QStringLiteral("Hello there, no markup here.")),
              QStringLiteral("Hello there, no markup here."));
+}
+
+// A desktop notification is drawn by the notification server, not by this
+// process, so LockOverlay.qml cannot cover it: every push arriving at a
+// locked app printed the sender and subject on screen for whoever happened
+// to be standing there, which is exactly what the app lock exists to stop.
+void NotificationDispatcherTest::hiddenContentRevealsNeitherSenderNorSubject()
+{
+    PushNotification payload;
+    payload.senderName = QStringLiteral("Dr. Alice Example");
+    payload.sender = QStringLiteral("alice@example.com");
+    payload.emailSubject = QStringLiteral("Biopsy results");
+    payload.subject = QStringLiteral("Biopsy results");
+    payload.body = QStringLiteral("Your results are ready");
+
+    const QString title = NotificationDispatcher::displayTitle(payload, /*contentHidden=*/true);
+    const QString text = NotificationDispatcher::displayText(payload, /*contentHidden=*/true);
+
+    for (const QString& secret : { payload.senderName, payload.sender, payload.emailSubject,
+                                   payload.subject, payload.body }) {
+        QVERIFY(!title.contains(secret));
+        QVERIFY(!text.contains(secret));
+    }
+    // Still says something -- a silent notification would just look broken.
+    QVERIFY(!title.isEmpty());
+    QVERIFY(!text.isEmpty());
+}
+
+void NotificationDispatcherTest::visibleContentIsTheSanitizedPickResult()
+{
+    PushNotification payload;
+    payload.senderName = QStringLiteral("Alice <b>Example</b>");
+    payload.emailSubject = QStringLiteral("Lunch?");
+
+    QCOMPARE(NotificationDispatcher::displayTitle(payload, /*contentHidden=*/false),
+             NotificationDispatcher::sanitizeForNotification(NotificationDispatcher::pickTitle(payload)));
+    QCOMPARE(NotificationDispatcher::displayText(payload, /*contentHidden=*/false),
+             QStringLiteral("Lunch?"));
 }
 
 QTEST_GUILESS_MAIN(NotificationDispatcherTest)

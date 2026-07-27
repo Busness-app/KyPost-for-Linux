@@ -127,6 +127,7 @@ private slots:
     void lockNowDropsSessionSecret();
     void failsClosedWhenAttemptCountCannotBePersisted();
     void sessionCounterCapsGuessingWhenClockIsMovedForward();
+    void staleAttemptCounterCannotTriggerAWipeAfterASuccessfulUnlock();
 };
 
 void AppLockManagerTest::startsUnlockedWhenLockDisabled()
@@ -569,6 +570,46 @@ void AppLockManagerTest::sessionCounterCapsGuessingWhenClockIsMovedForward()
     }
 
     QVERIFY(wipeSpy.count() >= 1);
+}
+
+// A successful unlock clears the failure counter. That write can fail, and
+// its result used to be discarded -- leaving the persisted counter
+// stale-high while failedAttempts() takes the MAX of persisted and session.
+// The user who mistyped nine times, unlocked correctly, then mistyped once
+// more would cross the wipe threshold and lose their local mail on their
+// SECOND mistake.
+void AppLockManagerTest::staleAttemptCounterCannotTriggerAWipeAfterASuccessfulUnlock()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    FlakySecureStore secureStore;
+    AppLockStore store(secureStore);
+    SettingsStore settingsStore(dir.filePath(QStringLiteral("settings.ini")));
+    NullCredentialSealer sealer;
+    QVERIFY(store.setPin(kGoodPin));
+
+    AppLockManager manager(store, settingsStore, sealer);
+    QSignalSpy wipeSpy(&manager, &AppLockManager::wipeRequested);
+
+    // Walk the persisted counter up to one short of the threshold.
+    for (int i = 0; i < LockoutPolicy::kWipeThreshold - 1; ++i) {
+        manager.tryUnlock(kWrongPin);
+        store.setLockoutUntilEpochMs(0); // skip the backoff, as above
+    }
+    QCOMPARE(wipeSpy.count(), 0);
+
+    // The right PIN, but the store cannot record the reset.
+    secureStore.writesFail = true;
+    QVERIFY(manager.tryUnlock(kGoodPin));
+    QVERIFY(!manager.locked());
+
+    // The counter is now known-stale, so the manager refuses further
+    // attempts rather than acting on it. Crucially, no wipe: destroying the
+    // user's mail on the strength of a counter we know we failed to reset is
+    // the one outcome that cannot be undone.
+    secureStore.writesFail = false;
+    QVERIFY(!manager.tryUnlock(kWrongPin));
+    QCOMPARE(wipeSpy.count(), 0);
 }
 
 QTEST_GUILESS_MAIN(AppLockManagerTest)

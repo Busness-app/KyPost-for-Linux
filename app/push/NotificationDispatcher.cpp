@@ -40,6 +40,43 @@ QString NotificationDispatcher::sanitizeForNotification(const QString& text)
     return text.toHtmlEscaped();
 }
 
+// The app lock exists to stop someone at an unattended machine reading this
+// user's mail. A notification popup carrying the sender and subject hands
+// over exactly that, on the lock screen, without a PIN -- the same leak
+// LockOverlay.qml closes for popped-out windows, through a surface the
+// overlay cannot cover, because it is drawn by the notification server and
+// not by this process. While hidden the popup keeps its arrival signal and
+// loses its content; the "View" action still works and still lands behind
+// the PIN prompt.
+//
+// Split out of notify() as pure statics for the same reason pickTitle/
+// pickText are: notify() itself needs KNotification and a live D-Bus
+// notification server, so this is the only way the redaction rule gets a
+// runnable check.
+QString NotificationDispatcher::displayTitle(const PushNotification& payload, bool contentHidden)
+{
+    if (contentHidden)
+        return i18n("KyPost");
+    return sanitizeForNotification(pickTitle(payload));
+}
+
+QString NotificationDispatcher::displayText(const PushNotification& payload, bool contentHidden)
+{
+    if (contentHidden)
+        return i18n("New mail — unlock to read");
+    return sanitizeForNotification(pickText(payload));
+}
+
+bool NotificationDispatcher::contentHidden() const
+{
+    return m_contentHidden;
+}
+
+void NotificationDispatcher::setContentHidden(bool hidden)
+{
+    m_contentHidden = hidden;
+}
+
 void NotificationDispatcher::notify(const PushNotification& payload)
 {
     // Logging discipline (Phase 7 global constraint 6): never log
@@ -48,8 +85,8 @@ void NotificationDispatcher::notify(const PushNotification& payload)
     // marker.
     qDebug() << "NotificationDispatcher: notifying for messageId" << payload.messageId;
 
-    const QString title = sanitizeForNotification(pickTitle(payload));
-    const QString text = sanitizeForNotification(pickText(payload));
+    const QString title = displayTitle(payload, m_contentHidden);
+    const QString text = displayText(payload, m_contentHidden);
 
     // No parent: matches KNotification's own documented lifecycle -- with
     // the default CloseOnTimeout flag it deletes itself once the

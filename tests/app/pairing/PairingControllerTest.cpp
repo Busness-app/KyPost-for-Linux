@@ -467,7 +467,7 @@ void PairingControllerTest::pairFromDeepLinkRejectsPlaintextHttpServerUrl()
     QMap<QString, QString> params;
     params[QStringLiteral("sub")] = QStringLiteral("sub-http");
     // A non-loopback host over plaintext http -- must be rejected outright.
-    params[QStringLiteral("srv")] = QStringLiteral("http://mail.urlxl.com");
+    params[QStringLiteral("srv")] = QStringLiteral("http://relay.example.com");
     params[QStringLiteral("pt")] = QStringLiteral("pair-tok-http");
 
     QVERIFY(!controller.pairFromDeepLink(buildLink(params)));

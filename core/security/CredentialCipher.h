@@ -3,6 +3,7 @@
 #include <QByteArray>
 #include <QString>
 #include <optional>
+#include <utility>
 
 // PIN-derived authenticated encryption for a single small secret (the device
 // pairing secret), backing the "Require unlock to receive push/MFA" setting.
@@ -31,6 +32,17 @@ inline constexpr int kKeyBytes = 32; // AES-256
 // without a second, different delay.
 inline constexpr int kPbkdf2Iterations = 150000;
 
+// The PBKDF2 output and the salt it was derived from, handed back by
+// openWithKey() so a caller holding an unlocked session can re-seal a
+// ROTATED secret without retaining the PIN itself. See sealWithKey().
+struct SessionKey
+{
+    QByteArray key;  // kKeyBytes
+    QByteArray salt; // kSaltBytes, the one embedded in the blob it came from
+
+    bool isValid() const { return key.size() == kKeyBytes && salt.size() == kSaltBytes; }
+};
+
 // Encrypts `plaintext` under a key derived from `pin`. Returns std::nullopt
 // only if the platform RNG or libcrypto fails -- an empty plaintext is
 // legal and round-trips.
@@ -42,5 +54,21 @@ std::optional<QString> seal(const QString& pin, const QByteArray& plaintext);
 // the secret", and reporting which would tell an attacker whether they had
 // found a real ciphertext.
 std::optional<QByteArray> open(const QString& pin, const QString& sealed);
+
+// open(), plus the derived key and salt, so the caller can re-seal later in
+// the same session. Exists because the relay rotates the device secret on
+// every re-registration: without this, PairingStore would have to either
+// retain the PIN (a strictly larger secret -- it also authorizes disabling
+// the lock) or write the rotated secret out in plaintext, which is exactly
+// the bug this pair of functions was added to fix.
+std::optional<std::pair<QByteArray, SessionKey>> openWithKey(const QString& pin, const QString& sealed);
+
+// seal(), but reusing a key/salt already derived by openWithKey() rather
+// than running PBKDF2 again. A FRESH IV is generated per call -- reusing
+// the salt is harmless (it only seeds key derivation, and the key is
+// unchanged), but reusing a key/IV pair under GCM would be catastrophic, so
+// the IV is never carried over. Returns std::nullopt if `sessionKey` is not
+// valid or libcrypto fails.
+std::optional<QString> sealWithKey(const SessionKey& sessionKey, const QByteArray& plaintext);
 
 } // namespace CredentialCipher

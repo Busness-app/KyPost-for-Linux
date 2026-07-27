@@ -142,8 +142,21 @@ bool AppLockManager::tryUnlock(const QString& pin)
     }
 
     if (m_store.verifyPin(pin)) {
-        m_store.setFailedAttemptCount(0);
-        m_store.setLockoutUntilEpochMs(0);
+        // Both checked, for the same reason recordFailedAttempt() checks
+        // them: a reset that silently fails leaves the persisted counter
+        // stale-high, and failedAttempts() takes the MAX of persisted and
+        // session -- so a user who mistyped nine times, unlocked correctly,
+        // and then mistyped once more would cross the wipe threshold and
+        // lose their local mail on their second mistake. Marking the store
+        // broken makes every later attempt this process refuse at the guard
+        // above, which reaches neither the backoff nor the wipe; relaunching
+        // is the recovery, and the stale counter is corrected by the next
+        // successful reset.
+        const bool countCleared = m_store.setFailedAttemptCount(0);
+        const bool deadlineCleared = m_store.setLockoutUntilEpochMs(0);
+        if (!countCleared || !deadlineCleared)
+            m_attemptRecordingBroken = true;
+
         m_sessionFailedAttempts = 0;
         m_locked = false;
 

@@ -65,6 +65,7 @@
 #include <QNetworkAccessManager>
 #include <QQmlApplicationEngine>
 #include <QStandardPaths>
+#include <QTimer>
 #include <QUrl>
 #include <QWindow>
 
@@ -584,15 +585,37 @@ int main(int argc, char* argv[])
     QObject::connect(&appLockManager, &AppLockManager::wipeRequested, &appLockManager,
                       [&database, &pairingStore, &appLockStore, &settingsStore, dataDir]() {
                           qWarning("App lock: wipe threshold reached, erasing local data");
-                          database.wipeAllTables();
-                          SecurityWipe::clearCacheDirectory(dataDir + QStringLiteral("/contact-photos"));
-                          pairingStore.clear();
-                          appLockStore.clear();
+                          // Every step's result is checked. These calls all
+                          // return bool and all of them can genuinely fail --
+                          // SecureStore writes fail on any machine with no
+                          // reachable Secret Service (see the canary at the
+                          // top of main()), and a failed removal here means
+                          // the device secret and cached mail survive a wipe
+                          // the app has already decided to perform. Silently
+                          // relaunching into a state that merely LOOKS wiped
+                          // is the worst available outcome, so each failure
+                          // is named individually in the journal.
+                          const bool tablesWiped = database.wipeAllTables();
+                          const bool photosCleared =
+                              SecurityWipe::clearCacheDirectory(dataDir + QStringLiteral("/contact-photos"));
+                          const bool pairingCleared = pairingStore.clear();
+                          const bool lockCleared = appLockStore.clear();
+                          if (!tablesWiped)
+                              qCritical("App lock: WIPE INCOMPLETE -- cached mail and contacts could not be erased");
+                          if (!photosCleared)
+                              qCritical("App lock: WIPE INCOMPLETE -- the contact-photo cache could not be erased");
+                          if (!pairingCleared)
+                              qCritical("App lock: WIPE INCOMPLETE -- the pairing credential could not be removed "
+                                        "from the secret store; this device may still be able to reach the relay");
+                          if (!lockCleared)
+                              qCritical("App lock: WIPE INCOMPLETE -- the stored PIN material could not be removed");
                           settingsStore.setDeliveryMode(QString());
-                          // Relaunch into the now-empty, unpaired state
-                          // rather than leaving a running window whose
-                          // controllers still hold the pre-wipe view of the
-                          // world. Same mechanism the HLP toggle uses.
+                          // Relaunch regardless of the above: leaving a
+                          // running window holding the pre-wipe view of the
+                          // world in front of whoever just failed ten PIN
+                          // attempts would be worse than an incomplete wipe
+                          // on its own. The qCritical lines are the record.
+                          // Same mechanism the HLP toggle uses.
                           AppRelauncher::requestRelaunch();
                       });
 
@@ -695,6 +718,31 @@ int main(int argc, char* argv[])
                      [&pairingController, &appLockManager]() {
                          pairingController.setAppLocked(appLockManager.locked());
                      });
+
+    // Same idea, different leak: a desktop notification is drawn by the
+    // notification server, not by this process, so LockOverlay.qml cannot
+    // cover it. Without this, every push arriving at a locked app printed
+    // the sender and subject on screen for whoever was standing there --
+    // precisely what the lock is for. Seeded once (the app can start locked)
+    // and pushed on every transition, same shape as setAppLocked above.
+    notificationDispatcher.setContentHidden(appLockManager.locked());
+    QObject::connect(&appLockManager, &AppLockManager::lockedChanged, &notificationDispatcher,
+                     [&notificationDispatcher, &appLockManager]() {
+                         notificationDispatcher.setContentHidden(appLockManager.locked());
+                     });
+
+    // A pinned-certificate mismatch aborts every request before it is sent,
+    // for the rest of this pairing's life, so it needs a persistent
+    // explanation rather than one generic per-request error. HttpClient
+    // reports the bare fact (core/ owns no wording -- AGENTS.md section 5);
+    // the roots' banner supplies the sentence and offers re-pairing, which
+    // is the only real recovery. Safe to capture pairingController by
+    // reference: httpClient is declared above it and destroyed after it.
+    httpClient.setCertificateMismatchHandler([&pairingController]() {
+        qCritical("main: TLS certificate pin mismatch -- refusing to send credentials to this "
+                  "server; the device must be paired again to trust a new certificate");
+        pairingController.setCertificateMismatch(true);
+    });
 
     // The ntfy-topic rotation hook that used to sit here (rotate the
     // SecureStore "ntfy-topic" bearer secret on every successful re-pair, per
@@ -820,18 +868,61 @@ int main(int argc, char* argv[])
     // pairing token expires ... handle the 401 explicitly"), and both call
     // sites used to throw the std::optional away -- leaving the relay
     // publishing to a dead endpoint behind a UI that still said "Paired".
-    const auto reregisterAndReport = [&deviceRegistrationService,
-                                       &pairingController](const QString& endpoint) {
+    // Set when a re-registration was deferred because the credential PIN gate
+    // is engaged and the app is locked (RegistrationOutcome::CredentialsLocked
+    // -- returned WITHOUT contacting the server, see
+    // DeviceRegistrationService::pair). Replayed on unlock by the connection
+    // below, so a distributor endpoint that rotated while the app sat locked
+    // still reaches the relay, just later.
+    bool deferredReregistrationEndpointPending = false;
+    QString deferredReregistrationEndpoint;
+
+    const auto reregisterAndReport = [&deviceRegistrationService, &pairingController,
+                                       &deferredReregistrationEndpointPending,
+                                       &deferredReregistrationEndpoint](const QString& endpoint) {
         const std::optional<NativeRegistrationResult> result =
             deviceRegistrationService.reregisterIfPaired(endpoint);
         if (!result.has_value())
             return; // not paired yet -- an ordinary state, not a failure
+        if (result->outcome == RegistrationOutcome::CredentialsLocked) {
+            // Not an error and deliberately not surfaced to the user: the
+            // pairing is fine, the secret is simply sealed right now.
+            qDebug("main: re-registration deferred -- the device secret is sealed and the app is "
+                   "locked; will retry on unlock");
+            deferredReregistrationEndpointPending = true;
+            deferredReregistrationEndpoint = endpoint;
+            return;
+        }
+        deferredReregistrationEndpointPending = false;
         if (result->outcome == RegistrationOutcome::Unauthorized) {
             qWarning("main: re-registration was rejected (401) -- the pairing token has expired, "
                      "push delivery is now broken until the user pairs again");
             pairingController.setReregistrationRejected(true);
         }
     };
+
+    // The retry half of the deferral above. Fires on every lock transition;
+    // the pending flag makes the unlock case the only one that does work.
+    //
+    // Queued to the next event-loop turn rather than run inline: this signal
+    // is emitted from the middle of AppLockManager::tryUnlock(), and
+    // reregisterAndReport() blocks on HttpClient's nested QEventLoop, which
+    // keeps delivering QML input while it is suspended. Letting a network
+    // call run inside a half-finished unlock is not a risk worth taking for
+    // a retry that is in no hurry.
+    QObject::connect(&appLockManager, &AppLockManager::lockedChanged, &appLockManager,
+                      [&appLockManager, &deferredReregistrationEndpointPending,
+                       &deferredReregistrationEndpoint, reregisterAndReport]() {
+                          if (appLockManager.locked() || !deferredReregistrationEndpointPending)
+                              return;
+                          QTimer::singleShot(0, qApp, [&deferredReregistrationEndpointPending,
+                                                        &deferredReregistrationEndpoint,
+                                                        reregisterAndReport]() {
+                              if (!deferredReregistrationEndpointPending)
+                                  return; // already handled by another path
+                              reregisterAndReport(deferredReregistrationEndpoint);
+                          });
+                      });
 
     QObject::connect(&pushConnector, &UnifiedPushConnector::endpointChanged, &pushConnector,
                       [&pairingController, reregisterAndReport](const QString& endpoint) {

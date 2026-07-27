@@ -205,6 +205,53 @@ already produced a real defect in this repo.
   and its `user_version` bump in one transaction; statement splitting goes
   through `splitSqlStatements()`, not `QString::split(';')`.
 
+## 6c. Rules added by the 2026-07-26 adversarial review
+
+Same standard as 6b: each one is here because breaking it produced a real
+defect.
+
+- **Never persist a rotated device secret without asking the credential
+  gate first.** The relay mints a new `deviceSecret` on every successful
+  register, and re-registration runs unattended (endpoint rotation, tier
+  change to Distributor) on essentially every launch. `PairingStore::save()`
+  used to write it in plaintext regardless, next to a sealed blob and a
+  `credentialPinGateEnabled` flag that both still claimed it was protected --
+  a silent, persistent downgrade of the gate, while locked. `save()` is now
+  sealed-aware, and anything that rotates the secret **must** check
+  `PairingStore::canResealDeviceSecret()` *before* its network call
+  (`DeviceRegistrationService::pair()` returns
+  `RegistrationOutcome::CredentialsLocked` without contacting the server).
+  Checking afterwards is not equivalent: by then the server has already
+  retired the old credential.
+- **Sealed is not the same as locked.** `sealDeviceSecret()` runs from
+  Settings with the app unlocked and the user present; it keeps the session
+  copy and key, and `lockDeviceSecret()` is what drops them. Asserting
+  "load() is empty right after sealing" is wrong and used to break mail sync
+  for the rest of the session with no lock screen to explain it.
+- **The wipe path checks every result.** `wipeAllTables()`,
+  `SecurityWipe::*`, `PairingStore::clear()` and `AppLockStore::clear()` all
+  return `bool` and all can genuinely fail (no Secret Service, locked
+  wallet). An unchecked wipe relaunches into a state that merely *looks*
+  wiped. `PairingStore::clear()` returns `bool` for this reason -- don't
+  revert it to `void`.
+- **`core/` owns error *values*, never error *wording*.** A user-facing
+  English sentence in `core/` cannot be translated (no KF6::I18n there) and
+  travels straight to the UI. `NetworkError::CertificateMismatch` carries
+  the fact; `components/StatusBanner.qml` carries the sentence. A pinned-cert
+  mismatch also needs a persistent surface, not just a per-request error: it
+  aborts every request forever, and re-pairing is the only recovery.
+- **A locked app must not render mail content into a desktop notification.**
+  The notification server draws it, so `LockOverlay.qml` cannot cover it.
+  `NotificationDispatcher::setContentHidden()` is driven from
+  `AppLockManager::locked` in `main.cpp`.
+- **Validate QR/scan targets after resolving, and require TLS off
+  loopback.** `isSafeQrTarget()` resolves the host, but Qt resolves it again
+  when connecting -- an attacker's nameserver can answer differently the
+  second time. TLS is what closes that; the address blocklist alone does
+  not. Private/unique-local/multicast addresses are blocked too, loopback
+  deliberately is not. DNS lookups on this path are bounded
+  (`kResolveTimeoutMs`), never `QHostInfo::fromName()`.
+
 ## 7. DOX framework
 
 ### Core Contract
