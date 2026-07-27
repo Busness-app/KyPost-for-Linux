@@ -18,6 +18,11 @@ private slots:
     void allowsHostnameThatResolvesToPublicAddress();
     void allowsHostnameThatResolvesToLoopbackAddress();
     void rejectsUnresolvableHostname();
+
+    // Review-finding regressions.
+    void rejectsPrivateAndUniqueLocalAddresses();
+    void rejectsCleartextForAnythingButLoopback();
+    void rejectsHostWithAMixOfPublicAndPrivateAddresses();
 };
 
 void PgpQrTargetValidatorTest::rejectsNonHttpScheme()
@@ -103,6 +108,64 @@ void PgpQrTargetValidatorTest::rejectsUnresolvableHostname()
     const HostResolver resolver = [](const QString&) { return QList<QHostAddress>{}; };
 
     QVERIFY(!isSafeQrTarget(QUrl(QStringLiteral("http://does-not-resolve.example/api/pgp/qr/key")), resolver));
+}
+
+void PgpQrTargetValidatorTest::rejectsPrivateAndUniqueLocalAddresses()
+{
+    // A QR code is a picture an attacker can print on a poster or paste into
+    // a message. Blocking only link-local left the whole of the user's own
+    // LAN reachable -- a router admin page, a printer, an internal service --
+    // with whatever answered rendered back as a contact's PGP key.
+    const auto resolvesTo = [](const QString& literal) {
+        return HostResolver([literal](const QString&) {
+            return QList<QHostAddress>{ QHostAddress(literal) };
+        });
+    };
+
+    QVERIFY(!isSafeQrTarget(QUrl(QStringLiteral("https://scan.example/api/pgp/qr/key")),
+                             resolvesTo(QStringLiteral("192.168.1.1"))));
+    QVERIFY(!isSafeQrTarget(QUrl(QStringLiteral("https://scan.example/api/pgp/qr/key")),
+                             resolvesTo(QStringLiteral("10.0.0.5"))));
+    QVERIFY(!isSafeQrTarget(QUrl(QStringLiteral("https://scan.example/api/pgp/qr/key")),
+                             resolvesTo(QStringLiteral("172.16.4.9"))));
+    QVERIFY(!isSafeQrTarget(QUrl(QStringLiteral("https://scan.example/api/pgp/qr/key")),
+                             resolvesTo(QStringLiteral("fd00::1"))));
+}
+
+void PgpQrTargetValidatorTest::rejectsCleartextForAnythingButLoopback()
+{
+    const HostResolver public_ = [](const QString&) {
+        return QList<QHostAddress>{ QHostAddress(QStringLiteral("203.0.113.10")) };
+    };
+
+    // Cleartext lets an on-path attacker swap the public key the user is
+    // about to trust. It also leaves DNS rebinding open: this validator
+    // resolves the host, Qt resolves it again when connecting, and an
+    // attacker-controlled nameserver can answer differently the second time.
+    // Requiring TLS means a rebound address must present a certificate valid
+    // for the QR's hostname, which a metadata service or LAN device cannot.
+    QVERIFY(!isSafeQrTarget(QUrl(QStringLiteral("http://scan.example/api/pgp/qr/key")), public_));
+    QVERIFY(isSafeQrTarget(QUrl(QStringLiteral("https://scan.example/api/pgp/qr/key")), public_));
+
+    // Loopback keeps its cleartext exemption: self-hosted relays on
+    // localhost are supported, and rebinding a name that already resolves to
+    // 127.0.0.1 buys an attacker nothing they could not do by writing the
+    // literal into the QR.
+    const HostResolver loopback = [](const QString&) {
+        return QList<QHostAddress>{ QHostAddress(QStringLiteral("127.0.0.1")) };
+    };
+    QVERIFY(isSafeQrTarget(QUrl(QStringLiteral("http://my-relay.localdomain/api/pgp/qr/key")), loopback));
+}
+
+void PgpQrTargetValidatorTest::rejectsHostWithAMixOfPublicAndPrivateAddresses()
+{
+    // Every resolved address has to pass, not just the first one -- a
+    // multi-A-record host is otherwise a trivial way to smuggle one.
+    const HostResolver mixed = [](const QString&) {
+        return QList<QHostAddress>{ QHostAddress(QStringLiteral("203.0.113.10")),
+                                     QHostAddress(QStringLiteral("192.168.0.7")) };
+    };
+    QVERIFY(!isSafeQrTarget(QUrl(QStringLiteral("https://scan.example/api/pgp/qr/key")), mixed));
 }
 
 QTEST_GUILESS_MAIN(PgpQrTargetValidatorTest)

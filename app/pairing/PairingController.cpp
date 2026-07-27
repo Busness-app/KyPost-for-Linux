@@ -342,7 +342,20 @@ void PairingController::removePairing()
         // clears unconditionally below regardless of network outcome.
         m_deregisterClient.deregister(QUrl(pairing->serverBaseUrl), pairing->deviceId, pairing->deviceSecret);
     }
-    m_pairingStore.clear();
+    if (!m_pairingStore.clear()) {
+        // Local state still clears below, but say so: "unpaired" with the
+        // credential still sitting in the keychain is a different situation
+        // from a clean unpair, and the user is the only one who can fix the
+        // secret store.
+        setPairingState(State::Failed,
+                         i18n("Unpaired, but some credentials could not be removed from this "
+                              "system's secret store. Check that your keyring is unlocked."));
+    }
+    // A fresh pin is captured on the next pair, so the old mismatch is no
+    // longer meaningful -- and leaving the banner up after the user has
+    // acted on it would be its own bug.
+    setCertificateMismatch(false);
+    setReregistrationRejected(false);
     refreshFromStore();
 }
 
@@ -362,6 +375,19 @@ void PairingController::setReregistrationRejected(bool rejected)
         return;
     m_reregistrationRejected = rejected;
     emit reregistrationRejectedChanged();
+}
+
+bool PairingController::certificateMismatch() const
+{
+    return m_certificateMismatch;
+}
+
+void PairingController::setCertificateMismatch(bool mismatch)
+{
+    if (m_certificateMismatch == mismatch)
+        return;
+    m_certificateMismatch = mismatch;
+    emit certificateMismatchChanged();
 }
 
 bool PairingController::pairFromParsedParams(const QString& sub, const QString& srv, const QString& pt,
@@ -393,6 +419,9 @@ bool PairingController::pairFromParsedParams(const QString& sub, const QString& 
     case RegistrationOutcome::Success:
         refreshFromStore();
         setReregistrationRejected(false);
+        // A successful handshake just re-pinned this server's SPKI, so any
+        // earlier mismatch is resolved by construction.
+        setCertificateMismatch(false);
         setPairingState(State::Paired);
         return true;
     case RegistrationOutcome::Unauthorized:
@@ -401,6 +430,14 @@ bool PairingController::pairFromParsedParams(const QString& sub, const QString& 
         return false;
     case RegistrationOutcome::BackendMisconfigured:
         setPairingState(State::Failed, i18n("The server is not configured for pairing yet."));
+        return false;
+    case RegistrationOutcome::CredentialsLocked:
+        // Unreachable in practice on this path -- pairFromDeepLink() and
+        // confirmPendingPair() both refuse while locked, and a first pairing
+        // has no sealed secret to re-wrap -- but handled rather than lumped
+        // into Failure so the enum stays exhaustively switched and the
+        // wording matches the actual cause if it ever is reached.
+        setPairingState(State::Failed, i18n("Unlock KyPost first, then try again."));
         return false;
     case RegistrationOutcome::Failure:
         setPairingState(State::Failed,

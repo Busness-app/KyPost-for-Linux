@@ -109,9 +109,21 @@ public:
     // pairing flow captures.
     QByteArray lastPeerSpkiSha256() const;
 
+    // Invoked (on the calling thread, from inside the blocking call) every
+    // time a request is aborted because the peer's SPKI did not match the
+    // pin. Exists because a mismatch is not a per-request problem: it stops
+    // EVERY request, permanently, until the device re-pairs, and the
+    // per-request NetworkError alone gave the user a generic "Refresh
+    // failed" with no explanation and no way out. main.cpp routes this to a
+    // persistent banner offering re-pairing. Empty by default; core/ has no
+    // opinion about what the app does with it.
+    using CertificateMismatchHandler = std::function<void()>;
+    void setCertificateMismatchHandler(CertificateMismatchHandler handler);
+
 private:
     QByteArray m_certificatePin;
     mutable QByteArray m_lastPeerSpkiSha256;
+    CertificateMismatchHandler m_certificateMismatchHandler;
     // Appends query items to url via QUrlQuery, preserving any query url
     // already has — mirrors the Swift URL.appending(queryOrThrow:) extension.
     QUrl urlWithQuery(const QUrl& url, const QList<QPair<QString, QString>>& query) const;

@@ -55,8 +55,9 @@ private slots:
     void reregisterIfPairedWithNoPriorPairingMakesNoRequest();
     void reregisterIfPairedOn401LeavesStoredPairingUnchanged();
 
-    // Review-finding regression.
+    // Review-finding regressions.
     void pairFailsWhenCredentialsCannotBePersisted();
+    void reregisterIsDeferredWithoutContactingTheServerWhileCredentialsAreSealed();
 
 private:
     static PairingParams sampleParams(quint16 port);
@@ -339,6 +340,73 @@ void DeviceRegistrationServiceTest::pairFailsWhenCredentialsCannotBePersisted()
 
     // And nothing half-written is left behind claiming to be a pairing.
     QVERIFY(!pairingStore.isPaired());
+}
+
+void DeviceRegistrationServiceTest::reregisterIsDeferredWithoutContactingTheServerWhileCredentialsAreSealed()
+{
+    QTemporaryDir secureDir;
+    QVERIFY(secureDir.isValid());
+    SecureStoreFile secureStore(secureDir.path());
+    PairingStore pairingStore(secureStore);
+
+    QTemporaryDir settingsDir;
+    QVERIFY(settingsDir.isValid());
+    SettingsStore settingsStore(settingsDir.filePath(QStringLiteral("settings.ini")));
+
+    // A server that WOULD succeed, so a request reaching it is unambiguous.
+    FakeRelayServer fake(httpResponse(
+        200, "OK",
+        R"({"deviceId":"new-device-id","deviceSecret":"rotated-secret","deliveryMode":"push","transport":"unifiedpush"})"));
+
+    DevicePairing existing;
+    existing.subscriberId = QStringLiteral("sub-existing");
+    existing.serverBaseUrl = QStringLiteral("http://127.0.0.1:%1").arg(fake.port());
+    existing.registrationUrl = QStringLiteral("http://127.0.0.1:%1/api/notifications/native/register").arg(fake.port());
+    existing.pairingToken = QStringLiteral("existing-token");
+    existing.deviceId = QStringLiteral("old-device-id");
+    existing.deviceSecret = QStringLiteral("existing-device-secret");
+    QVERIFY(pairingStore.save(existing));
+
+    // Credential gate on, app locked -- the state every launch starts in
+    // once the user has enabled it.
+    QVERIFY(pairingStore.sealDeviceSecret(QStringLiteral("123456")));
+    pairingStore.lockDeviceSecret();
+
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    NativeRegistrationClient client(http);
+    DeviceRegistrationService service(client, pairingStore, settingsStore, http);
+
+    const std::optional<NativeRegistrationResult> result =
+        service.reregisterIfPaired(QStringLiteral("https://push.example/endpoint"));
+
+    QVERIFY(result.has_value());
+    QCOMPARE(result->outcome, RegistrationOutcome::CredentialsLocked);
+
+    // The point of checking BEFORE the request: a successful register mints
+    // a new secret and retires the old one server-side. Discovering
+    // afterwards that it cannot be sealed would leave this device holding a
+    // credential the relay no longer accepts -- so nothing may be sent.
+    QVERIFY(fake.receivedRequest().isEmpty());
+
+    // The sealed blob and the gate are both untouched, and no plaintext
+    // secret appeared on disk.
+    QVERIFY(pairingStore.deviceSecretSealed());
+    const std::optional<QString> raw = secureStore.get(QStringLiteral("pairing.deviceSecret"));
+    QVERIFY(!raw.has_value() || raw->isEmpty());
+
+    // ...and once unlocked, the same call goes through normally.
+    QVERIFY(pairingStore.unsealDeviceSecret(QStringLiteral("123456")));
+    const std::optional<NativeRegistrationResult> retried =
+        service.reregisterIfPaired(QStringLiteral("https://push.example/endpoint"));
+    QVERIFY(retried.has_value());
+    QCOMPARE(retried->outcome, RegistrationOutcome::Success);
+    QVERIFY(!fake.receivedRequest().isEmpty());
+    // Rotated, and still sealed rather than written out in the clear.
+    QVERIFY(pairingStore.deviceSecretSealed());
+    QCOMPARE(pairingStore.load()->deviceSecret, QStringLiteral("rotated-secret"));
+    const std::optional<QString> rawAfter = secureStore.get(QStringLiteral("pairing.deviceSecret"));
+    QVERIFY(!rawAfter.has_value() || rawAfter->isEmpty());
 }
 
 QTEST_GUILESS_MAIN(DeviceRegistrationServiceTest)

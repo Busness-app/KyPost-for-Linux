@@ -13,9 +13,12 @@
 
 namespace {
 
-// Cloudflare fronts mail.urlxl.com and challenges/blocks requests carrying
+// The relay is fronted by a CDN that challenges/blocks requests carrying
 // Qt's stock "Mozilla/5.0" QNetworkAccessManager User-Agent, so a real
 // product token is mandatory rather than cosmetic (AGENTS.md section 8).
+// The relay's own hostname is deliberately not named here: it is pairing
+// data (DevicePairing::serverBaseUrl), not a compile-time constant, and
+// self-hosted instances are a supported case.
 // Applied to every verb below via applyDefaultHeaders(); a caller-supplied
 // User-Agent in `headers` still wins, because setRawHeader() runs after
 // this and overwrites.
@@ -58,6 +61,11 @@ QByteArray HttpClient::certificatePin() const
 QByteArray HttpClient::lastPeerSpkiSha256() const
 {
     return m_lastPeerSpkiSha256;
+}
+
+void HttpClient::setCertificateMismatchHandler(CertificateMismatchHandler handler)
+{
+    m_certificateMismatchHandler = std::move(handler);
 }
 
 HttpClient::HttpResult HttpClient::get(const QUrl& url, const QList<QPair<QString, QString>>& query,
@@ -187,8 +195,10 @@ HttpClient::HttpResult HttpClient::waitForReply(QNetworkReply* reply, const Redi
             reply->abort();
         }
     });
-    // ManualRedirectPolicy (set above in get(), only when redirectValidator
-    // is non-empty) means Qt pauses and waits for redirectAllowed() before
+    // UserVerifiedRedirectPolicy (set above in get(), only when
+    // redirectValidator is non-empty -- NOT ManualRedirectPolicy, which
+    // never emits redirected() at all; see get()'s own comment) means Qt
+    // pauses and waits for redirectAllowed() before
     // following each hop -- re-run the same safety check against the
     // redirect target here rather than following it blindly. Not calling
     // redirectAllowed() leaves the reply completing with the redirect
@@ -223,8 +233,18 @@ HttpClient::HttpResult HttpClient::waitForReply(QNetworkReply* reply, const Redi
     // server said.
     if (pinMismatch) {
         result.error = NetworkError::CertificateMismatch;
-        result.detail = QStringLiteral(
-            "The server's TLS certificate does not match the one this device paired with.");
+        // No `detail` string. This used to carry an English sentence, which
+        // then travelled all the way to the UI as a user-facing message --
+        // core/ cannot call i18n() (AGENTS.md section 5: KF6::I18n is an
+        // app/ dependency), so the wording belongs in app/, and the enum
+        // value alone is what core/ is entitled to report. The wording now
+        // lives in the roots' certificate-mismatch banner.
+        //
+        // Reported out-of-band as well, because the enum reaches callers one
+        // failed request at a time while this condition is global to the
+        // pairing and needs a persistent explanation with a way out.
+        if (m_certificateMismatchHandler)
+            m_certificateMismatchHandler();
     } else if (result.statusCode != 0) {
         // Got an HTTP response — map by status code even if QNetworkReply
         // also flagged an error of its own (e.g. 404 sets ContentNotFoundError).

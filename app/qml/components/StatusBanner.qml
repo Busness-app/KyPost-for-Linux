@@ -34,6 +34,23 @@ Item {
         Repeater {
             model: [
                 {
+                    // The relay's TLS certificate no longer matches the one
+                    // pinned when this device paired, so every request is
+                    // aborted before it is sent (core/net/HttpClient.cpp's
+                    // trust-on-first-use check). Listed first because it
+                    // stops literally everything, and because without it the
+                    // app looks simply broken: the per-request error is a
+                    // generic "Refresh failed" and there is no other clue.
+                    // Re-pairing is the only recovery -- it is what captures
+                    // a new pin.
+                    active: Pairing.certificateMismatch,
+                    message: i18n("KyPost stopped trusting this server: its security certificate "
+                                   + "changed since this device was paired, so no requests are "
+                                   + "being sent. If your server's certificate was renewed, remove "
+                                   + "this pairing in Settings and pair again. If you did not "
+                                   + "expect this, do not pair again until you know why it changed.")
+                },
+                {
                     active: Pairing.reregistrationRejected,
                     message: i18n("This device's pairing has expired, so new mail notifications "
                                    + "have stopped arriving. Open Settings and pair this device again.")

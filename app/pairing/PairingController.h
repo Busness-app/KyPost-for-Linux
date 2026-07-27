@@ -76,6 +76,21 @@ class PairingController : public QObject
     // "Paired" badge. The roots bind this to a persistent banner telling the
     // user to pair again.
     Q_PROPERTY(bool reregistrationRejected READ reregistrationRejected NOTIFY reregistrationRejectedChanged)
+    // True once any request has been aborted because the relay's TLS
+    // certificate no longer matches the SPKI pinned when this device paired
+    // (HttpClient's trust-on-first-use pin).
+    //
+    // This needs its own persistent surface because the condition is total
+    // and unrecoverable from inside the app: the pin is checked on
+    // ::encrypted, so EVERY request aborts before it is sent, forever, and
+    // the only exit is to pair again and capture a new pin. It previously
+    // had no surface at all -- NetworkError::CertificateMismatch was
+    // produced in core/net/HttpClient.cpp and read nowhere, so a routine
+    // certificate rotation at the relay presented as an app that had simply
+    // stopped working, with "Refresh failed" as its entire explanation.
+    // The roots bind this to a banner that says what happened and offers
+    // removePairing() as the way out.
+    Q_PROPERTY(bool certificateMismatch READ certificateMismatch NOTIFY certificateMismatchChanged)
     // Task 39: read-only display fields for Settings > Notifications.
     // Sourced straight from SettingsStore on every read (no local cache).
     // deliveryMode/transport only ever change together with isPaired/
@@ -118,6 +133,7 @@ public:
     QString deliveryMode() const;
     QString transport() const;
     bool reregistrationRejected() const;
+    bool certificateMismatch() const;
 
 public slots:
     // Re-reads pairingStore.load(), updates isPaired/pairedServerHost/
@@ -198,10 +214,17 @@ public slots:
     // later successful (re-)pair.
     void setReregistrationRejected(bool rejected);
 
+    // Called by main.cpp from HttpClient's certificate-mismatch handler,
+    // which fires from inside a blocking request on the GUI thread. Latching
+    // (only ever set true here) until removePairing() clears it: the pin is
+    // process-wide and the condition does not resolve on its own.
+    void setCertificateMismatch(bool mismatch);
+
 signals:
     void pairingChanged();
     void pairingStateChanged();
     void reregistrationRejectedChanged();
+    void certificateMismatchChanged();
 
 private:
     // Builds a PairingParams from already-validated fields, sets
@@ -238,5 +261,6 @@ private:
     // core/util/ReentrancyGuard.h.
     bool m_inNetworkCall = false;
     bool m_reregistrationRejected = false;
+    bool m_certificateMismatch = false;
     bool m_appLocked = false;
 };

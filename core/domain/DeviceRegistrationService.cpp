@@ -50,6 +50,25 @@ DeviceRegistrationService::DeviceRegistrationService(NativeRegistrationClient& c
 
 NativeRegistrationResult DeviceRegistrationService::pair(const PairingParams& params, const QString& deviceToken)
 {
+    // Checked BEFORE the network call, not after. Every successful register
+    // mints a new deviceSecret and retires the old one server-side, so
+    // discovering afterwards that the new one cannot be stored would leave
+    // the device holding a credential the relay no longer accepts.
+    //
+    // The case this guards is the credential PIN gate with the app locked:
+    // the sealed blob can only be re-wrapped by a session that has opened it
+    // (PairingStore::canResealDeviceSecret). Registering anyway is what used
+    // to write the rotated secret out in plaintext next to a gate flag still
+    // claiming it was sealed -- a silent, persistent downgrade of the one
+    // control that is supposed to make a locked device useless. Deferring
+    // costs a push-endpoint update until the user unlocks; main.cpp retries
+    // this call on unlock.
+    if (!m_pairingStore.canResealDeviceSecret()) {
+        NativeRegistrationResult deferred;
+        deferred.outcome = RegistrationOutcome::CredentialsLocked;
+        return deferred;
+    }
+
     const NativeRegistrationResult result = m_client.registerDevice(
         QUrl(params.registrationUrl), params.subscriberId, params.pairingToken, deviceToken, QString(), params.deviceName);
 
@@ -88,8 +107,13 @@ NativeRegistrationResult DeviceRegistrationService::pair(const PairingParams& pa
             "system's secret store. Check that a keyring service (gnome-keyring or "
             "kwallet) is running, then pair again.");
         // Leave nothing half-written: a partial record whose `sub` key
-        // landed would make isPaired() true with an unusable secret.
-        m_pairingStore.clear();
+        // landed would make isPaired() true with an unusable secret. If even
+        // the cleanup cannot write, say so -- "pair again" is bad advice for
+        // a store that is going to refuse that too.
+        if (!m_pairingStore.clear()) {
+            persistFailed.detail += QStringLiteral(
+                " The partially-written pairing record could also not be removed.");
+        }
         return persistFailed;
     }
 

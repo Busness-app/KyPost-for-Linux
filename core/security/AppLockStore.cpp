@@ -51,6 +51,18 @@ bool AppLockStore::setPin(const QString& pin)
     if (hash.size() != kHashBytes)
         return false;
 
+    // Counters first, and CHECKED. These two used to run last with their
+    // results discarded, so a failed write left a brand-new PIN sitting
+    // behind a lockout deadline from the OLD one -- the user sets a new PIN
+    // and is then refused for up to fifteen minutes by a backoff that
+    // logically no longer exists. Doing them before the credential material
+    // means a failure here changes nothing at all, which is what makes
+    // returning false honest.
+    if (!setFailedAttemptCount(0))
+        return false;
+    if (!setLockoutUntilEpochMs(0))
+        return false;
+
     // Order matters: write the credential material before flipping the
     // enabled flag, so a failure part-way through can never leave the app
     // "locked" with no way to verify a PIN.
@@ -58,12 +70,7 @@ bool AppLockStore::setPin(const QString& pin)
         return false;
     if (!m_secureStore.set(kPinHash, QString::fromLatin1(hash.toBase64())))
         return false;
-    if (!m_secureStore.set(kLockEnabled, QStringLiteral("1")))
-        return false;
-
-    setFailedAttemptCount(0);
-    setLockoutUntilEpochMs(0);
-    return true;
+    return m_secureStore.set(kLockEnabled, QStringLiteral("1"));
 }
 
 bool AppLockStore::verifyPin(const QString& pin) const

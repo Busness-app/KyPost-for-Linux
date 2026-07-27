@@ -1,8 +1,37 @@
 #include "domain/PairingStore.h"
+#include "stores/SecureStore.h"
 #include "stores/SecureStoreFile.h"
 
+#include <QHash>
 #include <QTemporaryDir>
 #include <QTest>
+
+namespace {
+
+// Accepts writes but refuses every removal -- what SecureStoreKeychain does
+// when the Secret Service is unreachable or the wallet has re-locked
+// mid-session.
+class UnremovableSecureStore : public SecureStore
+{
+public:
+    bool set(const QString& key, const QString& value) override
+    {
+        m_values.insert(key, value);
+        return true;
+    }
+    std::optional<QString> get(const QString& key) const override
+    {
+        const auto it = m_values.constFind(key);
+        return it == m_values.constEnd() ? std::nullopt : std::optional<QString>(*it);
+    }
+    bool remove(const QString&) override { return false; }
+    bool contains(const QString& key) const override { return m_values.contains(key); }
+
+private:
+    QHash<QString, QString> m_values;
+};
+
+} // namespace
 
 class PairingStoreTest : public QObject
 {
@@ -14,6 +43,9 @@ private slots:
     void loadReturnsNulloptWhenSubMissingEvenIfOtherKeysExist();
     void clearThenLoadReturnsNullopt();
     void deviceSecretEmptyStringRoundTripsAsEmpty();
+
+    // Review-finding regression.
+    void clearReportsFailureWhenTheStoreCannotRemove();
 
 private:
     static DevicePairing samplePairing();
@@ -111,6 +143,23 @@ void PairingStoreTest::deviceSecretEmptyStringRoundTripsAsEmpty()
     QVERIFY(loaded.has_value());
     QVERIFY(loaded->deviceSecret.isEmpty());
     QCOMPARE(*loaded, pairing);
+}
+
+void PairingStoreTest::clearReportsFailureWhenTheStoreCannotRemove()
+{
+    UnremovableSecureStore secureStore;
+    PairingStore pairingStore(secureStore);
+    QVERIFY(pairingStore.save(samplePairing()));
+
+    // clear() used to return void and discard all nine remove() results, so
+    // the wipe-after-repeated-PIN-failure path in main.cpp relaunched into a
+    // state that merely LOOKED wiped -- the device secret still in the
+    // keychain, the app still able to reach the relay.
+    QVERIFY(!pairingStore.clear());
+
+    // And the caller's suspicion is correct: the credential really is still
+    // there. This is what main.cpp now shouts about.
+    QVERIFY(pairingStore.isPaired());
 }
 
 QTEST_GUILESS_MAIN(PairingStoreTest)

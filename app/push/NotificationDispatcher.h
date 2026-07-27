@@ -28,12 +28,13 @@ public:
     // buildNativePushData's own field-naming intent that senderName/
     // emailSubject are the friendlier display copies, while sender/subject
     // are the raw fallbacks for when those are absent. The final title/body
-    // tier (Task 43 review-finding fix) was added for the embedded ntfy
-    // subscriber tier, whose arrivals only ever carried payload.title/
-    // payload.body; that tier was removed on 2026-07-26 (see
-    // core/domain/TransportStateMachine.h) but the fallback is kept as
-    // defence in depth for any payload that reaches here with only those two
-    // fields set. Confirmed safe for the Distributor tier:
+    // tier exists for the backend's sparser /api/notifications/test envelope,
+    // which carries only a flat title/body and none of the mail-shaped
+    // fields (see PushPayloadParser::parse, which accepts it deliberately).
+    // Do not delete it as dead code: it was originally added for the
+    // embedded ntfy subscriber tier, and that tier's removal on 2026-07-26
+    // (see core/domain/TransportStateMachine.h) is NOT what this branch is
+    // for any more. Confirmed safe for the Distributor tier:
     // backend/internal/processor/poller.go's
     // buildNativePushData duplicates the same title/body values into
     // data.title/data.body that it derives senderName/emailSubject from
@@ -45,10 +46,17 @@ public:
     // that previously rendered blank. Built via pickTitle()/pickText() below.
     void notify(const PushNotification& payload);
 
+    // While true, notify() suppresses the sender and subject and sends a
+    // fixed "new mail, unlock to read" popup instead. Driven from
+    // AppLockManager::locked in main.cpp -- see notify()'s own comment for
+    // why a locked app must not render mail content into a notification.
+    bool contentHidden() const;
+    void setContentHidden(bool hidden);
+
     // Pure, deterministic fallback-selection logic backing notify()'s
     // title/text: senderName/emailSubject first, then sender/subject, then
-    // (Task 43 review-finding fix) title/body when both prior fields are
-    // empty. Public and static -- rather than anonymous-namespace
+    // title/body when both prior fields are empty. Public and static --
+    // rather than anonymous-namespace
     // file-scope helpers, the way PushPayloadParser.cpp's splitKeywords is
     // done -- specifically so NotificationDispatcherTest can call them
     // directly without touching KNotification/D-Bus. notify() itself has no
@@ -66,13 +74,23 @@ public:
     // stock Plasma session does). pickTitle()/pickText() above return raw,
     // attacker-influenceable push content (sender/subject/body); notify()
     // runs both through this before calling setTitle()/setText() so a
-    // malicious/compromised relay or ntfy publisher can't plant a phishing
-    // link or tracking-pixel image in the desktop notification. Public and
+    // malicious or compromised relay can't plant a phishing link or
+    // tracking-pixel image in the desktop notification. Public and
     // static for the same testability reason as pickTitle/pickText above.
     static QString sanitizeForNotification(const QString& text);
+
+    // What notify() actually passes to setTitle()/setText(): the sanitized
+    // pickTitle()/pickText() result, or fixed non-revealing copy when
+    // contentHidden. Pure and static so the redaction rule is testable
+    // without a notification server -- see the .cpp for why it matters.
+    static QString displayTitle(const PushNotification& payload, bool contentHidden);
+    static QString displayText(const PushNotification& payload, bool contentHidden);
 
 signals:
     // Emitted when the user activates the notification's default ("View")
     // action.
     void openRequested(const QString& messageId);
+
+private:
+    bool m_contentHidden = false;
 };
