@@ -28,7 +28,7 @@
 # --- Size ---
 #
 # GitHub Pages caps a published site at 1 GB. The runtime is NOT in here
-# (users get org.kde.Platform//6.10 from Flathub); this repo holds only
+# (users get org.kde.Platform//6.11 from Flathub); this repo holds only
 # KyPost plus its three from-source modules. --prune-depth below bounds
 # growth; if the site ever approaches the cap, lower it.
 
@@ -124,9 +124,11 @@ jobs:
         with:
           path: .flatpak-builder
           key: flatpak-builder-${{ hashFiles('packaging/flatpak/com.urlxl.mail.yaml') }}-${{ github.run_id }}
+          # No bare "flatpak-builder-" fallback: that key is writable by any
+          # branch, so a pull request could seed the .flatpak-builder state
+          # that a later publishing run builds from.
           restore-keys: |
             flatpak-builder-${{ hashFiles('packaging/flatpak/com.urlxl.mail.yaml') }}-
-            flatpak-builder-
 
       - name: Import signing key
         if: steps.mode.outputs.publish == 'true'
@@ -284,9 +286,24 @@ jobs:
           echo "Published to $PAGES_URL"
           du -sh . | awk '{print "Published site size: " $1 " (GitHub Pages caps at 1 GB)"}'
 
+      # The signing key is the entire integrity story for a self-distributed
+      # OSTree repo -- passphraseless and non-expiring by design, with no
+      # Flathub review layer behind it -- so it must not still be on disk when
+      # third-party action code runs. Destroyed here rather than left for the
+      # runner to reap.
+      - name: Destroy signing key material
+        if: always()
+        run: |
+          if [ -n "${GNUPGHOME:-}" ] && [ -d "$GNUPGHOME" ]; then
+            rm -rf "$GNUPGHOME"
+          fi
+          echo "GNUPGHOME=" >> "$GITHUB_ENV"
+
       - name: Attach bundle to release
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
+        # Pinned to a commit, not the mutable v2 tag: a third-party action
+        # repointed at malicious code runs with this repo's secrets in scope.
+        uses: softprops/action-gh-release@da05d552573ad5aba039eaac05058a918a7bf631 # v2.2.2
         with:
           files: kypost.flatpak
           fail_on_unmatched_files: true

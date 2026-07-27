@@ -48,9 +48,10 @@ HttpClient::HttpClient(QNetworkAccessManager& manager, int transferTimeoutMs)
         m_manager.setTransferTimeout(transferTimeoutMs);
 }
 
-void HttpClient::setCertificatePin(const QByteArray& spkiSha256)
+void HttpClient::setCertificatePin(const QByteArray& spkiSha256, const QUrl& origin)
 {
     m_certificatePin = spkiSha256;
+    m_pinnedOrigin = origin;
 }
 
 QByteArray HttpClient::certificatePin() const
@@ -58,9 +59,23 @@ QByteArray HttpClient::certificatePin() const
     return m_certificatePin;
 }
 
-QByteArray HttpClient::lastPeerSpkiSha256() const
+void HttpClient::clearCertificatePin()
 {
-    return m_lastPeerSpkiSha256;
+    m_certificatePin.clear();
+    m_pinnedOrigin = QUrl();
+}
+
+HttpClient::RedirectValidator HttpClient::effectiveRedirectValidator(const QUrl& requestUrl,
+                                                                      const RedirectValidator& redirectValidator)
+{
+    if (redirectValidator)
+        return redirectValidator;
+
+    // Default: refuse to leave the origin the caller asked for. Qt forwards
+    // custom headers (the device secret) on every redirect status, and the
+    // body too on 307/308, so a cross-host hop hands the credential to a host
+    // the caller never named.
+    return [requestUrl](const QUrl& target) { return sameUrlOrigin(target, requestUrl); };
 }
 
 void HttpClient::setCertificateMismatchHandler(CertificateMismatchHandler handler)
@@ -85,17 +100,16 @@ HttpClient::HttpResult HttpClient::get(const QUrl& url, const QList<QPair<QStrin
     // emits QNetworkReply::redirected() at all -- it just refuses to
     // follow, full stop) is the one that pauses and waits for
     // redirectAllowed(), letting waitForReply() below re-validate every hop
-    // before it's followed. Only switch to this when a validator was
-    // actually supplied, so every other existing caller keeps today's
-    // automatic-follow behavior unchanged.
-    if (redirectValidator)
-        request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::UserVerifiedRedirectPolicy);
+    // before it's followed. Always on now: a caller that supplies no
+    // validator gets the same-origin default rather than Qt's blind follow.
+    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::UserVerifiedRedirectPolicy);
 
-    return waitForReply(m_manager.get(request), redirectValidator);
+    return waitForReply(m_manager.get(request), effectiveRedirectValidator(requestUrl, redirectValidator));
 }
 
 HttpClient::HttpResult HttpClient::post(const QUrl& url, const QList<QPair<QString, QString>>& query,
-                                         const QJsonObject& jsonBody, const QList<QPair<QString, QString>>& headers)
+                                         const QJsonObject& jsonBody, const QList<QPair<QString, QString>>& headers,
+                                         const RedirectValidator& redirectValidator)
 {
     const QUrl requestUrl = urlWithQuery(url, query);
     if (!requestUrl.isValid())
@@ -104,12 +118,15 @@ HttpClient::HttpResult HttpClient::post(const QUrl& url, const QList<QPair<QStri
     QNetworkRequest request(requestUrl);
     request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
     applyDefaultHeaders(request, headers);
+    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::UserVerifiedRedirectPolicy);
 
-    return waitForReply(m_manager.post(request, QJsonDocument(jsonBody).toJson(QJsonDocument::Compact)));
+    return waitForReply(m_manager.post(request, QJsonDocument(jsonBody).toJson(QJsonDocument::Compact)),
+                        effectiveRedirectValidator(requestUrl, redirectValidator));
 }
 
 HttpClient::HttpResult HttpClient::put(const QUrl& url, const QList<QPair<QString, QString>>& query,
-                                        const QJsonObject& jsonBody, const QList<QPair<QString, QString>>& headers)
+                                        const QJsonObject& jsonBody, const QList<QPair<QString, QString>>& headers,
+                                        const RedirectValidator& redirectValidator)
 {
     const QUrl requestUrl = urlWithQuery(url, query);
     if (!requestUrl.isValid())
@@ -118,12 +135,15 @@ HttpClient::HttpResult HttpClient::put(const QUrl& url, const QList<QPair<QStrin
     QNetworkRequest request(requestUrl);
     request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
     applyDefaultHeaders(request, headers);
+    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::UserVerifiedRedirectPolicy);
 
-    return waitForReply(m_manager.put(request, QJsonDocument(jsonBody).toJson(QJsonDocument::Compact)));
+    return waitForReply(m_manager.put(request, QJsonDocument(jsonBody).toJson(QJsonDocument::Compact)),
+                        effectiveRedirectValidator(requestUrl, redirectValidator));
 }
 
 HttpClient::HttpResult HttpClient::del(const QUrl& url, const QList<QPair<QString, QString>>& query,
-                                        const QList<QPair<QString, QString>>& headers)
+                                        const QList<QPair<QString, QString>>& headers,
+                                        const RedirectValidator& redirectValidator)
 {
     const QUrl requestUrl = urlWithQuery(url, query);
     if (!requestUrl.isValid())
@@ -131,8 +151,15 @@ HttpClient::HttpResult HttpClient::del(const QUrl& url, const QList<QPair<QStrin
 
     QNetworkRequest request(requestUrl);
     applyDefaultHeaders(request, headers);
+    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::UserVerifiedRedirectPolicy);
 
-    return waitForReply(m_manager.deleteResource(request));
+    return waitForReply(m_manager.deleteResource(request),
+                        effectiveRedirectValidator(requestUrl, redirectValidator));
+}
+
+bool sameUrlOrigin(const QUrl& a, const QUrl& b)
+{
+    return a.scheme() == b.scheme() && a.host() == b.host() && a.port() == b.port();
 }
 
 QUrl HttpClient::urlWithQuery(const QUrl& url, const QList<QPair<QString, QString>>& query) const
@@ -159,8 +186,17 @@ HttpClient::HttpResult HttpClient::waitForReply(QNetworkReply* reply, const Redi
     // mismatched server never receives the device credentials -- which is
     // the whole point, and is why this is not done by inspecting the reply
     // afterwards.
+    //
+    // Enforcement is scoped to the pinned origin: the pin describes the
+    // paired relay, and applying it to a deliberately cross-server PGP QR
+    // fetch only ever produces a false "your mail server is being
+    // impersonated" alarm.
     bool pinMismatch = false;
-    QObject::connect(reply, &QNetworkReply::encrypted, reply, [this, reply, &pinMismatch]() {
+    const bool enforcePin = !m_certificatePin.isEmpty() && sameUrlOrigin(reply->request().url(), m_pinnedOrigin);
+    QObject::connect(reply, &QNetworkReply::encrypted, reply, [this, reply, enforcePin, &pinMismatch]() {
+        if (!enforcePin)
+            return;
+
         const QSslCertificate peer = reply->sslConfiguration().peerCertificate();
         if (peer.isNull())
             return;
@@ -175,22 +211,7 @@ HttpClient::HttpResult HttpClient::waitForReply(QNetworkReply* reply, const Redi
         // enforcing, and leave lastPeerSpkiSha256 empty so the pairing flow
         // records "no pin" (enforcement off) rather than a bogus one.
         const QByteArray spkiDer = peer.publicKey().toDer();
-        if (spkiDer.isEmpty()) {
-            m_lastPeerSpkiSha256.clear();
-            if (!m_certificatePin.isEmpty()) {
-                pinMismatch = true;
-                reply->abort();
-            }
-            return;
-        }
-
-        const QByteArray spki = QCryptographicHash::hash(spkiDer, QCryptographicHash::Sha256);
-        // Recorded even on mismatch: the pairing flow reads this to capture
-        // the very first pin, and a caller diagnosing a mismatch wants to
-        // know what was actually presented.
-        m_lastPeerSpkiSha256 = spki;
-
-        if (!m_certificatePin.isEmpty() && spki != m_certificatePin) {
+        if (spkiDer.isEmpty() || QCryptographicHash::hash(spkiDer, QCryptographicHash::Sha256) != m_certificatePin) {
             pinMismatch = true;
             reply->abort();
         }
@@ -223,6 +244,22 @@ HttpClient::HttpResult HttpClient::waitForReply(QNetworkReply* reply, const Redi
     HttpResult result;
     result.statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
     result.body = reply->readAll();
+
+    // Per-reply, read after the fact rather than from the ::encrypted
+    // handler: that signal fires once per TLS *connection*, so on a pooled
+    // keep-alive reuse it never fires and a shared "last SPKI seen" member
+    // would still hold whatever host handshook most recently. peerCertificate()
+    // is populated on reused connections, so this is the value the pairing
+    // flow can actually trust to describe the server that answered.
+    if (const QSslCertificate peer = reply->sslConfiguration().peerCertificate(); !peer.isNull()) {
+        const QByteArray spkiDer = peer.publicKey().toDer();
+        // Never derive a pin from nothing: QSslCertificate::publicKey()
+        // yields a null key when the backend cannot represent the key type,
+        // and SHA256("") is a fixed public constant that every other
+        // unparseable certificate would also satisfy.
+        if (!spkiDer.isEmpty())
+            result.peerSpkiSha256 = QCryptographicHash::hash(spkiDer, QCryptographicHash::Sha256);
+    }
     const QList<QNetworkReply::RawHeaderPair> rawHeaders = reply->rawHeaderPairs();
     result.headers.reserve(rawHeaders.size());
     for (const auto& header : rawHeaders)

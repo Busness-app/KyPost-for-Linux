@@ -290,6 +290,7 @@ Item {
                 // from the relay's own free-text detail -- either way the
                 // string arriving here is already final display text, not a
                 // literal to wrap a second time.
+                textFormat: Text.PlainText
                 text: Pairing.pairingError
                 color: Theme.dangerColor
                 font.family: Theme.fontUi

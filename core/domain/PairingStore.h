@@ -102,7 +102,19 @@ public:
     // leave the device with a credential the server has already retired.
     bool canResealDeviceSecret() const;
 
+    // This session's re-seal key, captured so a caller can hold it across a
+    // blocking network call. Pass it back to the save() overload below;
+    // re-reading the live key after the call is a TOCTOU, because the nested
+    // event loop can deliver a lock in between.
+    CredentialCipher::SessionKey sealingKeySnapshot() const;
+    bool save(const DevicePairing& pairing, const CredentialCipher::SessionKey& sealingKey);
+
 private:
+    // True per the authoritative applock.credentialPinGateEnabled flag, not
+    // per the presence of a sealed blob.
+    bool credentialGateEnabled() const;
+    bool saveUnderCurrentKey(const DevicePairing& pairing);
+
     // Writes `secret` the way the current gate state requires: re-sealed
     // under the session key when a sealed blob exists, plaintext otherwise.
     bool storeDeviceSecret(const QString& secret);

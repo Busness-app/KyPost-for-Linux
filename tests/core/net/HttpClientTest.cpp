@@ -25,7 +25,7 @@ private slots:
     void transportFailureWhenServerHangs();
     void getFollowsRedirectWhenValidatorApprovesTarget();
     void getDoesNotFollowRedirectWhenValidatorRejectsTarget();
-    void getFollowsRedirectByDefaultWhenNoValidatorGiven();
+    void crossOriginRedirectIsRefusedByDefault();
 };
 
 void HttpClientTest::getSuccessReturnsBodyUnmodifiedAndPreservesExistingQuery()
@@ -237,10 +237,14 @@ void HttpClientTest::getDoesNotFollowRedirectWhenValidatorRejectsTarget()
     QVERIFY(result.body != finalBody);
 }
 
-void HttpClientTest::getFollowsRedirectByDefaultWhenNoValidatorGiven()
+void HttpClientTest::crossOriginRedirectIsRefusedByDefault()
 {
-    // Every other existing caller (no redirectValidator argument) keeps
-    // Qt's normal automatic-redirect-following behavior unchanged.
+    // Qt's default (NoLessSafeRedirectPolicy) follows cross-HOST redirects
+    // and strips nothing: every redirect status forwards custom headers --
+    // including X-Kypost-Device-Secret -- and 307/308 forward the body too,
+    // which on the registration POST is the subscriber id, the pairing token
+    // and the UnifiedPush endpoint. A caller that names no validator now gets
+    // a same-origin-only default instead.
     const QByteArray finalBody = "{\"ok\":true,\"from\":\"final\"}";
     FakeRelayServer finalServer(httpResponse(200, "OK", finalBody));
 
@@ -253,11 +257,12 @@ void HttpClientTest::getFollowsRedirectByDefaultWhenNoValidatorGiven()
     HttpClient client(manager);
 
     const QUrl url(QStringLiteral("http://127.0.0.1:%1/start").arg(redirectingServer.port()));
-    const HttpClient::HttpResult result = client.get(url, {});
+    const HttpClient::HttpResult result =
+        client.get(url, {}, { { QStringLiteral("X-Kypost-Device-Secret"), QStringLiteral("top-secret") } });
 
-    QVERIFY(!result.error.has_value());
-    QCOMPARE(result.statusCode, 200);
-    QCOMPARE(result.body, finalBody);
+    // Refused, and the secret never reached the other origin.
+    QVERIFY(result.body != finalBody);
+    QVERIFY(!finalServer.receivedRequest().contains("top-secret"));
 }
 
 QTEST_GUILESS_MAIN(HttpClientTest)

@@ -244,6 +244,7 @@ Item {
 
                 Text {
                     Layout.fillWidth: true
+                    textFormat: Text.PlainText
                     text: root.email.subject || ""
                     color: Theme.inkStrong
                     font.family: Theme.fontUi
@@ -253,6 +254,7 @@ Item {
                 }
                 Text {
                     Layout.fillWidth: true
+                    textFormat: Text.PlainText
                     text: root.email.sender || ""
                     color: Theme.ink
                     font.family: Theme.fontUi
@@ -263,6 +265,7 @@ Item {
                     // Raw ISO string as-is for v1 -- no date-formatting
                     // library decision needed this task (see Task 35 brief);
                     // follow-up: format this for display in a later task.
+                    textFormat: Text.PlainText
                     text: root.email.atUtc || ""
                     color: Theme.ink
                     opacity: 0.6
@@ -514,6 +517,7 @@ Item {
 
                 Text {
                     Layout.fillWidth: true
+                    textFormat: Text.PlainText
                     text: root.email.pgpBannerTitle || ""
                     color: Theme.inkStrong
                     font.family: Theme.fontUi
@@ -524,6 +528,7 @@ Item {
 
                 Text {
                     Layout.fillWidth: true
+                    textFormat: Text.PlainText
                     text: root.email.pgpBannerBody || ""
                     color: Theme.ink
                     font.family: Theme.fontUi
@@ -709,6 +714,7 @@ Item {
                             spacing: 8
 
                             Text {
+                                textFormat: Text.PlainText
                                 text: i18n("%1 (%2)", modelData.name, root.formatSize(modelData.size))
                                 color: Theme.inkStrong
                                 font.family: Theme.fontUi
@@ -740,6 +746,7 @@ Item {
             }
 
             Text {
+                textFormat: Text.PlainText
                 text: root.attachmentStatus
                 visible: root.attachmentStatus !== ""
                 color: Theme.ink

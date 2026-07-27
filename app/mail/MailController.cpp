@@ -910,6 +910,18 @@ bool MailController::downloadAttachment(const QString& mailbox, const QString& m
     // filesystem path below -- QFileInfo::fileName() keeps only the segment
     // after the last '/', which neutralizes a "../../.ssh/authorized_keys"-
     // style name regardless of how many traversal segments it contains.
+    //
+    // C0 controls are stripped FIRST, and NUL is the one that matters:
+    // QFile::open() passes the encoded path to open(2), which truncates at a
+    // NUL, while QFile::exists()/QFileInfo::exists()/QFile::remove() all
+    // reject the same string. A sender-chosen "Invoice.desktop\0.pdf"
+    // therefore satisfied the ephemeral path's MIME-driven extension forcing
+    // -- which computes ".pdf" from what it believes is the whole name --
+    // while creating "Invoice.desktop" on disk, handing the desktop's
+    // handler choice back to the sender. The same split silently no-ops the
+    // 5-minute delete timer, the exit cleanup and the write rollback, so the
+    // file outlived the session in the one mode that promises it cannot.
+    name.removeIf([](QChar c) { return c.unicode() < 0x20 || c.unicode() == 0x7f; });
     name = QFileInfo(name).fileName();
     if (name.isEmpty() || name == QStringLiteral(".") || name == QStringLiteral(".."))
         name = QStringLiteral("attachment");

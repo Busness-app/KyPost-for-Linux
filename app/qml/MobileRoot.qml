@@ -532,6 +532,7 @@ Kirigami.ApplicationWindow {
             Text {
                 Layout.fillWidth: true
                 visible: MailApp.lastError !== ""
+                textFormat: Text.PlainText
                 text: MailApp.lastError
                 color: Theme.dangerColor
                 font.family: Theme.fontUi
@@ -650,6 +651,7 @@ Kirigami.ApplicationWindow {
 
                                 Text {
                                     Layout.fillWidth: true
+                                    textFormat: Text.PlainText
                                     text: model.sender
                                     color: Theme.inkStrong
                                     font.family: Theme.fontUi
@@ -675,6 +677,7 @@ Kirigami.ApplicationWindow {
 
                                 Text {
                                     visible: !!model.pgpMarker
+                                    textFormat: Text.PlainText
                                     text: model.pgpMarker || ""
                                     color: Theme.inkStrong
                                     font.family: Theme.fontUi
@@ -686,6 +689,7 @@ Kirigami.ApplicationWindow {
                                 }
                                 Text {
                                     Layout.fillWidth: true
+                                    textFormat: Text.PlainText
                                     text: model.subject
                                     color: Theme.inkStrong
                                     font.family: Theme.fontUi
@@ -695,6 +699,7 @@ Kirigami.ApplicationWindow {
                             }
                             Text {
                                 Layout.fillWidth: true
+                                textFormat: Text.PlainText
                                 text: model.preview
                                 color: Theme.ink
                                 font.family: Theme.fontUi
@@ -838,6 +843,7 @@ Kirigami.ApplicationWindow {
                             anchors.verticalCenter: parent.verticalCenter
                             anchors.left: parent.left
                             anchors.leftMargin: 10 + (modelData.depth || 0) * 14
+                            textFormat: Text.PlainText
                             text: modelData.displayName
                             color: Theme.inkStrong
                             font.family: Theme.fontUi
@@ -881,5 +887,16 @@ Kirigami.ApplicationWindow {
     // is one definition of "what the lock screen covers" rather than two
     // hand-maintained copies. Mobile has no pop-out windows, so this single
     // instance covers everything here.
+    // See DesktopRoot.qml for the reasoning: QQuickOverlay stacks above the
+    // content item, so anything open when the lock engages outlives it.
+    Connections {
+        target: AppLock
+        function onLockedChanged() {
+            if (!AppLock.locked)
+                return;
+            folderPopup.close();
+        }
+    }
+
     LockOverlay { id: unlockOverlay }
 }

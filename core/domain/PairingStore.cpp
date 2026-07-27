@@ -1,5 +1,6 @@
 #include "domain/PairingStore.h"
 
+#include "security/AppLockStore.h"
 #include "security/CredentialCipher.h"
 
 #include "stores/SecureStore.h"
@@ -54,15 +55,39 @@ std::optional<DevicePairing> PairingStore::load() const
     return pairing;
 }
 
+bool PairingStore::credentialGateEnabled() const
+{
+    // The flag OR the blob -- either is sufficient, so both failure
+    // directions land closed.
+    //
+    // The blob alone was not enough. clear() removes it and cannot reach the
+    // flag, so an unpair followed by a re-pair wrote the new secret in
+    // plaintext under a flag still claiming protection; and a failed keychain
+    // read is indistinguishable from "absent", so a locked wallet did the
+    // same. Both ended with the device secret in the clear while Settings
+    // displayed "Require unlock to receive push and MFA: On".
+    //
+    // The flag alone is not enough either: sealDeviceSecret() is reachable
+    // without the flag having been written yet, and treating that as "gate
+    // off" would write plaintext next to a blob that does exist.
+    if (deviceSecretSealed())
+        return true;
+    return m_secureStore.get(QLatin1String(AppLockStore::kCredentialGateKey)).value_or(QString())
+        == QStringLiteral("1");
+}
+
 bool PairingStore::storeDeviceSecret(const QString& secret)
 {
-    if (!deviceSecretSealed()) {
+    if (!credentialGateEnabled()) {
         // Gate off: plaintext in the system keychain is the normal, intended
         // resting state, same as it has always been.
         return m_secureStore.set(QLatin1String(kDeviceSecretKey), secret);
     }
 
     // Gate on. Re-wrap under this session's key, never write the plaintext.
+    // Failing closed here is deliberate: with the gate on there is no
+    // acceptable plaintext fallback, and a caller that reaches this without a
+    // session key has already been told to defer (canResealDeviceSecret).
     const std::optional<QString> resealed = CredentialCipher::sealWithKey(m_sessionKey, secret.toUtf8());
     if (!resealed.has_value())
         return false;
@@ -76,10 +101,39 @@ bool PairingStore::storeDeviceSecret(const QString& secret)
     return m_secureStore.set(QLatin1String(kDeviceSecretKey), QString());
 }
 
+CredentialCipher::SessionKey PairingStore::sealingKeySnapshot() const
+{
+    return m_sessionKey;
+}
+
 bool PairingStore::save(const DevicePairing& pairing)
 {
-    // Checked before ANY key is written: a caller that reaches here with a
-    // sealed secret and no session key has already rotated the credential
+    return save(pairing, m_sessionKey);
+}
+
+bool PairingStore::save(const DevicePairing& pairing, const CredentialCipher::SessionKey& sealingKey)
+{
+    // The key is passed in, not read live, so that a lock arriving DURING a
+    // blocking registration cannot invalidate a check that already passed.
+    // HttpClient runs a nested QEventLoop, so minimising the window mid-call
+    // reached lockDeviceSecret() and dropped m_sessionKey; save() then failed
+    // its own guard and pair() responded by clearing the entire pairing --
+    // subscriber id, device id, sealed blob and TOFU pin -- after the server
+    // had already minted and retired the secret.
+    const CredentialCipher::SessionKey previousKey = m_sessionKey;
+    m_sessionKey = sealingKey;
+    const bool ok = saveUnderCurrentKey(pairing);
+    // Restore rather than keep: if the app locked during the call it must
+    // stay locked, and the caller's snapshot was only ever a licence to
+    // finish this one write.
+    m_sessionKey = previousKey;
+    return ok;
+}
+
+bool PairingStore::saveUnderCurrentKey(const DevicePairing& pairing)
+{
+    // Checked before ANY key is written: a caller that reaches here with the
+    // gate on and no session key has already rotated the credential
     // server-side, and there is nothing useful left to do but report it.
     if (!canResealDeviceSecret())
         return false;
@@ -114,6 +168,11 @@ bool PairingStore::clear()
     // credential blob behind that a later pairing could never open.
     ok = m_secureStore.remove(QLatin1String(kSealedDeviceSecretKey)) && ok;
     ok = m_secureStore.remove(QLatin1String(kCertificatePinKey)) && ok;
+    // The gate flag lives in AppLockStore but is meaningless without a
+    // pairing to protect, and leaving it set is what let the next pairing
+    // write its secret in plaintext while the UI still reported the gate as
+    // On. Reset it in the same operation that removes the blob.
+    ok = m_secureStore.set(QLatin1String(AppLockStore::kCredentialGateKey), QStringLiteral("0")) && ok;
     m_unsealedDeviceSecret.clear();
     m_sessionKey = {};
     return ok;
@@ -185,7 +244,11 @@ void PairingStore::lockDeviceSecret()
 
 bool PairingStore::canResealDeviceSecret() const
 {
-    return !deviceSecretSealed() || m_sessionKey.isValid();
+    // Keyed on the flag, matching storeDeviceSecret(). Using the blob here
+    // instead let an unreadable keychain -- or an unpair that removed the
+    // blob but not the flag -- report "nothing to re-seal, plaintext is
+    // fine" while the gate was still nominally on.
+    return !credentialGateEnabled() || m_sessionKey.isValid();
 }
 
 bool PairingStore::unsealDeviceSecretPermanently(const QString& pin)

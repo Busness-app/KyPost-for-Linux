@@ -77,6 +77,7 @@ Item {
                     id: bannerLabel
                     anchors.fill: parent
                     anchors.margins: 8
+                    textFormat: Text.PlainText
                     text: modelData.message
                     color: Theme.dangerColor
                     font.family: Theme.fontUi

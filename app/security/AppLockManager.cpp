@@ -183,11 +183,42 @@ bool AppLockManager::tryUnlock(const QString& pin)
     return false;
 }
 
+bool AppLockManager::verifyPinRateLimited(const QString& pin)
+{
+    // The Settings prompts (change PIN, disable lock, toggle the credential
+    // gate, toggle Hostile Location Protection) used to call
+    // AppLockStore::verifyPin() directly, bypassing every control tryUnlock()
+    // applies: no backoff, no persisted attempt counter, and no progress
+    // toward the ten-failure wipe. That is exactly the "unlimited guessing
+    // oracle behind a UI that still claims to be rate-limited" this class
+    // already refuses to serve on the unlock path.
+    if (m_attemptRecordingBroken)
+        return false;
+
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    if (LockoutPolicy::isLockedOut(m_store.lockoutUntilEpochMs(), now))
+        return false;
+
+    if (m_store.verifyPin(pin)) {
+        if (!m_store.setFailedAttemptCount(0) || !m_store.setLockoutUntilEpochMs(0))
+            m_attemptRecordingBroken = true;
+        m_sessionFailedAttempts = 0;
+        emit lockoutChanged();
+        return true;
+    }
+
+    if (!recordFailedAttempt(now))
+        return false;
+    if (LockoutPolicy::shouldWipe(failedAttempts()))
+        emit wipeRequested();
+    return false;
+}
+
 bool AppLockManager::setPin(const QString& currentPin, const QString& newPin)
 {
     // Changing an existing PIN requires the old one; setting the first PIN
     // does not (there is nothing to prove yet).
-    if (m_store.lockEnabled() && !m_store.verifyPin(currentPin))
+    if (m_store.lockEnabled() && !verifyPinRateLimited(currentPin))
         return false;
 
     // Enforced here, in C++, not only in Settings.qml: QML is a presentation
@@ -232,7 +263,7 @@ bool AppLockManager::disableLock(const QString& currentPin)
 {
     if (!m_store.lockEnabled())
         return true;
-    if (!m_store.verifyPin(currentPin))
+    if (!verifyPinRateLimited(currentPin))
         return false;
 
     // If the credential gate is on, the device secret is currently sealed
@@ -263,7 +294,7 @@ bool AppLockManager::setCredentialPinGateEnabled(bool enabled, const QString& cu
     // can't produce a "sealed under nothing" state.
     if (!m_store.lockEnabled())
         return false;
-    if (!m_store.verifyPin(currentPin))
+    if (!verifyPinRateLimited(currentPin))
         return false;
     if (m_store.credentialPinGateEnabled() == enabled)
         return true;
@@ -304,7 +335,7 @@ bool AppLockManager::setHostileLocationEnabled(bool enabled, const QString& curr
     // alongside a lock, and the UI gates it that way too.
     if (!m_store.lockEnabled())
         return false;
-    if (!m_store.verifyPin(currentPin))
+    if (!verifyPinRateLimited(currentPin))
         return false;
     if (m_settingsStore.hostileLocationProtectionEnabled() == enabled)
         return true;

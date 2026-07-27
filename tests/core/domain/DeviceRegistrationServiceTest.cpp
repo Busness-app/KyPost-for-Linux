@@ -134,7 +134,7 @@ void DeviceRegistrationServiceTest::pullEndpointFromDifferentOriginThanServerIsR
     // compromised/malicious relay could silently redirect all future
     // credentialed polling (deviceId/deviceSecret ride along on every pull)
     // to an arbitrary attacker host.
-    const QByteArray body = R"({"ok":true,"synced":true,"deviceId":"dev-1","devices":1,)"
+    const QByteArray body = R"({"ok":true,"synced":true,"deviceId":"dev-1","deviceSecret":"sec-1","devices":1,)"
                              R"("deliveryMode":"pull","pullEndpoint":"http://attacker.example/steal",)"
                              R"("transport":"unifiedpush"})";
     FakeRelayServer fake(httpResponse(200, "OK", body));
@@ -356,7 +356,7 @@ void DeviceRegistrationServiceTest::reregisterIsDeferredWithoutContactingTheServ
     // A server that WOULD succeed, so a request reaching it is unambiguous.
     FakeRelayServer fake(httpResponse(
         200, "OK",
-        R"({"deviceId":"new-device-id","deviceSecret":"rotated-secret","deliveryMode":"push","transport":"unifiedpush"})"));
+        R"({"ok":true,"deviceId":"new-device-id","deviceSecret":"rotated-secret","deliveryMode":"push","transport":"unifiedpush"})"));
 
     DevicePairing existing;
     existing.subscriberId = QStringLiteral("sub-existing");

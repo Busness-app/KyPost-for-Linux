@@ -4,6 +4,7 @@
 #include "domain/DevicePairing.h"
 #include "domain/PairingStore.h"
 #include "net/DeregisterClient.h"
+#include "net/HttpClient.h"
 #include "stores/SettingsStore.h"
 #include "util/ReentrancyGuard.h"
 
@@ -90,9 +91,32 @@ QString stateToString(PairingController::State state)
     return QStringLiteral("idle");
 }
 
-bool sameOrigin(const QUrl& a, const QUrl& b)
+// The only path a `reg` parameter may name. The registration endpoint is
+// well-known, so there is no reason for a link to nominate any other.
+constexpr auto kNativeRegisterPath = "/api/notifications/native/register";
+
+// The origin string shown in the confirm dialog -- the only thing standing
+// between a hostile deep link and a pairing.
+//
+// QUrl::authority() carries userinfo, which a hostile link could stuff with
+// an "@"-prefixed lookalike ("https://real.example@evil.example"), so the
+// origin is rebuilt from the parts that actually determine where the request
+// goes. host() alone is still not safe to display: it defaults to
+// QUrl::FullyDecoded, which turns punycode back into Unicode, and Qt applies
+// no mixed-script or whole-script-confusable policy (its IDN whitelist
+// contains .com). "https://mail.xn--urll-76d.com" then renders as
+// "mail.url<CYRILLIC KHA>l.com" -- glyph-identical in the monospace font this
+// is shown in. Always display the ACE form, as Chrome and Firefox do.
+// IPv6 literals are bracketed so the port cannot be misread as part of the
+// address.
+QString displayOrigin(const QUrl& url)
 {
-    return a.scheme() == b.scheme() && a.host() == b.host() && a.port() == b.port();
+    const QString host = url.host(QUrl::FullyEncoded);
+    QString origin = url.scheme() + QStringLiteral("://");
+    origin += host.contains(QLatin1Char(':')) ? QStringLiteral("[%1]").arg(host) : host;
+    if (url.port() != -1)
+        origin += QStringLiteral(":") + QString::number(url.port());
+    return origin;
 }
 
 std::optional<ParsedPairingLink> parseNativePairLink(const QUrl& url)
@@ -124,10 +148,20 @@ std::optional<ParsedPairingLink> parseNativePairLink(const QUrl& url)
     // value pendingPairOrigin() (below) ever surfaces to the confirm dialog.
     // Requiring reg to share srv's origin means the host the user approves
     // is always the host that's actually contacted.
+    //
+    // Origin alone was not enough: sameOrigin compares scheme/host/port and
+    // leaves the PATH free, so `reg` could name the user's own real mail
+    // server -- which is all the confirm dialog shows -- while pointing the
+    // POST at an unrelated same-origin endpoint. The relay's unauthenticated
+    // /api/health answers POST with a JSON object, which the registration
+    // client used to accept as a successful pairing, overwriting the working
+    // device credential with empty strings. Pin the path too.
     if (!parsed.registrationUrl.isEmpty()) {
         const QUrl registrationUrl(parsed.registrationUrl);
-        if (!isAcceptablePairingScheme(registrationUrl) || !sameOrigin(registrationUrl, serverUrl))
+        if (!isAcceptablePairingScheme(registrationUrl) || !sameUrlOrigin(registrationUrl, serverUrl)
+            || registrationUrl.path(QUrl::FullyEncoded) != QLatin1String(kNativeRegisterPath)) {
             return std::nullopt;
+        }
     }
 
     return parsed;
@@ -137,12 +171,13 @@ std::optional<ParsedPairingLink> parseNativePairLink(const QUrl& url)
 
 PairingController::PairingController(DeviceRegistrationService& service, PairingStore& pairingStore,
                                        SettingsStore& settingsStore, DeregisterClient& deregisterClient,
-                                       QObject* parent)
+                                       HttpClient& httpClient, QObject* parent)
     : QObject(parent)
     , m_service(service)
     , m_pairingStore(pairingStore)
     , m_settingsStore(settingsStore)
     , m_deregisterClient(deregisterClient)
+    , m_httpClient(httpClient)
 {
     // Unlike MailController/ContactsController (which deliberately start
     // empty until QML calls a load slot), the pairing badge/menu entries
@@ -186,14 +221,7 @@ QString PairingController::pendingPairOrigin() const
 {
     if (!m_pendingPair.has_value())
         return QString();
-    const QUrl url(m_pendingPair->serverBaseUrl);
-    // QUrl::authority() carries userinfo, which a hostile link could stuff with
-    // an "@"-prefixed lookalike ("https://real.example@evil.example"). Rebuild
-    // the origin from the parts that actually determine where the request goes.
-    QString origin = url.scheme() + QStringLiteral("://") + url.host();
-    if (url.port() != -1)
-        origin += QStringLiteral(":") + QString::number(url.port());
-    return origin;
+    return displayOrigin(QUrl(m_pendingPair->serverBaseUrl));
 }
 
 bool PairingController::pendingPairInsecure() const
@@ -231,7 +259,7 @@ void PairingController::refreshFromStore()
 {
     const std::optional<DevicePairing> pairing = m_pairingStore.load();
     const bool nowPaired = pairing.has_value();
-    const QString host = nowPaired ? QUrl(pairing->serverBaseUrl).host() : QString();
+    const QString host = nowPaired ? QUrl(pairing->serverBaseUrl).host(QUrl::FullyEncoded) : QString();
     const QString deviceId = nowPaired ? pairing->deviceId : QString();
 
     if (nowPaired == m_isPaired && host == m_pairedServerHost && deviceId == m_deviceId)
@@ -332,6 +360,16 @@ void PairingController::reset()
 
 void PairingController::removePairing()
 {
+    // Same reasoning as pairFromDeepLink() and confirmPendingPair(): a QQC2
+    // Popup or Kirigami.OverlaySheet renders inside QQuickOverlay, which Qt
+    // stacks above ordinary siblings -- including the app-lock overlay at
+    // z: 1000 -- so a Settings sheet left open when the app locked stays
+    // visible AND clickable over the PIN screen. This method deregisters the
+    // device server-side and destroys the credential, so it is the one that
+    // must not be reachable that way. QML z-order is not a security boundary.
+    if (m_appLocked)
+        return;
+
     ReentrancyGuard guard(m_inNetworkCall);
     if (!guard.entered())
         return;
@@ -351,6 +389,14 @@ void PairingController::removePairing()
                          i18n("Unpaired, but some credentials could not be removed from this "
                               "system's secret store. Check that your keyring is unlocked."));
     }
+    // The stored pin went with PairingStore::clear(), but the copy HttpClient
+    // is enforcing lives in memory for the process lifetime. Leaving it set is
+    // what made the certificate-mismatch banner's own advice impossible to
+    // follow: the re-pair POST met the relay's new certificate, the stale pin
+    // aborted it, and the banner came straight back until the user restarted
+    // -- which minimize-to-tray makes non-obvious and the UI never mentions.
+    m_httpClient.clearCertificatePin();
+
     // A fresh pin is captured on the next pair, so the old mismatch is no
     // longer meaningful -- and leaving the banner up after the user has
     // acted on it would be its own bug.

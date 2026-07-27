@@ -31,6 +31,7 @@ private slots:
     void scanQrPayloadWithNoContactCardReturnsAllEmptyFields();
     void scanQrPayload404SetsFriendlyMessage();
     void clearScanResultResetsFields();
+    void scanRejectsDotSegmentPathsThatResolveOffTheKeyEndpoint();
 
 private:
     static void savePairing(PairingStore& pairingStore, quint16 port);
@@ -392,5 +393,36 @@ void PgpQrControllerTest::clearScanResultResetsFields()
     QVERIFY(controller.scannedContactCardFields().value(QStringLiteral("org")).toString().isEmpty());
 }
 
+
+// The endpoint gate was `path().contains("/api/pgp/qr/key")`. Qt resolves dot
+// segments when it puts the request on the wire but keeps them in
+// QUrl::path(), so ".../api/pgp/qr/key/../../../../internal/admin" satisfied
+// the check while actually requesting "/internal/admin" -- and
+// isSafeQrTarget deliberately allows loopback over plain http, where the
+// certificate pin never engages.
+void PgpQrControllerTest::scanRejectsDotSegmentPathsThatResolveOffTheKeyEndpoint()
+{
+    FakeRelayServer fake(httpResponse(200, "OK", "{}"));
+
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    SecureStoreFile secureStore(dir.path());
+    PairingStore pairingStore(secureStore);
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    PgpQrClient client(http);
+    PgpQrRepository repository(client, pairingStore);
+    PgpQrController controller(repository, client);
+
+    controller.scanQrPayload(QStringLiteral("http://127.0.0.1:%1/api/pgp/qr/key/../../../../internal/admin")
+                                  .arg(fake.port()));
+
+    // Refused before any request went out.
+    QVERIFY(!controller.lastError().isEmpty());
+    QVERIFY(fake.receivedRequest().isEmpty());
+    QVERIFY(controller.scannedFingerprint().isEmpty());
+}
+
 QTEST_GUILESS_MAIN(PgpQrControllerTest)
 #include "PgpQrControllerTest.moc"
+

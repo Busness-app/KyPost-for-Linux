@@ -41,6 +41,7 @@ private slots:
     void sendMailUsesHtmlSendMode();
     void downloadAttachmentSanitizesPathTraversalInSuggestedName();
     void downloadAttachmentSanitizesPathTraversalInServerFilename();
+    void downloadAttachmentStripsEmbeddedNulFromTheFilename();
     void hostileLocationRefusesToOpenNonAllowlistedAttachmentTypes();
     void hostileLocationForcesTheExtensionToMatchTheDeclaredType();
     void findByMessageIdReturnsMapForCachedEmailAndEmptyMapWhenMissing();
@@ -1143,5 +1144,77 @@ void MailControllerTest::hostileLocationForcesTheExtensionToMatchTheDeclaredType
     controller.clearEphemeralAttachments();
 }
 
+
+// A NUL in the mail-supplied filename split Qt's own view of the path in two:
+// QFile::open() hands the encoded path to open(2), which truncates at the
+// NUL, while QFile::exists()/QFileInfo::exists()/QFile::remove() reject the
+// same string outright. Under Hostile Location Protection that defeated the
+// MIME-driven extension forcing -- "Invoice.desktop\0.pdf" looked like a
+// .pdf to the gate and landed as "Invoice.desktop" on disk, handing the
+// desktop's handler choice back to the sender -- and it silently no-op'd the
+// delete timer, the exit cleanup and the write rollback, so the file outlived
+// the session in the one mode that promises it cannot.
+void MailControllerTest::downloadAttachmentStripsEmbeddedNulFromTheFilename()
+{
+    QStandardPaths::setTestModeEnabled(true);
+
+    Database db;
+    QVERIFY(db.open(QStringLiteral(":memory:")));
+    EmailDao emailDao(db.handle());
+
+    const QByteArray attachmentBytes = "attachment-bytes";
+    FakeRelayServer fake(httpResponse(200, "OK", attachmentBytes, "application/octet-stream"));
+
+    QTemporaryDir secureDir;
+    QVERIFY(secureDir.isValid());
+    SecureStoreFile secureStore(secureDir.path());
+    PairingStore pairingStore(secureStore);
+    savePairing(pairingStore, fake.port());
+
+    QTemporaryDir cursorDir;
+    QVERIFY(cursorDir.isValid());
+    CursorStore cursorStore(cursorDir.filePath(QStringLiteral("cursor.ini")));
+
+    QTemporaryDir settingsDir;
+    QVERIFY(settingsDir.isValid());
+    SettingsStore settingsStore(settingsDir.filePath(QStringLiteral("settings.ini")));
+    KeywordRepository keywordRepository(settingsStore);
+
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    RelayMailSource source(http);
+    PgpBootstrapClient bootstrapClient(http);
+    PgpRecipientChecker recipientChecker(http);
+    MailRepository mailRepository(source, emailDao, pairingStore, cursorStore);
+    FolderDao folderDao(db.handle());
+    FolderClient folderClient(http);
+    FolderRepository folderRepository(folderClient, folderDao, pairingStore);
+
+    MailController controller(mailRepository, source, keywordRepository, pairingStore, folderRepository,
+                               settingsStore, bootstrapClient, recipientChecker);
+
+    const QString downloadDir = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
+    QDir().mkpath(downloadDir);
+    const QString truncatedTarget = QDir(downloadDir).filePath(QStringLiteral("Invoice.desktop"));
+    QFile::remove(truncatedTarget);
+
+    QString hostile = QStringLiteral("Invoice.desktop");
+    hostile.append(QChar(u'\0'));
+    hostile.append(QStringLiteral(".pdf"));
+    QCOMPARE(hostile.size(), 20);
+
+    QVERIFY(controller.downloadAttachment(QStringLiteral("Inbox"), QStringLiteral("42"), 0, hostile));
+
+    // The name open(2) would have truncated to must NOT be what landed.
+    QVERIFY(!QFile::exists(truncatedTarget));
+
+    // What did land keeps its real extension and is visible to the same Qt
+    // calls that clean it up -- exists() agreeing with open() is the point.
+    const QString expected = QDir(downloadDir).filePath(QStringLiteral("Invoice.desktop.pdf"));
+    QVERIFY(QFile::exists(expected));
+    QVERIFY(QFile::remove(expected));
+}
+
 QTEST_GUILESS_MAIN(MailControllerTest)
 #include "MailControllerTest.moc"
+

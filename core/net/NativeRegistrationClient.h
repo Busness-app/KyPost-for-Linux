@@ -2,6 +2,7 @@
 
 #include "net/NetworkError.h"
 
+#include <QByteArray>
 #include <QString>
 #include <QUrl>
 
@@ -58,6 +59,15 @@ struct NativeRegistrationResult
     RegistrationOutcome outcome = RegistrationOutcome::Failure;
     NativeRegistrationResponse response; // meaningful only when outcome == Success
     QString detail;                      // meaningful only when outcome == Failure
+    // SPKI SHA-256 of the certificate that served THIS registration, taken
+    // from the reply itself. The TOFU pin is captured from here rather than
+    // from a shared "last handshake" value on HttpClient, which a pooled
+    // keep-alive connection leaves pointing at whatever host handshook most
+    // recently -- including one named by a scanned QR code. Empty over plain
+    // http, and empty when the connection was reused with no fresh
+    // handshake evidence; the caller must not overwrite an existing pin with
+    // an empty value.
+    QByteArray peerSpkiSha256;
 };
 
 // Registers this device for native push with the Relay backend. Verified

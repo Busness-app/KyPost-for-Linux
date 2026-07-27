@@ -191,14 +191,20 @@ void ContactSyncRepository::queueDelete(const QString& uid, qint64 rev)
     // the server never saw this contact -- cancel the create outright
     // rather than pushing a tombstone for something that doesn't exist
     // server-side.
+    //
+    // EVERY queued change for this uid is dropped, not just the create. An
+    // edit saved after the create carries the temporary uid in its wire
+    // payload, so it survived this loop and was pushed on the next sync as a
+    // change naming a uid the server had never seen -- which the relay treats
+    // as a create under that uid. The contact the user deleted was recreated
+    // account-wide and echoed straight back into the local database.
     bool hadUnsyncedCreate = false;
     for (const PendingContactChangeRecord& record : m_pendingDao.findAll()) {
         if (record.contactUid != uid)
             continue;
-        if (deserializeContact(record.changeJson).uid.isEmpty()) {
-            m_pendingDao.deleteById(record.id);
+        if (deserializeContact(record.changeJson).uid.isEmpty())
             hadUnsyncedCreate = true;
-        }
+        m_pendingDao.deleteById(record.id);
     }
 
     m_contactDao.deleteById(uid);
@@ -249,7 +255,10 @@ ContactSyncOutcome ContactSyncRepository::sync()
         // mail sync.
         m_cursorStore.setContactBaseCursor(QString());
         m_contactDao.deleteAll();
-        m_pendingDao.deleteAll();
+        // Same reasoning as the success path below: only the snapshot that
+        // was pushed may be dropped.
+        for (const PendingContactChangeRecord& record : pending)
+            m_pendingDao.deleteById(record.id);
         return { ContactSyncStatus::Success,
                  ContactSyncSummary{ static_cast<int>(pending.size()), 0, 0 },
                  QString() };
@@ -286,7 +295,14 @@ ContactSyncOutcome ContactSyncRepository::sync()
         ++applied;
     }
 
-    m_pendingDao.deleteAll();
+    // Delete only what was actually pushed. deleteAll() truncated the whole
+    // queue, including anything enqueued DURING the call: HttpClient blocks on
+    // a nested QEventLoop, so QML keeps delivering clicks and a Save or Delete
+    // in the contact pane lands mid-sync. The user saw "Synced" while their
+    // edit -- a replaced PGP key, say -- was silently discarded and never
+    // reached the server.
+    for (const PendingContactChangeRecord& record : pending)
+        m_pendingDao.deleteById(record.id);
     m_cursorStore.setContactBaseCursor(QString::number(result.cursor));
 
     return { ContactSyncStatus::Success,

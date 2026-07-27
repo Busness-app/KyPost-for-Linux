@@ -48,6 +48,15 @@ public:
     // stored sealed (see core/security/CredentialCipher.h) and is unusable
     // until the PIN has been entered this session.
     bool credentialPinGateEnabled() const;
+
+    // The authoritative "is the credential PIN gate on" flag, exposed so
+    // PairingStore can consult it directly. PairingStore used to infer the
+    // gate's state from the presence and readability of its own sealed blob,
+    // which is not the same question: unpairing removed the blob while the
+    // flag stayed set, and a failed keychain read is indistinguishable from
+    // "no blob" -- both made the next write take the plaintext branch while
+    // the UI still reported the gate as On.
+    static constexpr auto kCredentialGateKey = "applock.credentialPinGateEnabled";
     bool setCredentialPinGateEnabled(bool enabled);
 
 private:

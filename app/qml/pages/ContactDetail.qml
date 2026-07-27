@@ -416,11 +416,13 @@ Item {
                             SectionLabel {
                                 Layout.preferredWidth: 70
                                 Layout.alignment: Qt.AlignTop
+                                textFormat: Text.PlainText
                                 text: modelData.label
                             }
                             Text {
                                 Layout.fillWidth: true
                                 Layout.alignment: Qt.AlignTop
+                                textFormat: Text.PlainText
                                 text: modelData.value !== "" ? modelData.value : "—"
                                 color: Theme.inkStrong
                                 font.family: Theme.fontMono
@@ -442,6 +444,10 @@ Item {
                     DangerButton {
                         text: i18n("Delete")
                         visible: root.uid !== ""
+                        // Matches ContactsList.qml: a sync blocks the GUI
+                        // thread on a nested event loop, so an unguarded
+                        // button stays clickable while it runs.
+                        enabled: !ContactsApp.isBusy
                         onClicked: root.doDelete()
                     }
                     Item { Layout.fillWidth: true }
@@ -671,6 +677,7 @@ Item {
                         model: root.availableGroups
                         delegate: CheckBox {
                             Layout.fillWidth: true
+                            textFormat: Text.PlainText
                             text: modelData.name
                             checked: root.editingGroupIds.indexOf(modelData.id) !== -1
                             // QQC2's implicit `control` id (documented on
@@ -709,6 +716,7 @@ Item {
                 Text {
                     Layout.fillWidth: true
                     visible: ContactsApp.lastError !== ""
+                    textFormat: Text.PlainText
                     text: ContactsApp.lastError
                     color: Theme.dangerColor
                     font.family: Theme.fontUi
@@ -727,7 +735,7 @@ Item {
                     Item { Layout.fillWidth: true }
                     PrimaryButton {
                         text: i18n("Save")
-                        enabled: nameField.text.trim() !== ""
+                        enabled: !ContactsApp.isBusy && nameField.text.trim() !== ""
                         onClicked: root.trySave()
                     }
                 }

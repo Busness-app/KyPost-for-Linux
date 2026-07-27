@@ -141,6 +141,23 @@ QString PgpQrController::myQrImageDataUrl() const
     return QStringLiteral("data:image/png;base64,") + QString::fromLatin1(pngBytes.toBase64());
 }
 
+namespace {
+
+// Both the initial QR target and every redirect hop must satisfy this.
+//
+// The path is normalized first: Qt resolves dot segments when it puts the
+// request on the wire but keeps them in QUrl::path(), so
+// "/api/pgp/qr/key/../../../../internal/admin" satisfied a naive
+// contains() check while actually requesting "/internal/admin".
+bool isPermittedQrEndpoint(const QUrl& url)
+{
+    if (!isSafeQrTarget(url))
+        return false;
+    return url.adjusted(QUrl::NormalizePathSegments).path().contains(QStringLiteral("/api/pgp/qr/key"));
+}
+
+} // namespace
+
 void PgpQrController::scanQrPayload(const QString& decodedText)
 {
     ReentrancyGuard guard(m_inNetworkCall);
@@ -151,7 +168,7 @@ void PgpQrController::scanQrPayload(const QString& decodedText)
     // scan target may be a different server than this device's own paired
     // one, so this deliberately doesn't route through m_repository at all.
     const QUrl qrUrl(decodedText);
-    if (!qrUrl.isValid() || !isSafeQrTarget(qrUrl) || !qrUrl.path().contains(QStringLiteral("/api/pgp/qr/key"))) {
+    if (!qrUrl.isValid() || !isPermittedQrEndpoint(qrUrl)) {
         setLastError(i18n("That QR code isn't a PGP key-exchange code"));
         return;
     }
@@ -163,8 +180,12 @@ void PgpQrController::scanQrPayload(const QString& decodedText)
     // never re-validated. Passing isSafeQrTarget through as fetchKey's
     // redirect validator closes that gap: every hop, not just the
     // QR-encoded URL itself, has to pass the same check.
-    const PgpQrKeyResult result =
-        m_client.fetchKey(qrUrl, [](const QUrl& target) { return isSafeQrTarget(target); });
+    // The redirect validator must apply the SAME predicate as the initial
+    // check, path included. Passing only isSafeQrTarget let a permitted host
+    // 302 the fetch to any path on a loopback service -- which
+    // isSafeQrTarget deliberately allows over plain http, so the certificate
+    // pin never engaged either.
+    const PgpQrKeyResult result = m_client.fetchKey(qrUrl, isPermittedQrEndpoint);
     setBusy(false);
 
     if (!result.error.has_value()) {

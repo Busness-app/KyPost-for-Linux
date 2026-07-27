@@ -4,6 +4,7 @@
 #include <QSqlQuery>
 #include <QStringList>
 #include <QTemporaryDir>
+#include <limits>
 #include <QTest>
 
 class DatabaseTest : public QObject
@@ -13,6 +14,8 @@ class DatabaseTest : public QObject
 private slots:
     void opensInMemoryAndAppliesSchema();
     void openIsIdempotentOnRealFile();
+    void refusesAnOutOfRangeSchemaVersion_data();
+    void refusesAnOutOfRangeSchemaVersion();
 
     // Review-finding regressions.
     void splitsStatementsOnTopLevelSemicolonsOnly();
@@ -226,6 +229,48 @@ void DatabaseTest::migrationIsAtomicSoAFailureLeavesNoHalfAppliedSchema()
     QVERIFY(versionQuery.exec(QStringLiteral("PRAGMA user_version")));
     QVERIFY(versionQuery.next());
     QCOMPARE(versionQuery.value(0).toInt(), 5);
+}
+
+
+// PRAGMA user_version was read into an int and bounded only above, then used
+// as an index into a five-element array of function pointers -- and CALLED.
+// A negative value indexed before the array and jumped to whatever qword sat
+// there, so a torn write or a database from an unrelated build turned into an
+// unrecoverable startup crash on every launch. INT_MAX was quieter and worse:
+// `version + 1` is signed-overflow UB, which let the optimizer drop the
+// migration loop and open the database with no migration applied at all.
+void DatabaseTest::refusesAnOutOfRangeSchemaVersion_data()
+{
+    QTest::addColumn<int>("version");
+    QTest::newRow("negative") << -1;
+    QTest::newRow("far-negative") << -6;
+    QTest::newRow("int-min") << std::numeric_limits<int>::min();
+    QTest::newRow("int-max") << std::numeric_limits<int>::max();
+    QTest::newRow("just-past-known") << 9999;
+}
+
+void DatabaseTest::refusesAnOutOfRangeSchemaVersion()
+{
+    QFETCH(int, version);
+
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("poisoned.db"));
+
+    {
+        // A real, openable database carrying an impossible user_version.
+        QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), QStringLiteral("poison"));
+        db.setDatabaseName(path);
+        QVERIFY(db.open());
+        QSqlQuery q(db);
+        QVERIFY(q.exec(QStringLiteral("PRAGMA user_version = %1").arg(version)));
+        db.close();
+    }
+    QSqlDatabase::removeDatabase(QStringLiteral("poison"));
+
+    Database database;
+    // Refused, not crashed and not silently opened unmigrated.
+    QVERIFY(!database.open(path));
 }
 
 QTEST_GUILESS_MAIN(DatabaseTest)

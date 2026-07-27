@@ -126,6 +126,17 @@ bool Database::open(const QString& path)
     if (!versionQuery.exec(QStringLiteral("PRAGMA user_version")) || !versionQuery.next())
         return false;
     const int version = versionQuery.value(0).toInt();
+    // Bounded on BOTH sides before it is used as an array index and a loop
+    // bound. Negative values indexed kKyPostMigrationSql before its start and
+    // CALLED whatever function pointer sat there -- a torn write or a
+    // rolled-back database turned into an unrecoverable startup crash, on
+    // every launch, with no in-app recovery. INT_MAX was worse in a quieter
+    // way: `version + 1` is signed-overflow UB, which let the optimizer elide
+    // the loop entirely and open the database with no migration applied.
+    if (version < 0 || version > kKyPostMigrationCount) {
+        qWarning("Database: refusing to open a database with unsupported schema version %d", version);
+        return false;
+    }
 
     // One transaction per migration, covering both its statements AND the
     // user_version bump. SQLite has transactional DDL, so this is real: a

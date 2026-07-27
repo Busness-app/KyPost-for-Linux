@@ -3,6 +3,7 @@
 #include "domain/DevicePairing.h"
 #include "domain/PairingStore.h"
 #include "net/HttpClient.h"
+#include "security/CredentialCipher.h"
 #include "stores/SettingsStore.h"
 
 #include <QUrl>
@@ -22,19 +23,6 @@ QString derivePullEndpoint(const QUrl& serverBaseUrl)
         pull.setPort(serverBaseUrl.port());
     pull.setPath(QStringLiteral("/api/notifications/native/pull"));
     return pull.toString();
-}
-
-// VibeSec finding: pullEndpoint used to be trusted verbatim from the
-// registration response and persisted, then hit on every future poll with
-// the device's real deviceId/deviceSecret attached
-// (PushNotificationClient::pull). A single malicious or compromised
-// response from an otherwise-trusted relay could silently redirect all
-// future credentialed polling to an arbitrary host, persistently, until
-// re-pairing. Only accept a pullEndpoint that shares scheme+host+port with
-// the server the user actually paired with.
-bool sameOrigin(const QUrl& a, const QUrl& b)
-{
-    return a.scheme() == b.scheme() && a.host() == b.host() && a.port() == b.port();
 }
 
 } // namespace
@@ -69,6 +57,19 @@ NativeRegistrationResult DeviceRegistrationService::pair(const PairingParams& pa
         return deferred;
     }
 
+    // Captured BEFORE the network call. The check above is only true at the
+    // moment it runs: HttpClient blocks on a nested QEventLoop, so QML keeps
+    // delivering events and a window minimise reaches AppLock.lockNow(),
+    // which drops the session key mid-flight. save() then failed its own
+    // guard and this function used to respond by clearing the whole pairing.
+    const CredentialCipher::SessionKey sealingKey = m_pairingStore.sealingKeySnapshot();
+
+    // The registration is what establishes a new trust anchor, so the old
+    // pin must not be allowed to abort it -- that is what made the
+    // certificate-mismatch banner's own "unpair and pair again" advice
+    // impossible to follow without restarting the process.
+    m_httpClient.clearCertificatePin();
+
     const NativeRegistrationResult result = m_client.registerDevice(
         QUrl(params.registrationUrl), params.subscriberId, params.pairingToken, deviceToken, QString(), params.deviceName);
 
@@ -86,11 +87,18 @@ NativeRegistrationResult DeviceRegistrationService::pair(const PairingParams& pa
     // invalidating whatever was stored before -- persist unconditionally,
     // never fall back to the previous value.
     pairing.deviceSecret = result.response.deviceSecret;
-    // Trust on first use: pin whatever key just served the registration.
+    // Trust on first use: pin the key that served THIS registration, read
+    // from the reply itself. Reading a shared "last handshake seen" value on
+    // HttpClient instead meant a pooled keep-alive connection (the steady
+    // state, given the 90 s poll) left it holding whatever host handshook
+    // most recently -- so a scanned QR code aimed at an attacker's server
+    // could decide what the next unattended re-registration pinned as the
+    // relay's key, permanently and across restarts.
+    //
     // Empty over plain http (no handshake, so nothing to pin), which is the
     // testing case -- enforcement then stays off rather than failing every
     // later request.
-    pairing.certificateSpkiSha256 = QString::fromLatin1(m_httpClient.lastPeerSpkiSha256().toBase64());
+    pairing.certificateSpkiSha256 = QString::fromLatin1(result.peerSpkiSha256.toBase64());
 
     // Checked, not fire-and-forget. SecureStoreKeychain::set() returns false
     // whenever no Secret Service provider is running -- a bare WM session, a
@@ -99,7 +107,7 @@ NativeRegistrationResult DeviceRegistrationService::pair(const PairingParams& pa
     // burned a one-shot deviceSecret, nothing reached disk, and the UI still
     // reported "paired". The next launch was unpaired, and re-pairing then
     // failed too because the pairing token had already been consumed.
-    if (!m_pairingStore.save(pairing)) {
+    if (!m_pairingStore.save(pairing, sealingKey)) {
         NativeRegistrationResult persistFailed = result;
         persistFailed.outcome = RegistrationOutcome::Failure;
         persistFailed.detail = QStringLiteral(
@@ -118,14 +126,17 @@ NativeRegistrationResult DeviceRegistrationService::pair(const PairingParams& pa
     }
 
     // Enforce immediately, so even the requests made later in this same
-    // session are checked rather than waiting for the next launch.
-    if (!pairing.certificateSpkiSha256.isEmpty())
-        m_httpClient.setCertificatePin(m_httpClient.lastPeerSpkiSha256());
+    // session are checked rather than waiting for the next launch. Scoped to
+    // the paired server's origin: the pin describes that relay, and enforcing
+    // it on the deliberately cross-server PGP QR fetch only ever produced a
+    // false "your mail server is being impersonated" alarm.
+    if (!result.peerSpkiSha256.isEmpty())
+        m_httpClient.setCertificatePin(result.peerSpkiSha256, QUrl(params.serverBaseUrl));
 
     const QUrl serverOrigin(params.serverBaseUrl);
     const QUrl advertisedPullEndpoint(result.response.pullEndpoint);
     const QString pullEndpoint = (!result.response.pullEndpoint.isEmpty()
-                                   && sameOrigin(advertisedPullEndpoint, serverOrigin))
+                                   && sameUrlOrigin(advertisedPullEndpoint, serverOrigin))
         ? result.response.pullEndpoint
         : derivePullEndpoint(serverOrigin);
 

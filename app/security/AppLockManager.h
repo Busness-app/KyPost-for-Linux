@@ -136,6 +136,10 @@ private:
     // Records a failed attempt durably. False means the store refused, which
     // this class treats as a hard stop -- see tryUnlock().
     bool recordFailedAttempt(qint64 nowEpochMs);
+    // Every PIN verification outside tryUnlock() goes through here, so the
+    // lockout, the session floor and the wipe threshold apply to the Settings
+    // prompts too. A PIN is only as strong as the slowest way to guess it.
+    bool verifyPinRateLimited(const QString& pin);
 
     AppLockStore& m_store;
     SettingsStore& m_settingsStore;

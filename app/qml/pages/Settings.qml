@@ -114,6 +114,7 @@ Item {
                 Repeater {
                     model: root.paneNames
                     delegate: PillTab {
+                        textFormat: Text.PlainText
                         text: modelData
                         selected: root.currentPane === index
                         onClicked: root.currentPane = index
@@ -257,6 +258,7 @@ Item {
                             // (item 3) forbids linking KI18n into -- they're
                             // also the literal identifier Theme.setTheme()
                             // stores/compares, not just display text.
+                            textFormat: Text.PlainText
                             text: modelData
                             color: Theme.inkStrong
                             font.family: Theme.fontUi
@@ -319,6 +321,7 @@ Item {
 
                             Text {
                                 Layout.fillWidth: true
+                                textFormat: Text.PlainText
                                 text: modelData.keyword
                                 color: Theme.inkStrong
                                 font.family: Theme.fontUi
@@ -364,6 +367,7 @@ Item {
 
                     Text {
                         Layout.fillWidth: true
+                        textFormat: Text.PlainText
                         text: ContactsApp.lastError !== "" ? ContactsApp.lastError
                             : (ContactsApp.statusMessage !== "" ? ContactsApp.statusMessage : i18n("No sync yet."))
                         color: ContactsApp.lastError !== "" ? Theme.dangerColor : Theme.ink

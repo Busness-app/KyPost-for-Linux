@@ -30,6 +30,8 @@ private slots:
     void wrongPinNeverReveals();
     void permanentUnsealRestoresPlaintextAndDropsBlob();
     void clearDropsTheSealedBlobToo();
+    void unpairingClearsTheGateFlagSoARePairDoesNotWritePlaintext();
+    void aGateFlagWithNoBlobStillRefusesAPlaintextWrite();
 
     // Regressions for the rotated-secret finding (3 above).
     void savingARotatedSecretResealsItRatherThanWritingPlaintext();
@@ -270,5 +272,59 @@ void PairingStoreSealTest::canResealTracksTheSessionRatherThanTheGateFlag()
     QVERIFY(store.canResealDeviceSecret());
 }
 
+
+// PairingStore used to infer the gate's state from its own sealed blob.
+// clear() removes the blob and could not reach the flag, so unpairing and
+// pairing again wrote the new device secret in PLAINTEXT while Settings still
+// displayed "Require unlock to receive push and MFA: On".
+void PairingStoreSealTest::unpairingClearsTheGateFlagSoARePairDoesNotWritePlaintext()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    SecureStoreFile secureStore(dir.path());
+    PairingStore store(secureStore);
+
+    DevicePairing pairing;
+    pairing.subscriberId = QStringLiteral("sub-1");
+    pairing.deviceSecret = QStringLiteral("original-secret");
+    QVERIFY(store.save(pairing));
+    QVERIFY(store.sealDeviceSecret(QStringLiteral("123456")));
+    QVERIFY(secureStore.set(QStringLiteral("applock.credentialPinGateEnabled"), QStringLiteral("1")));
+
+    QVERIFY(store.clear());
+
+    // The flag went with the blob, so the gate no longer claims to protect
+    // something that is not there.
+    QCOMPARE(secureStore.get(QStringLiteral("applock.credentialPinGateEnabled")).value_or(QString()),
+             QStringLiteral("0"));
+}
+
+// The other direction: a flag left set with no blob (or a blob the keychain
+// could not read) must NOT be treated as "gate off, plaintext is fine".
+void PairingStoreSealTest::aGateFlagWithNoBlobStillRefusesAPlaintextWrite()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    SecureStoreFile secureStore(dir.path());
+    PairingStore store(secureStore);
+
+    // Gate on per the authoritative flag, but no sealed blob and no session
+    // key -- the state a failed keychain read produces.
+    QVERIFY(secureStore.set(QStringLiteral("applock.credentialPinGateEnabled"), QStringLiteral("1")));
+
+    DevicePairing rotated;
+    rotated.subscriberId = QStringLiteral("sub-1");
+    rotated.deviceSecret = QStringLiteral("rotated-secret");
+
+    QVERIFY(!store.canResealDeviceSecret());
+    QVERIFY(!store.save(rotated));
+
+    // Nothing in the clear.
+    const std::optional<QString> raw = secureStore.get(QStringLiteral("pairing.deviceSecret"));
+    QVERIFY(!raw.has_value() || raw->isEmpty());
+    QVERIFY(!raw.has_value() || *raw != QStringLiteral("rotated-secret"));
+}
+
 QTEST_APPLESS_MAIN(PairingStoreSealTest)
 #include "PairingStoreSealTest.moc"
+

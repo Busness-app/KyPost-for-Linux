@@ -12,44 +12,45 @@
 
 ## What is this?
 
-KyPost is the Linux desktop and KDE Mobile client for a relay-based mail service. It speaks
-no IMAP or SMTP — every bit of mail, contacts, and push-notification traffic goes through the
-KyPost relay backend. One codebase targets two UI surfaces:
+KyPost is the Linux desktop and KDE Mobile client for a relay-based mail service. It does not
+use IMAP or SMTP. The KyPost relay backend carries all mail, contact, and push-notification
+traffic. One codebase targets two UI surfaces:
 
-- **Linux Desktop** — KDE Plasma, packaged as a Flatpak, sidebar/list/detail 3-column layout.
-- **KDE Mobile** — Plasma Mobile, same Flatpak, bottom-tab push-navigation layout.
+- **Linux Desktop** — KDE Plasma, packaged as a Flatpak, with a 3-column sidebar, list, and
+  detail layout.
+- **KDE Mobile** — Plasma Mobile, the same Flatpak, with a bottom-tab push-navigation layout.
 
-It's a sibling client to an Android app and a SwiftUI macOS/iOS app, all talking to the same
-Go relay backend.
+KyPost is a sibling client to an Android app and to a SwiftUI macOS/iOS app. All three clients
+use the same Go relay backend.
 
 ## Features
 
-- **Inbox, message detail, and an HTML composer** — reply, reply-all, forward, and send with
-  attachments and drafts, with email bodies rendered via a sandboxed `WebEngineView` (JS and
-  remote images disabled).
-- **Server-side folders** — the standard mailboxes plus any subfolders, which can be created,
-  renamed and deleted from the client.
-- **Contacts** — synced list/detail views, local create/edit with offline queueing, group
-  membership, and dedupe.
-- **PGP-aware** — key exchange over QR (scan or share a public key via camera, with
-  out-of-band fingerprint confirmation), and clear handling of end-to-end encrypted mail this
-  client cannot read, with a route to open it in webmail. No private key is ever held here.
-- **Compose autocomplete** — type a name or address in Compose and pick from synced contacts.
-- **Push notifications over [UnifiedPush](https://unifiedpush.org/)** — a two-tier fallback
-  (system distributor → 90s polling), so mail still arrives without a UnifiedPush
-  distributor installed, and nothing but your own distributor's push server ever sees a
+- **Inbox, message detail, and an HTML composer** — reply, reply-all, forward, and send, with
+  attachments and drafts. A sandboxed `WebEngineView` renders each email body with JavaScript
+  and remote images disabled.
+- **Server-side folders** — the standard mailboxes and any subfolder. The client can create,
+  rename, and delete these folders.
+- **Contacts** — synced list and detail views. The client creates and edits contacts offline
+  and queues the changes. It also handles group membership and duplicate entries.
+- **PGP support** — the client exchanges public keys through QR codes. Scan or show a key with
+  the camera, then confirm the fingerprint out of band. The client marks encrypted mail that it
+  cannot read and gives a route to webmail. The client never holds a private key.
+- **Compose autocomplete** — type a name or an address in Compose, then select a synced
+  contact.
+- **Push notifications over [UnifiedPush](https://unifiedpush.org/)** — two tiers with
+  fallback: the system distributor, then 90-second polling. Mail still arrives when no
+  UnifiedPush distributor is installed. Only the push server of your own distributor sees a
   notification.
-- **Security** — an optional PIN lock with lockout and wipe-on-repeated-failure, an option to
-  encrypt the pairing credential behind that PIN, trust-on-first-use TLS certificate pinning,
-  and Hostile Location Protection (nothing cached on disk at all).
-- **15 themes**, transcribed byte-for-byte from the design system shared across every sibling
-  client.
-- **Device pairing** via a pasted or `kypost://` deep link.
-- **Localized** — every user-facing string is wrapped for translation (`po/`).
+- **Security** — an optional PIN lock with a lockout and a wipe after repeated failures. You
+  can encrypt the pairing credential behind that PIN. The client pins the TLS certificate on
+  first use. Hostile Location Protection writes nothing to disk.
+- **15 themes** — copied byte for byte from the design system that every sibling client shares.
+- **Device pairing** — paste a link, or use a `kypost://` deep link.
+- **Localized** — the code wraps every user-facing string for translation (`po/`).
 
 ## Installing
 
-KyPost is distributed from its own signed Flatpak remote:
+KyPost has its own signed Flatpak remote:
 
 ```sh
 flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
@@ -57,16 +58,17 @@ flatpak remote-add --if-not-exists kypost https://yoshiofthewire.github.io/KyPos
 flatpak install kypost com.urlxl.mail
 ```
 
-Updates then come through `flatpak update` as normal. The Flathub remote supplies the
-`org.kde.Platform` runtime; KyPost itself is not on Flathub and never will be — Flathub bans
-applications that use AI, and KyPost's backend does. Single-file `.flatpak` bundles are also
-attached to each [release](https://github.com/Yoshiofthewire/KyPost-for-Linux/releases), but
-installing one gives you no automatic updates. See [`docs/DISTRIBUTION.md`](docs/DISTRIBUTION.md).
+The normal `flatpak update` command then installs new versions. The Flathub remote supplies the
+`org.kde.Platform` runtime. KyPost itself is not on Flathub and never will be. Flathub bans
+applications that use AI, and the KyPost backend uses AI. Each
+[release](https://github.com/Yoshiofthewire/KyPost-for-Linux/releases) also attaches a
+single-file `.flatpak` bundle, but a bundle gives you no automatic updates. For more
+information, see [`docs/DISTRIBUTION.md`](docs/DISTRIBUTION.md).
 
 ## Building
 
-Qt6-only (Qt5/Ubuntu Touch support was dropped; see [`AGENTS.md`](AGENTS.md) for why and when
-that's revisited). A single out-of-tree build directory:
+KyPost needs Qt6. The project dropped Qt5 and Ubuntu Touch support. [`AGENTS.md`](AGENTS.md)
+gives the reason and the conditions for a new review. Use one out-of-tree build directory:
 
 ```sh
 cmake -B build -S .
@@ -74,10 +76,10 @@ cmake --build build
 ctest --test-dir build
 ```
 
-Dependencies (Arch package names shown; see [`.github/workflows/ci.yml`](.github/workflows/ci.yml)
-for the Ubuntu/KDE-neon-archive equivalents): `qt6-base`, `qt6-declarative`, `qt6-webengine`,
+Dependencies, with Arch package names: `qt6-base`, `qt6-declarative`, `qt6-webengine`,
 `kirigami` (KF6), `knotifications` (KF6), `kdbusaddons` (KF6), `ki18n` (KF6), `qtkeychain-qt6`,
-`kunifiedpush`, `zxing-cpp`.
+`kunifiedpush`, `zxing-cpp`. For the Ubuntu and KDE neon archive equivalents, see
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 
 ### Flatpak
 
@@ -87,14 +89,14 @@ flatpak-builder --user --force-clean --install-deps-from=flathub \
 flatpak-builder --run build-flatpak packaging/flatpak/com.urlxl.mail.yaml kypost
 ```
 
-This is the packaging target for both Linux Desktop and Plasma Mobile. Click/Ubuntu Touch
-packaging (`packaging/click/`) is an intentionally empty placeholder until UBports ships a
-Qt6/KF6 track.
+This manifest is the packaging target for Linux Desktop and for Plasma Mobile. The Click and
+Ubuntu Touch directory (`packaging/click/`) is a deliberate empty placeholder. It stays empty
+until UBports releases a Qt6/KF6 track.
 
-CI builds this manifest on every PR and publishes a signed OSTree repository to the
-`gh-pages` branch on every push to `main`
-([`.github/workflows/flatpak.yml`](.github/workflows/flatpak.yml)); that published repo is
-what the `flatpak remote-add` above points at.
+CI builds this manifest for every pull request. For every push to `main`, CI publishes a signed
+OSTree repository to the `gh-pages` branch
+([`.github/workflows/flatpak.yml`](.github/workflows/flatpak.yml)). The `flatpak remote-add`
+command above uses that published repository.
 
 ## Architecture
 
@@ -112,13 +114,13 @@ po/         — gettext translation catalogs
 docs/       — local tooling/setup notes
 ```
 
-The `core/` boundary (Qt Core/Network/Sql only) is the rule most likely to be broken by
-accident when adding a dependency there — see `AGENTS.md` Section 5.
+The `core/` boundary permits Qt Core, Network, and Sql only. A new dependency in `core/` breaks
+this rule most easily. See `AGENTS.md` Section 5.
 
-[`Linux_QT_Client_Plan.md`](Linux_QT_Client_Plan.md) is the authoritative design source —
-architecture decisions, wire contracts, the push-transport state machine, and a running list
-of known risks/gaps. [`TESTING.md`](TESTING.md) is the manual verification checklist. `AGENTS.md`
-summarizes the rules most likely to be violated by accident when making a change.
+[`Linux_QT_Client_Plan.md`](Linux_QT_Client_Plan.md) is the authoritative design source. It
+holds the architecture decisions, the wire contracts, the push-transport state machine, and a
+current list of known risks and gaps. [`TESTING.md`](TESTING.md) is the manual verification
+checklist. `AGENTS.md` summarizes the rules that a change breaks most easily.
 
 ## License
 

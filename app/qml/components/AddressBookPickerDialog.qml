@@ -143,6 +143,7 @@ Item {
 
                             Text {
                                 Layout.fillWidth: true
+                                textFormat: Text.PlainText
                                 text: modelData.name !== "" ? modelData.name : modelData.email
                                 color: Theme.inkStrong
                                 font.family: Theme.fontUi
@@ -151,6 +152,7 @@ Item {
                             }
                             Text {
                                 Layout.fillWidth: true
+                                textFormat: Text.PlainText
                                 text: modelData.email
                                 color: Theme.ink
                                 font.family: Theme.fontUi
@@ -160,6 +162,7 @@ Item {
                             Text {
                                 Layout.fillWidth: true
                                 visible: modelData.department !== ""
+                                textFormat: Text.PlainText
                                 text: modelData.department
                                 color: Theme.ink
                                 font.family: Theme.fontUi

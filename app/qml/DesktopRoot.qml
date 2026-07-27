@@ -672,7 +672,14 @@ Kirigami.ApplicationWindow {
             property string popMessageId: ""
             property string popFolder: ""
 
-            title: (poppedEmail.email && poppedEmail.email.subject) ? poppedEmail.email.subject : i18n("Email")
+            // Window.title is drawn by the compositor, so LockOverlay cannot
+            // cover it: the subject stayed legible in the titlebar, taskbar and
+            // Alt-Tab switcher while the PIN screen was up. Same reasoning as
+            // NotificationDispatcher::setContentHidden(), which redacts push
+            // content for exactly this reason.
+            title: AppLock.locked
+                ? i18n("Email")
+                : ((poppedEmail.email && poppedEmail.email.subject) ? poppedEmail.email.subject : i18n("Email"))
 
             EmailDetail {
                 id: poppedEmail
@@ -761,7 +768,9 @@ Kirigami.ApplicationWindow {
 
             property string popUid: ""
 
-            title: (poppedContact.contact && poppedContact.contact.fn) ? poppedContact.contact.fn : i18n("Contact")
+            title: AppLock.locked
+                ? i18n("Contact")
+                : ((poppedContact.contact && poppedContact.contact.fn) ? poppedContact.contact.fn : i18n("Contact"))
 
             ContactDetail {
                 id: poppedContact
@@ -961,6 +970,7 @@ Kirigami.ApplicationWindow {
                                 anchors.verticalCenter: parent.verticalCenter
                                 anchors.left: parent.left
                                 anchors.leftMargin: 10 + (modelData.depth || 0) * 14
+                                textFormat: Text.PlainText
                                 text: modelData.displayName
                                 color: Theme.inkStrong
                                 font.family: Theme.fontUi
@@ -1167,6 +1177,7 @@ Kirigami.ApplicationWindow {
                     Text {
                         Layout.fillWidth: true
                         visible: MailApp.lastError !== ""
+                        textFormat: Text.PlainText
                         text: MailApp.lastError
                         color: Theme.dangerColor
                         font.family: Theme.fontUi
@@ -1236,6 +1247,7 @@ Kirigami.ApplicationWindow {
 
                                     Text {
                                         Layout.fillWidth: true
+                                        textFormat: Text.PlainText
                                         text: model.sender
                                         color: Theme.inkStrong
                                         font.family: Theme.fontUi
@@ -1254,6 +1266,7 @@ Kirigami.ApplicationWindow {
 
                                         Text {
                                             visible: !!model.pgpMarker
+                                            textFormat: Text.PlainText
                                             text: model.pgpMarker || ""
                                             color: Theme.inkStrong
                                             font.family: Theme.fontUi
@@ -1265,6 +1278,7 @@ Kirigami.ApplicationWindow {
                                         }
                                         Text {
                                             Layout.fillWidth: true
+                                            textFormat: Text.PlainText
                                             text: model.subject
                                             color: Theme.inkStrong
                                             font.family: Theme.fontUi
@@ -1274,6 +1288,7 @@ Kirigami.ApplicationWindow {
                                     }
                                     Text {
                                         Layout.fillWidth: true
+                                        textFormat: Text.PlainText
                                         text: model.preview
                                         color: Theme.ink
                                         font.family: Theme.fontUi
@@ -1453,5 +1468,27 @@ Kirigami.ApplicationWindow {
     // ---- app lock -----------------------------------------------------
     // One per Window, including every pop-out below -- see
     // components/LockOverlay.qml for why this cannot live only here.
+    // Every QQC2 Popup and Kirigami.OverlaySheet renders inside QQuickOverlay,
+    // which Qt stacks ABOVE the window's content item -- so LockOverlay's
+    // z: 1000 cannot reach it, and a sheet left open when the app locked
+    // stayed visible and clickable over the PIN screen. Because these popups
+    // are modal, their dimmer also swallowed clicks aimed at the PIN field, so
+    // they blocked unlocking as well as sitting on top of it.
+    //
+    // Only root-scope ids are reachable here; menus declared inside delegates
+    // are transient and close on their own.
+    Connections {
+        target: AppLock
+        function onLockedChanged() {
+            if (!AppLock.locked)
+                return;
+            settingsSheet.close();
+            pgpMyQrCodeSheet.close();
+            pgpScanContactKeySheet.close();
+            folderPrompt.close();
+            folderDeleteConfirm.close();
+        }
+    }
+
     LockOverlay { id: unlockOverlay }
 }

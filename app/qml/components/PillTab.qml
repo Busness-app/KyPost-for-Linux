@@ -43,6 +43,7 @@ Rectangle {
     Text {
         id: label
         anchors.centerIn: parent
+        textFormat: Text.PlainText
         text: root.text
         color: root.selected ? Theme.readableOnAccent : Theme.ink
         font.family: Theme.fontUi

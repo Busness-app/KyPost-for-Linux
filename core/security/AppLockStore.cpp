@@ -12,9 +12,14 @@ namespace {
 const QString kLockEnabled = QStringLiteral("applock.enabled");
 const QString kPinSalt = QStringLiteral("applock.pinSalt");
 const QString kPinHash = QStringLiteral("applock.pinHash");
+// Salt and hash as ONE value, so a reader can never observe them
+// half-updated. Written as "<saltB64>:<hashB64>". kPinSalt/kPinHash above
+// are the pre-2026-07-27 layout, still READ so that an install which
+// already has a PIN keeps working; they are removed on the next setPin().
+const QString kPinRecord = QStringLiteral("applock.pinRecord");
 const QString kFailedAttempts = QStringLiteral("applock.failedAttempts");
 const QString kLockoutUntil = QStringLiteral("applock.lockoutUntilEpochMs");
-const QString kCredentialGate = QStringLiteral("applock.credentialPinGateEnabled");
+const QString kCredentialGate = QString::fromLatin1(AppLockStore::kCredentialGateKey);
 
 // Matches Android's PBKDF2WithHmacSHA256(pin, salt, 150_000, 256-bit).
 constexpr int kIterations = 150000;
@@ -63,26 +68,48 @@ bool AppLockStore::setPin(const QString& pin)
     if (!setLockoutUntilEpochMs(0))
         return false;
 
-    // Order matters: write the credential material before flipping the
-    // enabled flag, so a failure part-way through can never leave the app
-    // "locked" with no way to verify a PIN.
-    if (!m_secureStore.set(kPinSalt, QString::fromLatin1(salt.toBase64())))
+    // One write, one failure mode. As two writes this was only safe for the
+    // FIRST PIN: on a change, applock.enabled is already "1", so a salt that
+    // landed followed by a hash that did not left verifyPin() comparing
+    // PBKDF2(pin, newSalt) against the OLD hash -- neither the old nor the
+    // new PIN verified, with no way back. The user then guessed until the
+    // tenth failure, at which point the app's own wipe destroyed the local
+    // mail cache and the pairing.
+    const QString record =
+        QString::fromLatin1(salt.toBase64()) + QLatin1Char(':') + QString::fromLatin1(hash.toBase64());
+    if (!m_secureStore.set(kPinRecord, record))
         return false;
-    if (!m_secureStore.set(kPinHash, QString::fromLatin1(hash.toBase64())))
-        return false;
+    // Only once the new record is durable. A failure here is harmless: the
+    // record already wins over the legacy pair in verifyPin().
+    m_secureStore.remove(kPinSalt);
+    m_secureStore.remove(kPinHash);
     return m_secureStore.set(kLockEnabled, QStringLiteral("1"));
 }
 
 bool AppLockStore::verifyPin(const QString& pin) const
 {
-    const std::optional<QString> saltB64 = m_secureStore.get(kPinSalt);
-    const std::optional<QString> hashB64 = m_secureStore.get(kPinHash);
-    // Fail closed: a store that lost its keys must not unlock the app.
-    if (!saltB64.has_value() || !hashB64.has_value())
-        return false;
+    // The combined record wins; the split pair is the pre-2026-07-27 layout
+    // and is still honoured so an existing PIN survives the upgrade.
+    QString saltB64;
+    QString hashB64;
+    if (const std::optional<QString> record = m_secureStore.get(kPinRecord); record.has_value()) {
+        const qsizetype sep = record->indexOf(QLatin1Char(':'));
+        if (sep < 0)
+            return false;
+        saltB64 = record->left(sep);
+        hashB64 = record->mid(sep + 1);
+    } else {
+        const std::optional<QString> legacySalt = m_secureStore.get(kPinSalt);
+        const std::optional<QString> legacyHash = m_secureStore.get(kPinHash);
+        // Fail closed: a store that lost its keys must not unlock the app.
+        if (!legacySalt.has_value() || !legacyHash.has_value())
+            return false;
+        saltB64 = *legacySalt;
+        hashB64 = *legacyHash;
+    }
 
-    const QByteArray salt = QByteArray::fromBase64(saltB64->toLatin1());
-    const QByteArray expected = QByteArray::fromBase64(hashB64->toLatin1());
+    const QByteArray salt = QByteArray::fromBase64(saltB64.toLatin1());
+    const QByteArray expected = QByteArray::fromBase64(hashB64.toLatin1());
     if (salt.isEmpty() || expected.size() != kHashBytes)
         return false;
 
@@ -105,6 +132,7 @@ bool AppLockStore::clear()
     bool ok = m_secureStore.set(kLockEnabled, QStringLiteral("0"));
     ok = m_secureStore.remove(kPinSalt) && ok;
     ok = m_secureStore.remove(kPinHash) && ok;
+    ok = m_secureStore.remove(kPinRecord) && ok;
     ok = m_secureStore.set(kFailedAttempts, QStringLiteral("0")) && ok;
     ok = m_secureStore.set(kLockoutUntil, QStringLiteral("0")) && ok;
     ok = m_secureStore.set(kCredentialGate, QStringLiteral("0")) && ok;

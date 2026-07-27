@@ -269,6 +269,30 @@ int main(int argc, char* argv[])
     // gets tightened too, not just freshly created ones.
     QFile::setPermissions(settingsDir,
                            QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
+
+    // KUnifiedPush writes its client state one directory up, with plain
+    // QSettings -- so it lands 0644 after umask. The Endpoint inside it is a
+    // bearer capability: anyone who reads it can push arbitrary notifications
+    // to this app instance from anywhere on the internet, which is why
+    // UnifiedPushConnector refuses to log more than its host. Upstream should
+    // write it 0600; until it does, tighten it here on every startup. The
+    // path is deterministic (ConfigLocation + "/kunifiedpush-" + the D-Bus
+    // service name), so this needs no cooperation from the library.
+    //
+    // Only reachable on systems whose home directories are world-traversable
+    // -- distributions defaulting to HOME_MODE 0700 already block it -- but
+    // the file is the one piece of this app's state that main() does not own
+    // and therefore never hardened.
+    // Suffixed with the D-Bus service name UnifiedPushConnector is
+    // constructed with further down, NOT applicationName() -- those differ
+    // ("com.urlxl.mail" vs "mail").
+    const QString unifiedPushStatePath =
+        QStandardPaths::writableLocation(QStandardPaths::ConfigLocation)
+        + QStringLiteral("/kunifiedpush-com.urlxl.mail");
+    if (QFile::exists(unifiedPushStatePath)) {
+        QFile::setPermissions(unifiedPushStatePath, QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+    }
+
     SettingsStore settingsStore(settingsDir + QStringLiteral("/settings.ini"));
 
     // Convergent root selection (see the comment further below at
@@ -346,13 +370,28 @@ int main(int argc, char* argv[])
     // mail. Such profiles keep their old data orphaned on disk and re-sync
     // from the relay instead. See docs/RENAME_NOTES.md.
     const QString newDbPath = dataDir + QStringLiteral("/kypost.db");
-    if (!QFile::exists(newDbPath)) {
-        const QString legacyDataDir =
-            QFileInfo(dataDir).absolutePath() + QStringLiteral("/LlamaMail");
-        const QStringList oldDbCandidates = {
-            dataDir + QStringLiteral("/llamamail.db"),
-            legacyDataDir + QStringLiteral("/llamamail.db"),
-        };
+    const QString legacyDataDir = QFileInfo(dataDir).absolutePath() + QStringLiteral("/LlamaMail");
+    // Hoisted out of the migration block below so the wipe paths can name
+    // them too. A pre-rename database was copied (deliberately, for
+    // recoverability) and then known to nobody: neither the wipe after ten
+    // failed PIN attempts nor Hostile Location Protection's pre-clean ever
+    // mentioned these paths, so both reported success while a byte-identical
+    // plaintext copy of every cached message and contact stayed on disk.
+    const QStringList legacyDbPaths = {
+        dataDir + QStringLiteral("/llamamail.db"),
+        legacyDataDir + QStringLiteral("/llamamail.db"),
+    };
+
+    // Read before the migration, not after. This used to be read below, so
+    // the copy ran first and Hostile Location Protection -- whose whole
+    // promise is that nothing touches the disk -- wrote the entire legacy
+    // database out to kypost.db on EVERY launch before deleting it again
+    // with a plain unlink. There is nothing to migrate into in this mode
+    // anyway: the database is ":memory:".
+    const bool hostileLocation = settingsStore.hostileLocationProtectionEnabled();
+
+    if (!hostileLocation && !QFile::exists(newDbPath)) {
+        const QStringList oldDbCandidates = legacyDbPaths;
         for (const QString& oldDbPath : oldDbCandidates) {
             if (!QFile::exists(oldDbPath))
                 continue;
@@ -377,7 +416,6 @@ int main(int argc, char* argv[])
     // chain of stack locals from Database down through every DAO,
     // repository, controller and QML singleton, and there is no supported
     // way to re-point it at a different database at runtime.
-    const bool hostileLocation = settingsStore.hostileLocationProtectionEnabled();
 
     Database database;
     if (hostileLocation) {
@@ -385,6 +423,8 @@ int main(int argc, char* argv[])
         // "delete the file", there could still be a database on disk holding
         // exactly what this mode exists to prevent.
         SecurityWipe::removeDatabaseFiles(newDbPath);
+        for (const QString& legacyDbPath : legacyDbPaths)
+            SecurityWipe::removeDatabaseFiles(legacyDbPath);
         SecurityWipe::clearCacheDirectory(dataDir + QStringLiteral("/contact-photos"));
         if (!database.open(QStringLiteral(":memory:")))
             qFatal("main: Database::open failed for in-memory database");
@@ -442,6 +482,39 @@ int main(int argc, char* argv[])
         qCritical("main: the system secret store is not writable -- pairing and the app lock "
                   "cannot persist. Start a keyring service (gnome-keyring or kwallet) and "
                   "relaunch KyPost.");
+        // ponytail: AppLockStore::lockEnabled() reads the flag through
+        // SecureStore::get(), which collapses "the store said no" and "the
+        // store did not answer" into the same std::nullopt -- so an
+        // unreachable keyring reads as "no PIN configured" and the lock
+        // silently does not engage. Failing closed here needs SecureStore to
+        // report read failures separately (a ReadStatus{Found,Absent,Failed}
+        // on the interface, threaded through SecureStoreFile and
+        // SecureStoreKeychain); until then this warning is the only signal.
+        // Bounded risk: the same actor can read kypost.db directly, and with
+        // the store unreachable there is no relay credential to expose either.
+    }
+
+    // The embedded ntfy subscriber tier was removed on 2026-07-26
+    // (core/domain/TransportStateMachine.h). Its topic is a bearer secret --
+    // anyone holding the string can read that device's push stream -- and it
+    // was left behind in the keychain, where PairingStore::clear() and the
+    // ten-failure wipe both step over it because neither knows the key
+    // exists. Remove it once, so an orphaned credential cannot outlive a
+    // wipe the user was told had happened.
+    //
+    // ponytail: this only cleans up the client side. A device that last
+    // registered on that tier still has an ntfy URL as its server-side
+    // deviceToken, and the relay keeps publishing to it until the device
+    // re-registers. Upgrade path: force one re-registration here when the key
+    // was present. Not done because no build carrying that tier was ever
+    // released (v0.1-alpha has zero downloads and the OSTree channel 404s),
+    // so the only affected devices are the maintainer's own test hardware,
+    // which a manual re-pair fixes.
+    if (secureStore.contains(QStringLiteral("ntfy-topic"))) {
+        if (secureStore.remove(QStringLiteral("ntfy-topic")))
+            qInfo("main: removed the orphaned ntfy topic left by the pre-2026-07-26 push tier");
+        else
+            qWarning("main: could not remove the orphaned ntfy topic from the secret store");
     }
 
     // 4. CursorStore -- reuses settingsDir (already computed for
@@ -470,7 +543,8 @@ int main(int argc, char* argv[])
     if (const std::optional<DevicePairing> existingPairing = pairingStore.load();
         existingPairing.has_value() && !existingPairing->certificateSpkiSha256.isEmpty()) {
         httpClient.setCertificatePin(
-            QByteArray::fromBase64(existingPairing->certificateSpkiSha256.toLatin1()));
+            QByteArray::fromBase64(existingPairing->certificateSpkiSha256.toLatin1()),
+            QUrl(existingPairing->serverBaseUrl));
     }
 
     // 7. core/net clients -- thin wire-format wrappers around httpClient.
@@ -583,7 +657,7 @@ int main(int argc, char* argv[])
     // cached mail/contacts, the pairing credential, and the lock itself
     // (leaving a PIN behind would be a hint about the wiped account).
     QObject::connect(&appLockManager, &AppLockManager::wipeRequested, &appLockManager,
-                      [&database, &pairingStore, &appLockStore, &settingsStore, dataDir]() {
+                      [&database, &pairingStore, &appLockStore, &settingsStore, dataDir, legacyDbPaths]() {
                           qWarning("App lock: wipe threshold reached, erasing local data");
                           // Every step's result is checked. These calls all
                           // return bool and all of them can genuinely fail --
@@ -596,6 +670,17 @@ int main(int argc, char* argv[])
                           // is the worst available outcome, so each failure
                           // is named individually in the journal.
                           const bool tablesWiped = database.wipeAllTables();
+                          // The pre-rename database is a separate FILE, so
+                          // wipeAllTables() -- which scrubs the open
+                          // connection -- cannot reach it. It was invisible
+                          // to this handler entirely, which meant "wiped"
+                          // was reported while a full plaintext copy of the
+                          // same mail and contacts stayed on disk.
+                          bool legacyWiped = true;
+                          for (const QString& legacyDbPath : legacyDbPaths) {
+                              if (QFile::exists(legacyDbPath))
+                                  legacyWiped = SecurityWipe::removeDatabaseFiles(legacyDbPath) && legacyWiped;
+                          }
                           const bool photosCleared =
                               SecurityWipe::clearCacheDirectory(dataDir + QStringLiteral("/contact-photos"));
                           const bool pairingCleared = pairingStore.clear();
@@ -609,6 +694,8 @@ int main(int argc, char* argv[])
                                         "from the secret store; this device may still be able to reach the relay");
                           if (!lockCleared)
                               qCritical("App lock: WIPE INCOMPLETE -- the stored PIN material could not be removed");
+                          if (!legacyWiped)
+                              qCritical("App lock: WIPE INCOMPLETE -- a pre-rename database could not be erased");
                           settingsStore.setDeliveryMode(QString());
                           // Relaunch regardless of the above: leaving a
                           // running window holding the pre-wipe view of the
@@ -630,7 +717,7 @@ int main(int argc, char* argv[])
     // persisted; this erases on-disk data when switching the mode ON, then
     // relaunches so the next process picks the right database.
     QObject::connect(&appLockManager, &AppLockManager::relaunchRequired, &appLockManager,
-                      [&database, newDbPath, dataDir](bool wipeDisk) {
+                      [&database, newDbPath, dataDir, legacyDbPaths](bool wipeDisk) {
                           if (wipeDisk) {
                               // Empty the tables first: the connection is
                               // still open, so the file cannot be removed
@@ -639,6 +726,13 @@ int main(int argc, char* argv[])
                               // with a straggling writer.
                               database.wipeAllTables();
                               SecurityWipe::removeDatabaseFiles(newDbPath);
+                              // Turning Hostile Location Protection ON must
+                              // also take the pre-rename copy: it holds the
+                              // same mail and contacts, and leaving it behind
+                              // makes "held in memory only" false from the
+                              // first launch onwards.
+                              for (const QString& legacyDbPath : legacyDbPaths)
+                                  SecurityWipe::removeDatabaseFiles(legacyDbPath);
                               SecurityWipe::clearCacheDirectory(dataDir + QStringLiteral("/contact-photos"));
                           }
                           AppRelauncher::requestRelaunch();
@@ -700,7 +794,8 @@ int main(int argc, char* argv[])
     // (Settings > Notifications) can read straight from it -- see
     // PairingController.h's doc comment on why those reuse pairingChanged()
     // rather than a new signal.
-    PairingController pairingController(deviceRegistrationService, pairingStore, settingsStore, deregisterClient);
+    PairingController pairingController(deviceRegistrationService, pairingStore, settingsStore, deregisterClient,
+                                        httpClient);
     qmlRegisterSingletonInstance<PairingController>(
         "com.urlxl.mail", 1, 0, "Pairing", &pairingController);
 

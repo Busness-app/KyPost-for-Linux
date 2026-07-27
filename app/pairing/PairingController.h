@@ -11,6 +11,7 @@ class QUrl;
 class PairingStore;
 class SettingsStore;
 class DeregisterClient;
+class HttpClient;
 
 // QML-facing bridge (Task 34) over core/domain's DeviceRegistrationService/
 // PairingStore. Registered as the "Pairing" QML singleton in main.cpp.
@@ -120,7 +121,8 @@ public:
     Q_ENUM(State)
 
     PairingController(DeviceRegistrationService& service, PairingStore& pairingStore, SettingsStore& settingsStore,
-                       DeregisterClient& deregisterClient, QObject* parent = nullptr);
+                       DeregisterClient& deregisterClient, HttpClient& httpClient,
+                       QObject* parent = nullptr);
 
     bool isPaired() const;
     QString pairedServerHost() const;
@@ -244,6 +246,9 @@ private:
     PairingStore& m_pairingStore;
     SettingsStore& m_settingsStore;
     DeregisterClient& m_deregisterClient;
+    // Only to drop the in-process certificate pin on unpair -- see
+    // removePairing(). PairingController makes no requests of its own.
+    HttpClient& m_httpClient;
     State m_state = State::Idle;
     QString m_pairingError;
     bool m_isPaired = false;

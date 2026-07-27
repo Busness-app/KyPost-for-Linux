@@ -413,6 +413,17 @@ void ContactsController::applyFieldsToContact(Contact& contact, const QVariantMa
 
 QString ContactsController::createContact(const QVariantMap& fields)
 {
+    // Guarded like every other invokable that touches the sync DAOs. These
+    // three used to be unguarded, so a click landing inside sync()'s nested
+    // QEventLoop enqueued a pending change that the in-flight sync then
+    // discarded -- the user saw "Synced" while their edit was silently lost.
+    // ContactSyncRepository no longer truncates the queue, but leaving these
+    // re-entrant would still let a mutation interleave with a sync's
+    // read-modify-write.
+    ReentrancyGuard guard(m_inNetworkCall);
+    if (!guard.entered())
+        return QString();
+
     const QString fn = fields.value(QStringLiteral("fn")).toString().trimmed();
     if (fn.isEmpty()) {
         setLastError(i18n("Name is required"));
@@ -431,6 +442,17 @@ QString ContactsController::createContact(const QVariantMap& fields)
 
 bool ContactsController::updateContact(const QString& uid, const QVariantMap& fields)
 {
+    // Guarded like every other invokable that touches the sync DAOs. These
+    // three used to be unguarded, so a click landing inside sync()'s nested
+    // QEventLoop enqueued a pending change that the in-flight sync then
+    // discarded -- the user saw "Synced" while their edit was silently lost.
+    // ContactSyncRepository no longer truncates the queue, but leaving these
+    // re-entrant would still let a mutation interleave with a sync's
+    // read-modify-write.
+    ReentrancyGuard guard(m_inNetworkCall);
+    if (!guard.entered())
+        return false;
+
     const QString fn = fields.value(QStringLiteral("fn")).toString().trimmed();
     if (fn.isEmpty()) {
         setLastError(i18n("Name is required"));
@@ -455,6 +477,17 @@ bool ContactsController::updateContact(const QString& uid, const QVariantMap& fi
 
 bool ContactsController::deleteContact(const QString& uid, qint64 rev)
 {
+    // Guarded like every other invokable that touches the sync DAOs. These
+    // three used to be unguarded, so a click landing inside sync()'s nested
+    // QEventLoop enqueued a pending change that the in-flight sync then
+    // discarded -- the user saw "Synced" while their edit was silently lost.
+    // ContactSyncRepository no longer truncates the queue, but leaving these
+    // re-entrant would still let a mutation interleave with a sync's
+    // read-modify-write.
+    ReentrancyGuard guard(m_inNetworkCall);
+    if (!guard.entered())
+        return false;
+
     m_repository.queueDelete(uid, rev);
     setLastError(QString());
     load();
