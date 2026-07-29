@@ -286,26 +286,40 @@ void MailController::finishRefresh(const MailRefreshPlan& plan, const InboxFetch
     }
 }
 
-bool MailController::performActionCommon(const QStringList& messageIds, const QString& action,
+void MailController::performActionCommon(const QStringList& messageIds, const QString& action,
                                           const std::optional<QString>& targetMailbox)
 {
-    ReentrancyGuard guard(m_inNetworkCall);
-    if (!guard.entered())
-        return false;
-
     QUrl serverBaseUrl;
     RelayAuth auth;
-    if (!requirePairing(serverBaseUrl, auth))
-        return false;
+    if (!requirePairing(serverBaseUrl, auth)) {
+        emit actionCompleted(action, messageIds, false);
+        return;
+    }
+
+    // Captured at DISPATCH time, not read in the completion handler: the
+    // action applies to the mailbox that was on screen when the user
+    // triggered it. Reading m_currentFolder when the reply lands would send
+    // the request against whatever folder they had switched to since.
+    const QString mailbox = m_currentFolder;
 
     pushBusy();
-    const ActionResult result =
-        m_relayMailSource.performAction(serverBaseUrl, auth, action, messageIds, m_currentFolder, targetMailbox);
+    m_executor.run(
+        this,
+        [serverBaseUrl, auth, action, messageIds, mailbox, targetMailbox](HttpClient& http) {
+            RelayMailSource source(http);
+            return source.performAction(serverBaseUrl, auth, action, messageIds, mailbox, targetMailbox);
+        },
+        [this, action, messageIds](const ActionResult& result) { finishAction(action, messageIds, result); });
+}
+
+void MailController::finishAction(const QString& action, const QStringList& messageIds, const ActionResult& result)
+{
     popBusy();
 
     if (result.error.has_value() || !result.ok) {
         setLastError(result.detail.isEmpty() ? i18n("Action failed") : result.detail);
-        return false;
+        emit actionCompleted(action, messageIds, false);
+        return;
     }
 
     // Optimistic local update (mirrors Android's InboxActivity/
@@ -337,27 +351,32 @@ bool MailController::performActionCommon(const QStringList& messageIds, const QS
     } else {
         setLastError(QString());
     }
-    return true;
+
+    // Reported as success even when result.failed names individual messages:
+    // the server accepted and partially processed the request, and the
+    // per-message trouble is in lastError. Same rule the synchronous form
+    // used when it returned true here.
+    emit actionCompleted(action, messageIds, true);
 }
 
-bool MailController::archiveEmails(const QStringList& messageIds)
+void MailController::archiveEmails(const QStringList& messageIds)
 {
-    return performActionCommon(messageIds, QStringLiteral("archive"), std::nullopt);
+    performActionCommon(messageIds, QStringLiteral("archive"), std::nullopt);
 }
 
-bool MailController::deleteEmails(const QStringList& messageIds)
+void MailController::deleteEmails(const QStringList& messageIds)
 {
-    return performActionCommon(messageIds, QStringLiteral("delete"), std::nullopt);
+    performActionCommon(messageIds, QStringLiteral("delete"), std::nullopt);
 }
 
-bool MailController::markSpam(const QStringList& messageIds)
+void MailController::markSpam(const QStringList& messageIds)
 {
-    return performActionCommon(messageIds, QStringLiteral("spam"), std::nullopt);
+    performActionCommon(messageIds, QStringLiteral("spam"), std::nullopt);
 }
 
-bool MailController::moveEmails(const QStringList& messageIds, const QString& targetFolder)
+void MailController::moveEmails(const QStringList& messageIds, const QString& targetFolder)
 {
-    return performActionCommon(messageIds, QStringLiteral("move"), targetFolder);
+    performActionCommon(messageIds, QStringLiteral("move"), targetFolder);
 }
 
 // Shared by sendMail() and saveDraft(): both post the identical request
@@ -428,89 +447,105 @@ QVariantList MailController::mailFolders() const
 
 void MailController::refreshFolders()
 {
-    ReentrancyGuard guard(m_inNetworkCall);
-    if (!guard.entered())
-        return;
+    const std::optional<RelayEndpoint> endpoint = m_folderRepository.planRequest();
+    if (!endpoint.has_value())
+        return; // unpaired: an ordinary state at startup, not an error
 
     // Only Archive today, matching Android's folder picker: the other five
-    // standard mailboxes have no subfolder UI, so listing them would be
-    // five extra synchronous round-trips (this call blocks the GUI thread --
-    // Phase 6 global constraint 2) for nothing to render.
-    const MailFetchOutcome outcome = m_folderRepository.refresh(standardFolderWireName(StandardFolder::Archive));
+    // standard mailboxes have no subfolder UI, so listing them would be five
+    // extra round-trips for nothing to render.
+    const QString parent = standardFolderWireName(StandardFolder::Archive);
 
-    // A failure here is deliberately quiet: the sidebar still shows all six
-    // standard mailboxes, so the app stays fully usable and there is nothing
-    // for the user to act on. NotPaired especially is an ordinary state at
-    // startup, not an error worth a toast.
-    if (outcome.outcome != MailRepositoryOutcome::Success
-        && outcome.outcome != MailRepositoryOutcome::NotPaired) {
-        qWarning("Folder refresh failed: %s", qUtf8Printable(outcome.detail));
-    }
-    emit foldersChanged();
+    m_executor.run(
+        this,
+        [endpoint = *endpoint, parent](HttpClient& http) { return FolderRepository::listWith(http, endpoint, parent); },
+        [this, parent](const FolderListResult& result) {
+            const MailFetchOutcome outcome = m_folderRepository.applyList(parent, result);
+            // A failure here is deliberately quiet: the sidebar still shows
+            // all six standard mailboxes, so the app stays fully usable and
+            // there is nothing for the user to act on.
+            if (outcome.outcome != MailRepositoryOutcome::Success)
+                qWarning("Folder refresh failed: %s", qUtf8Printable(outcome.detail));
+            emit foldersChanged();
+        });
 }
 
-bool MailController::createFolder(const QString& parent, const QString& name)
+// The three mutating verbs share everything but which request to make and
+// which message to show, so they share a body. `onApplied` runs on this
+// thread after the cache has been updated and is where the per-verb
+// follow-up (re-selecting a renamed folder, say) goes.
+void MailController::runFolderMutation(const QString& failureMessage,
+                                        std::function<FolderRepository::FolderMutationFetch(HttpClient&,
+                                                                                             const RelayEndpoint&)> work,
+                                        std::function<void(const QString& resultingFolder)> onApplied)
 {
-    ReentrancyGuard guard(m_inNetworkCall);
-    if (!guard.entered())
-        return false;
+    const std::optional<RelayEndpoint> endpoint = m_folderRepository.planRequest();
+    if (!endpoint.has_value()) {
+        setLastError(i18n("Not paired"));
+        emit folderMutationCompleted(false);
+        return;
+    }
 
     pushBusy();
-    const FolderRepository::FolderMutationOutcome outcome = m_folderRepository.create(parent, name);
-    popBusy();
-
-    if (outcome.outcome != MailRepositoryOutcome::Success) {
-        setLastError(outcome.detail.isEmpty() ? i18n("Could not create folder") : outcome.detail);
-        return false;
-    }
-    setLastError(QString());
-    emit foldersChanged();
-    return true;
+    m_executor.run(
+        this,
+        [endpoint = *endpoint, work = std::move(work)](HttpClient& http) { return work(http, endpoint); },
+        [this, failureMessage, onApplied = std::move(onApplied)](
+            const FolderRepository::FolderMutationFetch& fetched) {
+            popBusy();
+            const FolderRepository::FolderMutationOutcome outcome = m_folderRepository.applyMutation(fetched);
+            if (outcome.outcome != MailRepositoryOutcome::Success) {
+                setLastError(outcome.detail.isEmpty() ? failureMessage : outcome.detail);
+                emit folderMutationCompleted(false);
+                return;
+            }
+            setLastError(QString());
+            onApplied(outcome.folder);
+            emit foldersChanged();
+            emit folderMutationCompleted(true);
+        });
 }
 
-bool MailController::renameFolder(const QString& folder, const QString& name)
+void MailController::createFolder(const QString& parent, const QString& name)
 {
-    ReentrancyGuard guard(m_inNetworkCall);
-    if (!guard.entered())
-        return false;
-
-    pushBusy();
-    const FolderRepository::FolderMutationOutcome outcome = m_folderRepository.rename(folder, name);
-    popBusy();
-
-    if (outcome.outcome != MailRepositoryOutcome::Success) {
-        setLastError(outcome.detail.isEmpty() ? i18n("Could not rename folder") : outcome.detail);
-        return false;
-    }
-    setLastError(QString());
-    // Selecting a folder that no longer exists under its old name would
-    // fetch an empty mailbox, so fall back to Inbox when the current
-    // selection was the one renamed.
-    if (m_currentFolder == folder)
-        selectFolderInternal(outcome.folder.isEmpty() ? standardFolderWireName(StandardFolder::Inbox) : outcome.folder);
-    emit foldersChanged();
-    return true;
+    runFolderMutation(
+        i18n("Could not create folder"),
+        [parent, name](HttpClient& http, const RelayEndpoint& endpoint) {
+            return FolderRepository::createWith(http, endpoint, parent, name);
+        },
+        [](const QString&) {});
 }
 
-bool MailController::deleteFolder(const QString& folder)
+void MailController::renameFolder(const QString& folder, const QString& name)
 {
-    ReentrancyGuard guard(m_inNetworkCall);
-    if (!guard.entered())
-        return false;
+    runFolderMutation(
+        i18n("Could not rename folder"),
+        [folder, name](HttpClient& http, const RelayEndpoint& endpoint) {
+            return FolderRepository::renameWith(http, endpoint, folder, name);
+        },
+        [this, folder](const QString& resultingFolder) {
+            // Selecting a folder that no longer exists under its old name
+            // would fetch an empty mailbox, so fall back to Inbox when the
+            // current selection was the one renamed.
+            if (m_currentFolder == folder) {
+                selectFolderInternal(resultingFolder.isEmpty()
+                                          ? standardFolderWireName(StandardFolder::Inbox)
+                                          : resultingFolder);
+            }
+        });
+}
 
-    pushBusy();
-    const FolderRepository::FolderMutationOutcome outcome = m_folderRepository.remove(folder);
-    popBusy();
-
-    if (outcome.outcome != MailRepositoryOutcome::Success) {
-        setLastError(outcome.detail.isEmpty() ? i18n("Could not delete folder") : outcome.detail);
-        return false;
-    }
-    setLastError(QString());
-    if (m_currentFolder == folder)
-        selectFolderInternal(standardFolderWireName(StandardFolder::Inbox));
-    emit foldersChanged();
-    return true;
+void MailController::deleteFolder(const QString& folder)
+{
+    runFolderMutation(
+        i18n("Could not delete folder"),
+        [folder](HttpClient& http, const RelayEndpoint& endpoint) {
+            return FolderRepository::removeWith(http, endpoint, folder);
+        },
+        [this, folder](const QString&) {
+            if (m_currentFolder == folder)
+                selectFolderInternal(standardFolderWireName(StandardFolder::Inbox));
+        });
 }
 
 bool MailController::saveDraft(const QString& to, const QString& cc, const QString& bcc, const QString& subject,

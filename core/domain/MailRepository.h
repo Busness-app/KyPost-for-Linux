@@ -27,8 +27,7 @@ struct MailFetchOutcome
 // it must not hold a reference to anything owned by the calling thread.
 struct MailRefreshPlan
 {
-    QUrl serverBaseUrl;
-    RelayAuth auth;
+    RelayEndpoint endpoint;
     QString folder;
     // Absent means "full snapshot" -- see refreshFolder()'s note on why an
     // omitted `since` is not the same as `since=0` on this endpoint.

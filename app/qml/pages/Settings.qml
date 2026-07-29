@@ -114,7 +114,10 @@ Item {
                 Repeater {
                     model: root.paneNames
                     delegate: PillTab {
-                        textFormat: Text.PlainText
+                        // No textFormat here: PillTab is not a Text, and its
+                        // own label already pins Text.PlainText. Assigning it
+                        // from outside made the whole component fail to load,
+                        // which took DesktopRoot down with it.
                         text: modelData
                         selected: root.currentPane === index
                         onClicked: root.currentPane = index

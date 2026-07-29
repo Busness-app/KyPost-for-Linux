@@ -677,7 +677,13 @@ Item {
                         model: root.availableGroups
                         delegate: CheckBox {
                             Layout.fillWidth: true
-                            textFormat: Text.PlainText
+                            // No textFormat here -- QQC2's CheckBox has no
+                            // such property, and assigning it made this whole
+                            // page fail to load. The group name is
+                            // server-supplied, so the plain-text pin it was
+                            // reaching for is real; it belongs on the
+                            // contentItem Text that actually renders it,
+                            // below.
                             text: modelData.name
                             checked: root.editingGroupIds.indexOf(modelData.id) !== -1
                             // QQC2's implicit `control` id (documented on
@@ -687,6 +693,10 @@ Item {
                             // documented/guaranteed way to reach the control
                             // from inside its own delegate.
                             contentItem: Text {
+                                // Text defaults to Text.AutoText, which
+                                // interprets HTML. This renders a group name
+                                // the server supplies.
+                                textFormat: Text.PlainText
                                 text: control.text
                                 color: Theme.inkStrong
                                 font.family: Theme.fontUi

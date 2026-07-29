@@ -228,6 +228,22 @@ Kirigami.ApplicationWindow {
             root.raise()
             root.requestActivate()
         }
+
+        // The mail list's context-menu Delete dispatches and returns, so the
+        // "was it the message the detail pane is showing?" test has to live
+        // somewhere that outlives the row -- the optimistic removal destroys
+        // that delegate before the reply lands.
+        //
+        // Only the embedded pane is closed here. The popped-out Windows
+        // handle their own EmailDetail's actionCompleted (see
+        // emailWindowComponent), which is why this checks
+        // root.selectedMessageId rather than acting on any deleted id.
+        function onActionCompleted(action, messageIds, ok) {
+            if (ok && action === "delete" && root.detailMode === "email"
+                && messageIds.indexOf(root.selectedMessageId) !== -1) {
+                root.closeDetail()
+            }
+        }
     }
 
     // ---- keyboard shortcuts ----------------------------------------------
@@ -368,14 +384,23 @@ Kirigami.ApplicationWindow {
             const name = folderPromptField.text.trim()
             if (name.length === 0)
                 return
-            const ok = folderPrompt.mode === "create"
-                ? MailApp.createFolder(folderPrompt.targetFolder, name)
-                : MailApp.renameFolder(folderPrompt.targetFolder, name)
-            // Stay open on failure so the typed name isn't lost; MailApp
-            // has already put the reason in lastError, which the sidebar's
-            // error Text below binds to.
-            if (ok)
-                folderPrompt.close()
+            if (folderPrompt.mode === "create")
+                MailApp.createFolder(folderPrompt.targetFolder, name)
+            else
+                MailApp.renameFolder(folderPrompt.targetFolder, name)
+        }
+
+        // Stay open on failure so the typed name isn't lost; MailApp has
+        // already put the reason in lastError, which the sidebar's error Text
+        // below binds to. Only reached while this popup is open, because
+        // nothing else can start a folder mutation: both dialogs are modal.
+        Connections {
+            target: MailApp
+            enabled: folderPrompt.opened
+            function onFolderMutationCompleted(ok) {
+                if (ok)
+                    folderPrompt.close()
+            }
         }
     }
 
@@ -433,11 +458,19 @@ Kirigami.ApplicationWindow {
                 DangerButton {
                     text: i18n("Delete")
                     enabled: !MailApp.isBusy
-                    onClicked: {
-                        if (MailApp.deleteFolder(folderDeleteConfirm.targetFolder))
-                            folderDeleteConfirm.close()
-                    }
+                    onClicked: MailApp.deleteFolder(folderDeleteConfirm.targetFolder)
                 }
+            }
+        }
+
+        // Same shape as folderPrompt's above -- stay open on failure so the
+        // reason in lastError is read next to the thing that failed.
+        Connections {
+            target: MailApp
+            enabled: folderDeleteConfirm.opened
+            function onFolderMutationCompleted(ok) {
+                if (ok)
+                    folderDeleteConfirm.close()
             }
         }
     }
@@ -1325,10 +1358,15 @@ Kirigami.ApplicationWindow {
                                 id: emailContextMenu
                                 MenuItem {
                                     text: i18n("Delete")
-                                    onTriggered: {
-                                        if (MailApp.deleteEmails([model.messageId]) && root.selectedMessageId === model.messageId)
-                                            root.closeDetail()
-                                    }
+                                    // Fire and forget -- the detail pane is
+                                    // closed by root's own onActionCompleted
+                                    // handler if the deleted message was the
+                                    // one it was showing. Doing it here
+                                    // would need this delegate to still be
+                                    // alive when the reply lands, and the
+                                    // optimistic row removal is exactly what
+                                    // destroys it.
+                                    onTriggered: MailApp.deleteEmails([model.messageId])
                                 }
                             }
                         }

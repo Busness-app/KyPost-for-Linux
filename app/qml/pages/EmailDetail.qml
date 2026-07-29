@@ -56,6 +56,26 @@ Item {
     onFolderChanged: reload()
     Component.onCompleted: reload()
 
+    // Archive/Junk/Delete dispatch and return; the answer arrives here.
+    //
+    // MailApp is a singleton, so this fires for every EmailDetail alive --
+    // DesktopRoot can have an embedded one and a popped-out Window showing a
+    // different message at the same time. `messageIds` is what tells them
+    // apart: only the instance whose own message was acted on reacts. The
+    // old code could rely on "my call is on the stack" instead, because the
+    // request ran synchronously inside the click handler; nothing has a call
+    // on the stack any more.
+    Connections {
+        target: MailApp
+        function onActionCompleted(action, messageIds, ok) {
+            if (!ok || root.messageId === "" || messageIds.indexOf(root.messageId) === -1)
+                return
+            // "spam" is the wire verb; this component's own signal has always
+            // called it "junk", matching the button.
+            root.actionCompleted(action === "spam" ? "junk" : action)
+        }
+    }
+
     // Clears the refused-link notice a few seconds after it appears.
     Timer {
         id: blockedLinkTimer
@@ -356,29 +376,20 @@ Item {
                 icon: "mail-archive"
                 tooltip: i18n("Archive")
                 enabled: !MailApp.isBusy
-                onClicked: {
-                    if (MailApp.archiveEmails([root.messageId]))
-                        root.actionCompleted("archive")
-                }
+                onClicked: MailApp.archiveEmails([root.messageId])
             }
             IconButton {
                 icon: "mail-mark-junk"
                 tooltip: i18n("Junk")
                 enabled: !MailApp.isBusy
-                onClicked: {
-                    if (MailApp.markSpam([root.messageId]))
-                        root.actionCompleted("junk")
-                }
+                onClicked: MailApp.markSpam([root.messageId])
             }
             IconButton {
                 icon: "edit-delete"
                 tooltip: i18n("Delete")
                 variant: "danger"
                 enabled: !MailApp.isBusy
-                onClicked: {
-                    if (MailApp.deleteEmails([root.messageId]))
-                        root.actionCompleted("delete")
-                }
+                onClicked: MailApp.deleteEmails([root.messageId])
             }
             IconButton {
                 // "Images blocked" affordance -- settings.autoLoadImages is

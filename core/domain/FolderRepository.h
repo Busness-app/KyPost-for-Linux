@@ -1,13 +1,14 @@
 #pragma once
 
-#include "domain/MailRepository.h" // MailRepositoryOutcome / MailFetchOutcome
+#include "domain/MailRepository.h" // MailRepositoryOutcome / MailFetchOutcome / MailRelayCredentials
 #include "models/MailFolder.h"
+#include "net/FolderClient.h" // FolderListResult / FolderMutationResult -- cross the thread hop by value
 
 #include <QString>
 #include <QVector>
 
-class FolderClient;
 class FolderDao;
+class HttpClient;
 class PairingStore;
 
 // Sits between FolderClient and FolderDao, mirroring MailRepository's shape
@@ -50,6 +51,45 @@ public:
     FolderMutationOutcome create(const QString& parent, const QString& name);
     FolderMutationOutcome rename(const QString& folder, const QString& name);
     FolderMutationOutcome remove(const QString& folder);
+
+    // ---- three-phase form, for callers that must not block ---------------
+    //
+    // Same split as MailRepository's, with one wrinkle: each mutating verb is
+    // TWO round trips, because the backend decides the resulting path and a
+    // deleted folder is only observable as an absence from a fresh listing.
+    // Both trips go in phase 2 together -- splitting them would put a second
+    // thread hop between a mutation and the re-list that makes it visible,
+    // for no benefit.
+
+    // Phase 1, on the calling thread: the PairingStore read. Returns nullopt
+    // when there is no pairing.
+    std::optional<RelayEndpoint> planRequest() const;
+
+    // What one mutating verb's two requests produced. Crosses the thread hop
+    // by value.
+    struct FolderMutationFetch
+    {
+        FolderMutationResult mutation;
+        // Which parent `listing` describes -- the server's own answer, not
+        // derived here: a rename keeps the folder under its existing parent,
+        // and working that out locally would mean re-implementing the
+        // server's separator rules.
+        QString listedParent;
+        FolderListResult listing; // only meaningful when the mutation succeeded
+    };
+
+    // Phase 2. Touch nothing but the HttpClient and the plain arguments.
+    static FolderListResult listWith(HttpClient& httpClient, const RelayEndpoint& endpoint, const QString& parent);
+    static FolderMutationFetch createWith(HttpClient& httpClient, const RelayEndpoint& endpoint,
+                                           const QString& parent, const QString& name);
+    static FolderMutationFetch renameWith(HttpClient& httpClient, const RelayEndpoint& endpoint,
+                                           const QString& folder, const QString& name);
+    static FolderMutationFetch removeWith(HttpClient& httpClient, const RelayEndpoint& endpoint,
+                                           const QString& folder);
+
+    // Phase 3, back on the calling thread: the FolderDao writes.
+    MailFetchOutcome applyList(const QString& parent, const FolderListResult& result);
+    FolderMutationOutcome applyMutation(const FolderMutationFetch& fetched);
 
 private:
     FolderClient& m_client;

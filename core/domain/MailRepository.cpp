@@ -60,8 +60,8 @@ std::optional<MailRefreshPlan> MailRepository::planRefresh(const QString& folder
         return std::nullopt;
 
     MailRefreshPlan plan;
-    plan.serverBaseUrl = QUrl(pairing->serverBaseUrl);
-    plan.auth = RelayAuth{ pairing->deviceId, pairing->deviceSecret };
+    plan.endpoint = RelayEndpoint{ QUrl(pairing->serverBaseUrl),
+                                    RelayAuth{ pairing->deviceId, pairing->deviceSecret } };
     plan.folder = folder;
 
     // forceFullResync must leave `since` as std::nullopt (omitted from the
@@ -84,7 +84,7 @@ InboxFetchResult MailRepository::fetchWith(HttpClient& httpClient, const MailRef
     // stateless wrapper over an HttpClient reference, and on the async path
     // that HttpClient belongs to the executor thread.
     RelayMailSource source(httpClient);
-    return source.fetchInbox(plan.serverBaseUrl, plan.auth, std::nullopt, plan.folder, plan.since);
+    return source.fetchInbox(plan.endpoint.serverBaseUrl, plan.endpoint.auth, std::nullopt, plan.folder, plan.since);
 }
 
 MailFetchOutcome MailRepository::applyRefresh(const MailRefreshPlan& plan, const InboxFetchResult& result)
@@ -192,6 +192,7 @@ MailFetchOutcome MailRepository::refreshFolder(const QString& folder, bool force
         return { MailRepositoryOutcome::NotPaired, QStringLiteral("Not paired") };
 
     const InboxFetchResult result =
-        m_source.fetchInbox(plan->serverBaseUrl, plan->auth, std::nullopt, plan->folder, plan->since);
+        m_source.fetchInbox(plan->endpoint.serverBaseUrl, plan->endpoint.auth, std::nullopt, plan->folder,
+                             plan->since);
     return applyRefresh(*plan, result);
 }

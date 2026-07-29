@@ -326,3 +326,28 @@ target_compile_definitions(QmlTests PRIVATE
 # item state, never on rendered pixels.
 add_test(NAME QmlTests COMMAND QmlTests)
 set_tests_properties(QmlTests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# QmlTests above instantiates a handful of leaf components. It cannot load
+# DesktopRoot or MobileRoot -- those need every C++ singleton -- so a property
+# assignment that makes a whole root fail to load slips through it entirely.
+# That is not hypothetical: it shipped, and the app would not start.
+#
+# qmllint reads the files instead of running them, so it needs no singletons.
+# See tests/qml/qmllint-gate.sh for why it gates on one warning category.
+#
+# Qt's qmllint, NOT whatever `qmllint` is first on PATH -- on at least one
+# distro that name belongs to an unrelated tool which exits 0 on everything.
+find_program(KYPOST_QMLLINT
+  NAMES qmllint
+  HINTS "${QT6_INSTALL_PREFIX}/${QT6_INSTALL_BINS}" "${QT6_INSTALL_PREFIX}/${QT6_INSTALL_LIBEXECS}"
+  PATHS /usr/lib/qt6/bin
+  NO_DEFAULT_PATH
+)
+if(KYPOST_QMLLINT)
+  add_test(NAME QmlPropertyLint
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/qml/qmllint-gate.sh
+            ${KYPOST_QMLLINT} ${CMAKE_SOURCE_DIR}/app/qml)
+else()
+  message(WARNING "Qt's qmllint not found -- QmlPropertyLint will not run. "
+                  "A .qml file assigning a non-existent property will not be caught.")
+endif()

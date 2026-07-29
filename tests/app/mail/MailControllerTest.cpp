@@ -59,6 +59,7 @@ private slots:
     void refreshReturnsWithoutBlockingTheCallingThread();
     void overlappingRefreshesCollapseToOneFollowUpRequest();
     void aFolderSwitchDuringARefreshIsStillFetched();
+    void archiveEmailsReportsCompletionAndDropsTheRowOptimistically();
 
 private:
     static void savePairing(PairingStore& pairingStore, quint16 port);
@@ -216,9 +217,15 @@ void MailControllerTest::archiveEmailsNotPairedShortCircuitsWithNoNetworkCall()
                                settingsStore, bootstrapClient, recipientChecker, executor);
 
     QSignalSpy errorSpy(&controller, &MailController::lastErrorChanged);
-    const bool ok = controller.archiveEmails({ QStringLiteral("m1") });
+    QSignalSpy doneSpy(&controller, &MailController::actionCompleted);
+    controller.archiveEmails({ QStringLiteral("m1") });
 
-    QCOMPARE(ok, false);
+    // The refusal is synchronous -- requirePairing() runs before anything is
+    // dispatched, which is the point: no request is built at all.
+    QCOMPARE(doneSpy.count(), 1);
+    QCOMPARE(doneSpy.at(0).at(0).toString(), QStringLiteral("archive"));
+    QCOMPARE(doneSpy.at(0).at(1).toStringList(), QStringList{ QStringLiteral("m1") });
+    QCOMPARE(doneSpy.at(0).at(2).toBool(), false);
     QCOMPARE(controller.lastError(), QStringLiteral("Not paired"));
     QVERIFY(errorSpy.count() >= 1);
     QVERIFY(fake.receivedRequest().isEmpty());
@@ -1390,6 +1397,49 @@ void MailControllerTest::aFolderSwitchDuringARefreshIsStillFetched()
     const QByteArray requests = fake.receivedRequest();
     QVERIFY2(requests.contains("mailbox=INBOX"), requests.constData());
     QVERIFY2(requests.contains("mailbox=Sent"), requests.constData());
+}
+
+// The four actions dispatch and return, so every QML site that used to read
+// their bool now reads actionCompleted instead: `messageIds` is what lets a
+// detail view or a swipe row tell "that was mine" from "that was the other
+// window's", since nothing has a call on the stack any more.
+void MailControllerTest::archiveEmailsReportsCompletionAndDropsTheRowOptimistically()
+{
+    FakeRelayServer fake(httpResponse(200, "OK", kTwoMessageInbox));
+    RefreshFixture f(fake.port());
+
+    f.controller.refresh();
+    QTRY_VERIFY_WITH_TIMEOUT(!f.controller.isBusy(), 10000);
+
+    auto* model = qobject_cast<EmailListModel*>(f.controller.emailModel());
+    QVERIFY(model != nullptr);
+    QCOMPARE(model->rowCount(), 2);
+
+    fake.setResponse(httpResponse(
+        200, "OK", R"({"ok":true,"action":"archive","processed":1,"failed":[],"targetMailbox":""})"));
+
+    QSignalSpy doneSpy(&f.controller, &MailController::actionCompleted);
+    f.controller.archiveEmails({ QStringLiteral("m1") });
+    QVERIFY(f.controller.isBusy()); // set before the call returned
+
+    QTRY_VERIFY_WITH_TIMEOUT(doneSpy.count() == 1, 10000);
+    f.executor.shutdown();
+
+    QCOMPARE(doneSpy.at(0).at(0).toString(), QStringLiteral("archive"));
+    QCOMPARE(doneSpy.at(0).at(1).toStringList(), QStringList{ QStringLiteral("m1") });
+    QCOMPARE(doneSpy.at(0).at(2).toBool(), true);
+    QVERIFY(!f.controller.isBusy());
+
+    // Optimistic removal: the archived row is gone from the list without a
+    // second round trip, and the untouched one stays.
+    QCOMPARE(model->rowCount(), 1);
+    QCOMPARE(model->emailAt(0).messageId, QStringLiteral("m2"));
+
+    // The action really was sent for the message it named -- proving the
+    // second response was matched to the second request, not served early
+    // off the first one's headers.
+    QVERIFY2(fake.receivedRequest().contains("\"archive\""), fake.receivedRequest().constData());
+    QVERIFY2(fake.receivedRequest().contains("\"m1\""), fake.receivedRequest().constData());
 }
 
 QTEST_GUILESS_MAIN(MailControllerTest)

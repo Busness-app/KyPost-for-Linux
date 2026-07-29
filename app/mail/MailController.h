@@ -1,6 +1,7 @@
 #pragma once
 
-#include "domain/MailRepository.h" // MailRefreshPlan -- carried across the thread hop below
+#include "domain/FolderRepository.h" // FolderMutationFetch -- carried across the thread hop below
+#include "domain/MailRepository.h"   // MailRefreshPlan -- likewise
 #include "mail/EmailListModel.h"
 #include "models/Email.h"
 #include "net/RelayMailSource.h" // MailAttachmentUpload -- held by value in PendingSend below
@@ -11,11 +12,11 @@
 #include <QVariantList>
 #include <QVariantMap>
 #include <QVector>
+#include <functional>
 #include <optional>
 
 class QFile;
 
-class FolderRepository;
 class SettingsStore;
 class RelayMailSource;
 class KeywordRepository;
@@ -83,10 +84,13 @@ public slots:
     // network call.
     void selectKeyword(const QString& keyword);
     void refresh(bool forceFullResync = false);
-    bool archiveEmails(const QStringList& messageIds);
-    bool deleteEmails(const QStringList& messageIds);
-    bool markSpam(const QStringList& messageIds);
-    bool moveEmails(const QStringList& messageIds, const QString& targetFolder);
+    // All four dispatch and return; the outcome arrives as actionCompleted().
+    // They no longer return a bool because there is nothing to return yet --
+    // see that signal for how a caller learns whether its own action landed.
+    void archiveEmails(const QStringList& messageIds);
+    void deleteEmails(const QStringList& messageIds);
+    void markSpam(const QStringList& messageIds);
+    void moveEmails(const QStringList& messageIds, const QString& targetFolder);
     // mode is hardcoded "html" -- Compose.qml's RichBodyEditor is the sole
     // caller and always produces sanitized HTML (see
     // docs/superpowers/specs/2026-07-18-html-compose-design.md). Reads each
@@ -147,13 +151,14 @@ public slots:
     // picker -- the other five standard mailboxes have no subfolder UI.
     Q_INVOKABLE void refreshFolders();
 
-    // Each returns true on success and emits foldersChanged(); on failure
-    // sets lastError and returns false. The backend refuses to rename or
-    // delete a built-in mailbox or any top-level folder, so entries with
-    // deletable == false must not offer the action.
-    Q_INVOKABLE bool createFolder(const QString& parent, const QString& name);
-    Q_INVOKABLE bool renameFolder(const QString& folder, const QString& name);
-    Q_INVOKABLE bool deleteFolder(const QString& folder);
+    // Each dispatches and returns; the outcome arrives as
+    // folderMutationCompleted(), and foldersChanged() is emitted first on
+    // success. The backend refuses to rename or delete a built-in mailbox or
+    // any top-level folder, so entries with deletable == false must not offer
+    // the action.
+    Q_INVOKABLE void createFolder(const QString& parent, const QString& name);
+    Q_INVOKABLE void renameFolder(const QString& folder, const QString& name);
+    Q_INVOKABLE void deleteFolder(const QString& folder);
 
     // Saves the current composition to the Drafts mailbox via
     // POST /api/mail/draft. Same arguments as sendMail() so Compose.qml can
@@ -223,6 +228,26 @@ signals:
     void isBusyChanged();
     void lastErrorChanged();
     void foldersChanged();
+    // Outcome of archiveEmails/deleteEmails/markSpam/moveEmails. `action` is
+    // the wire verb ("archive"/"delete"/"spam"/"move") and `messageIds` is
+    // the exact list that was requested.
+    //
+    // This class is a QML SINGLETON, so every live view receives this. The
+    // messageIds are how a receiver decides whether it was theirs -- a
+    // detail view checks its own messageId is in the list, a swipe row
+    // checks its row's. That is deliberately a value carried by the signal
+    // rather than an "is a call of mine on the stack" test, because with the
+    // request off-thread nobody has one.
+    //
+    // `ok` is false for a refused pairing and for a rejected request. It is
+    // TRUE when the server accepted the request but reported per-message
+    // failures in `failed` -- those are in lastError, and the action itself
+    // did happen for the rest.
+    void actionCompleted(const QString& action, const QStringList& messageIds, bool ok);
+    // Outcome of createFolder/renameFolder/deleteFolder. Unlike
+    // actionCompleted there is nothing to disambiguate with: the folder
+    // dialogs are modal and singular, so "which one was mine" cannot arise.
+    void folderMutationCompleted(bool ok);
     // Emitted when sendMail() is refused with 409 + keylessRecipients: the
     // server's own list of addresses with no usable PGP key, naming the
     // pending send confirmPickupFallbackSend() would re-send.
@@ -338,8 +363,13 @@ private:
     // the .cpp for why this is separate from requirePairing().
     QUrl webmailBaseUrl() const;
     // Shared body of archiveEmails/deleteEmails/markSpam/moveEmails.
-    bool performActionCommon(const QStringList& messageIds, const QString& action,
+    void performActionCommon(const QStringList& messageIds, const QString& action,
                               const std::optional<QString>& targetMailbox);
+    void finishAction(const QString& action, const QStringList& messageIds, const ActionResult& result);
+    // Shared body of createFolder/renameFolder/deleteFolder -- see the .cpp.
+    void runFolderMutation(const QString& failureMessage,
+                            std::function<FolderRepository::FolderMutationFetch(HttpClient&, const RelayEndpoint&)> work,
+                            std::function<void(const QString& resultingFolder)> onApplied);
     static QString dedupedFilePath(const QString& directory, const QString& fileName);
 
     // The exact payload of a send the server refused with 409 +

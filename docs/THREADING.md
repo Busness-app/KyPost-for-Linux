@@ -155,6 +155,21 @@ for the fan-out, and for the unpinned path that shipped before it existed.
     `forceFullResync` is sticky across the fold, so a user-initiated full
     resync cannot be silently downgraded into the background delta it landed
     on top of.
+- **The four mail actions** (archive/delete/spam/move) — report via
+  `actionCompleted(action, messageIds, ok)`. Six QML sites read the `bool`
+  before; they read the signal now, and `messageIds` is how each decides
+  whether the answer was theirs. That value has to be *carried*, because the
+  test it replaces was "is a call of mine on the stack", and with the request
+  off-thread nobody has one. MobileRoot's swipe rows also had to invert their
+  double-tap latch: it was set on success, which only worked while the call
+  was synchronous — the window it guards is now the whole round trip, so it
+  is set on dispatch and released by the failure case.
+- **The four folder methods** — `FolderRepository` split the same way, with
+  one wrinkle: each mutating verb is two round trips (mutate, then re-list,
+  because the backend decides the resulting path and a deletion is only
+  visible as an absence). Both go in phase 2 together; splitting them would
+  put a thread hop between a mutation and the re-list that makes it visible,
+  for nothing.
 
 ### The conversion pattern
 
@@ -210,10 +225,8 @@ Three rules that make it work:
    it does. When it can: drop `guiThreadPinSink` from the fan-out in
    `main()`, leaving the executor as the only target.
 4. **Tier B**, in progress. Not blocked on the composition root — see
-   Constraint 1. Remaining, in the order they are worth doing:
-   - `performActionCommon` (archive/delete/spam/move). No DAO in the chain at
-     all, so it is a straight move; but four QML sites consume the `bool`
-     (`if (MailApp.archiveEmails(...))`) and become signal handlers.
+   Constraint 1. Done so far: the mail refresh, the four actions, and the four
+   folder methods. Remaining, in the order they are worth doing:
    - `sendMail` / `saveDraft` / `confirmPickupFallbackSend`. The awkward one:
      `pickupFallbackRequired` is documented as being emitted *synchronously*
      so a Compose instance can tell its own send from another window's. That

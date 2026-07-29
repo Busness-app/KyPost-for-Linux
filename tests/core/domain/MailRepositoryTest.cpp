@@ -667,7 +667,7 @@ void MailRepositoryTest::planRefreshReturnsNothingWhenUnpairedAndCarriesTheStore
     const std::optional<MailRefreshPlan> delta = repository.planRefresh(QStringLiteral("INBOX"), false);
     QVERIFY(delta.has_value());
     QCOMPARE(delta->folder, QStringLiteral("INBOX"));
-    QCOMPARE(delta->auth.deviceId, QStringLiteral("dev-1"));
+    QCOMPARE(delta->endpoint.auth.deviceId, QStringLiteral("dev-1"));
     QVERIFY(delta->since.has_value());
     QCOMPARE(*delta->since, 4242);
 
