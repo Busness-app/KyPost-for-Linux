@@ -18,10 +18,11 @@ QStringList splitSqlStatements(const QString& sql)
 {
     QStringList statements;
     QString current;
-    // Depth of unterminated BEGIN blocks. A CREATE TRIGGER body is
-    // BEGIN ... END; with internal semicolons that are NOT statement
-    // separators -- the previous plain sql.split(';') shattered any such
-    // migration into invalid fragments the moment somebody wrote one.
+    // Depth of unterminated BEGIN/CASE blocks -- both are closed by END in
+    // SQLite. A CREATE TRIGGER body is BEGIN ... END; with internal
+    // semicolons that are NOT statement separators, and the plain
+    // sql.split(';') this replaced shattered any such migration into invalid
+    // fragments the moment somebody wrote one.
     int blockDepth = 0;
 
     for (int i = 0; i < sql.size(); ++i) {
@@ -42,6 +43,11 @@ QStringList splitSqlStatements(const QString& sql)
                    && !(sql.at(i) == QLatin1Char('*') && sql.at(i + 1) == QLatin1Char('/')))
                 ++i;
             ++i; // land on '/', loop's ++i steps past it
+            // A comment is whitespace, not nothing: dropping it entirely
+            // welded the tokens either side together, so `SELECT a/*x*/b`
+            // became `SELECT ab`. The line-comment branch above already
+            // emits its newline for the same reason.
+            current += QLatin1Char(' ');
             continue;
         }
 
@@ -80,14 +86,25 @@ QStringList splitSqlStatements(const QString& sql)
 
         current += c;
 
-        // Track BEGIN/END only on whole-word boundaries, so a column named
-        // "beginner" or "legend" can't move the depth counter.
-        static const QRegularExpression kBeginAtEnd(
-            QStringLiteral("(?:^|[^A-Za-z0-9_])BEGIN$"), QRegularExpression::CaseInsensitiveOption);
+        // Track the block keywords only on whole-word boundaries, so a
+        // column named "beginner", "legend" or "staircase" can't move the
+        // depth counter.
+        //
+        // CASE counts as an opener, and that is not decoration. SQLite
+        // closes BOTH `BEGIN` and `CASE` with `END`, so counting only BEGIN
+        // meant an ordinary `CASE WHEN ... END` inside a trigger body
+        // decremented the depth to zero early; the next `;` -- still inside
+        // the body -- was then treated as a statement separator and the
+        // trigger was cut in half. The fragments fail to exec, open()
+        // returns false, and main()'s qFatal turns that into an
+        // unrecoverable crash on every launch, from writing perfectly
+        // ordinary SQL in a migration.
+        static const QRegularExpression kOpenerAtEnd(
+            QStringLiteral("(?:^|[^A-Za-z0-9_])(?:BEGIN|CASE)$"), QRegularExpression::CaseInsensitiveOption);
         static const QRegularExpression kEndAtEnd(
             QStringLiteral("(?:^|[^A-Za-z0-9_])END$"), QRegularExpression::CaseInsensitiveOption);
         if (i + 1 >= sql.size() || !(sql.at(i + 1).isLetterOrNumber() || sql.at(i + 1) == QLatin1Char('_'))) {
-            if (kBeginAtEnd.match(current).hasMatch())
+            if (kOpenerAtEnd.match(current).hasMatch())
                 ++blockDepth;
             else if (blockDepth > 0 && kEndAtEnd.match(current).hasMatch())
                 --blockDepth;
@@ -126,6 +143,17 @@ bool Database::open(const QString& path)
     if (!versionQuery.exec(QStringLiteral("PRAGMA user_version")) || !versionQuery.next())
         return false;
     const int version = versionQuery.value(0).toInt();
+    // Bounded on BOTH sides before it is used as an array index and a loop
+    // bound. Negative values indexed kKyPostMigrationSql before its start and
+    // CALLED whatever function pointer sat there -- a torn write or a
+    // rolled-back database turned into an unrecoverable startup crash, on
+    // every launch, with no in-app recovery. INT_MAX was worse in a quieter
+    // way: `version + 1` is signed-overflow UB, which let the optimizer elide
+    // the loop entirely and open the database with no migration applied.
+    if (version < 0 || version > kKyPostMigrationCount) {
+        qWarning("Database: refusing to open a database with unsupported schema version %d", version);
+        return false;
+    }
 
     // One transaction per migration, covering both its statements AND the
     // user_version bump. SQLite has transactional DDL, so this is real: a

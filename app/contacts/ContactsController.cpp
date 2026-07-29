@@ -1,12 +1,13 @@
 #include "contacts/ContactsController.h"
 
+#include "net/NetworkExecutor.h"
+
 #include "contacts/ContactFieldMapping.h"
 #include "domain/ContactPhotoRepository.h"
 #include "domain/ContactSyncRepository.h"
 #include "domain/GroupsRepository.h"
 #include "models/Contact.h"
 #include "models/Group.h"
-#include "util/ReentrancyGuard.h"
 
 #include <KLocalizedString>
 
@@ -139,11 +140,13 @@ std::optional<Contact> findByUid(const QVector<Contact>& contacts, const QString
 } // namespace
 
 ContactsController::ContactsController(ContactSyncRepository& repository, GroupsRepository& groupsRepository,
-                                         ContactPhotoRepository& photoRepository, QObject* parent)
+                                         ContactPhotoRepository& photoRepository,
+                                         NetworkExecutor& networkExecutor, QObject* parent)
     : QObject(parent)
     , m_repository(repository)
     , m_groupsRepository(groupsRepository)
     , m_photoRepository(photoRepository)
+    , m_executor(networkExecutor)
     , m_model(new ContactListModel(this))
 {
     // Deliberately does NOT call load() here -- matches MailController's
@@ -161,7 +164,7 @@ QObject* ContactsController::contactModel() const
 
 bool ContactsController::isBusy() const
 {
-    return m_isBusy;
+    return m_busyDepth > 0;
 }
 
 QString ContactsController::lastError() const
@@ -174,12 +177,21 @@ QString ContactsController::statusMessage() const
     return m_statusMessage;
 }
 
-void ContactsController::setBusy(bool busy)
+// isBusy is a DEPTH, not a flag. A sync and a dedupe can be outstanding at
+// once (their in-flight flags only stop two of the SAME kind overlapping),
+// and with a plain bool whichever finished first cleared the indicator while
+// the other was still running -- reporting idle with a request outstanding.
+void ContactsController::pushBusy()
 {
-    if (m_isBusy == busy)
-        return;
-    m_isBusy = busy;
-    emit isBusyChanged();
+    if (++m_busyDepth == 1)
+        emit isBusyChanged();
+}
+
+void ContactsController::popBusy()
+{
+    Q_ASSERT(m_busyDepth > 0);
+    if (--m_busyDepth == 0)
+        emit isBusyChanged();
 }
 
 void ContactsController::setLastError(const QString& error)
@@ -223,18 +235,50 @@ bool ContactsController::isSynced(const QString& uid)
 // split, for the same reason, as MailController's *Internal methods.
 void ContactsController::sync()
 {
-    ReentrancyGuard guard(m_inNetworkCall);
-    if (!guard.entered())
-        return;
-    syncInternal();
+    syncInternal(nullptr);
 }
 
-void ContactsController::syncInternal()
+// `onApplied`, when set, runs after the outcome has been applied. dedupe()
+// uses it to prefix its own merge count onto the sync's status message --
+// which it can no longer do by simply reading statusMessage() after a
+// synchronous call.
+void ContactsController::syncInternal(std::function<void()> onApplied)
 {
-    setBusy(true);
-    const ContactSyncOutcome outcome = m_repository.sync();
-    setBusy(false);
+    // Coalescing. Not a re-entrancy guard any more: nothing can re-enter this
+    // object. But two syncs must still not overlap -- each reads the pending
+    // queue in phase 1 and deletes exactly those records in phase 3, so a
+    // second sync started mid-flight would push the same queue twice.
+    if (m_syncInFlight) {
+        if (onApplied)
+            onApplied();
+        return;
+    }
 
+    const std::optional<ContactSyncRepository::ContactSyncPlan> plan = m_repository.planSync();
+    if (!plan.has_value()) {
+        setStatusMessage(QString());
+        setLastError(i18n("Not paired"));
+        if (onApplied)
+            onApplied();
+        return;
+    }
+
+    m_syncInFlight = true;
+    pushBusy();
+    m_executor.run(
+        this,
+        [plan = *plan](HttpClient& http) { return ContactSyncRepository::syncWith(http, plan); },
+        [this, plan = *plan, onApplied = std::move(onApplied)](const ContactSyncResult& result) {
+            m_syncInFlight = false;
+            popBusy();
+            applySyncOutcome(m_repository.applySync(plan, result));
+            if (onApplied)
+                onApplied();
+        });
+}
+
+void ContactsController::applySyncOutcome(const ContactSyncOutcome& outcome)
+{
     // Mirrors Android's ContactSyncOutcome toast mapping in
     // ContactsListActivity: one short user-facing string per
     // ContactSyncStatus value.
@@ -245,10 +289,15 @@ void ContactsController::syncInternal()
         // Task 2: refresh the groups name-cache once per successful contact
         // sync cycle -- not on NotPaired/Unauthorized/ServiceUnavailable/
         // Retry, matching the brief's "after a successful contact sync
-        // pass" wording. refresh() itself degrades gracefully (no-op) on
-        // any fetch error, so this never turns a successful contact sync
-        // into a reported failure.
-        m_groupsRepository.refresh();
+        // pass" wording. It degrades gracefully (no-op) on any fetch error,
+        // so this never turns a successful contact sync into a reported
+        // failure.
+        //
+        // Dispatched, not called: this runs from the sync's own completion
+        // handler, so a synchronous fetch here would freeze the GUI thread
+        // AFTER the user had already been told the sync finished -- worse
+        // than the block it replaced, not better.
+        refreshGroupsCache();
         load();
         break;
     case ContactSyncStatus::NotPaired:
@@ -272,26 +321,72 @@ void ContactsController::syncInternal()
 
 void ContactsController::dedupe()
 {
-    ReentrancyGuard guard(m_inNetworkCall);
-    if (!guard.entered())
+    if (m_dedupeInFlight)
         return;
 
-    setBusy(true);
-    const ContactDedupeOutcome outcome = m_repository.dedupe();
-    setBusy(false);
+    // planSync() reads the pending queue too, which dedupe does not need --
+    // but it is the one place the pairing read lives, and duplicating it here
+    // would be a second copy to keep in step.
+    const std::optional<ContactSyncRepository::ContactSyncPlan> plan = m_repository.planSync();
+    if (!plan.has_value()) {
+        setStatusMessage(QString());
+        setLastError(i18n("Not paired"));
+        return;
+    }
+    const RelayEndpoint endpoint = plan->endpoint;
 
+    m_dedupeInFlight = true;
+    pushBusy();
+    m_executor.run(
+        this,
+        [endpoint](HttpClient& http) { return ContactSyncRepository::dedupeWith(http, endpoint); },
+        [this](const ContactDedupeResult& result) {
+            m_dedupeInFlight = false;
+            popBusy();
+            applyDedupeOutcome(ContactSyncRepository::dedupeOutcomeOf(result));
+        });
+}
+
+// The groups name-cache refresh, dispatched. Its failure is deliberately
+// silent: an empty cache renders as no group names, which is a degraded but
+// working contacts screen, and reporting it would turn a successful contact
+// sync into a visible error.
+void ContactsController::refreshGroupsCache()
+{
+    const std::optional<RelayEndpoint> endpoint = m_groupsRepository.planRefresh();
+    if (!endpoint.has_value())
+        return;
+
+    pushBusy();
+    m_executor.run(
+        this,
+        [endpoint = *endpoint](HttpClient& http) { return GroupsRepository::fetchWith(http, endpoint); },
+        [this](const GroupsFetchResult& result) {
+            popBusy();
+            m_groupsRepository.applyRefresh(result);
+        });
+}
+
+void ContactsController::applyDedupeOutcome(const ContactDedupeOutcome& outcome)
+{
     switch (outcome.status) {
     case ContactDedupeStatus::Success:
         if (outcome.mergedCount > 0) {
-            // sync() pulls the resulting tombstones/survivor update, reloads
-            // the model, and sets its own lastError/statusMessage. Only
-            // prefix its message with the merge count when it also
-            // succeeded -- if the follow-up sync() itself fails, leave its
-            // failure message/lastError as-is rather than mask it behind a
+            // The follow-up sync pulls the resulting tombstones/survivor
+            // update, reloads the model, and sets its own lastError/
+            // statusMessage. Only prefix its message with the merge count
+            // when it also succeeded -- if that sync fails, leave its failure
+            // message/lastError as-is rather than mask it behind a
             // misleadingly cheerful "Merged N duplicate(s)" prefix.
-            syncInternal();
-            if (lastError().isEmpty())
-                setStatusMessage(i18n("Merged %1 duplicate(s) -- %2", outcome.mergedCount, statusMessage()));
+            //
+            // The prefixing runs in the sync's own completion callback now.
+            // Reading statusMessage() after the call, as this used to, would
+            // read the message from BEFORE the sync had answered.
+            const int mergedCount = outcome.mergedCount;
+            syncInternal([this, mergedCount]() {
+                if (lastError().isEmpty())
+                    setStatusMessage(i18n("Merged %1 duplicate(s) -- %2", mergedCount, statusMessage()));
+            });
         } else {
             setLastError(QString());
             setStatusMessage(i18n("No duplicates found"));
@@ -413,6 +508,14 @@ void ContactsController::applyFieldsToContact(Contact& contact, const QVariantMa
 
 QString ContactsController::createContact(const QVariantMap& fields)
 {
+    // No guard. These make no network call at all -- they only queue a local
+    // change -- and the interleaving they were added for is now handled where
+    // it belongs: ContactSyncRepository::applySync deletes exactly the
+    // records its own phase 1 read, by id, so a change enqueued while a sync
+    // is in flight survives to the next one. Blocking the user's Save for the
+    // length of a round trip to protect a rule the repository already
+    // enforces would be the wrong trade.
+
     const QString fn = fields.value(QStringLiteral("fn")).toString().trimmed();
     if (fn.isEmpty()) {
         setLastError(i18n("Name is required"));
@@ -431,6 +534,8 @@ QString ContactsController::createContact(const QVariantMap& fields)
 
 bool ContactsController::updateContact(const QString& uid, const QVariantMap& fields)
 {
+    // No guard -- see createContact() above.
+
     const QString fn = fields.value(QStringLiteral("fn")).toString().trimmed();
     if (fn.isEmpty()) {
         setLastError(i18n("Name is required"));
@@ -455,6 +560,8 @@ bool ContactsController::updateContact(const QString& uid, const QVariantMap& fi
 
 bool ContactsController::deleteContact(const QString& uid, qint64 rev)
 {
+    // No guard -- see createContact() above.
+
     m_repository.queueDelete(uid, rev);
     setLastError(QString());
     load();

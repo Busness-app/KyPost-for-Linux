@@ -10,7 +10,8 @@
 class QUrl;
 class PairingStore;
 class SettingsStore;
-class DeregisterClient;
+class CertificatePinSink;
+class NetworkExecutor;
 
 // QML-facing bridge (Task 34) over core/domain's DeviceRegistrationService/
 // PairingStore. Registered as the "Pairing" QML singleton in main.cpp.
@@ -120,7 +121,8 @@ public:
     Q_ENUM(State)
 
     PairingController(DeviceRegistrationService& service, PairingStore& pairingStore, SettingsStore& settingsStore,
-                       DeregisterClient& deregisterClient, QObject* parent = nullptr);
+                       CertificatePinSink& pinSink, NetworkExecutor& executor,
+                       QObject* parent = nullptr);
 
     bool isPaired() const;
     QString pairedServerHost() const;
@@ -232,7 +234,11 @@ private:
     // deviceRegistrationService.pair(params, m_deviceToken), maps
     // RegistrationOutcome to pairingState/pairingError, calls
     // refreshFromStore() on success.
-    bool pairFromParsedParams(const QString& sub, const QString& srv, const QString& pt, const QString& reg);
+    // Returns nothing: the registration is dispatched and the answer arrives
+    // on pairingState. See applyRegistrationResult below.
+    void pairFromParsedParams(const QString& sub, const QString& srv, const QString& pt, const QString& reg);
+    // The completion half, running back on this object's own thread.
+    void applyRegistrationResult(const NativeRegistrationResult& result);
     // forceNotify: emit pairingStateChanged() even when (state, error) is
     // unchanged from the current values -- needed when some OTHER piece of
     // NOTIFY-bound state (e.g. m_pendingPair) changed too, since QML
@@ -243,7 +249,10 @@ private:
     DeviceRegistrationService& m_service;
     PairingStore& m_pairingStore;
     SettingsStore& m_settingsStore;
-    DeregisterClient& m_deregisterClient;
+    // Only to drop the in-process certificate pin on unpair -- see
+    // removePairing(). PairingController makes no requests of its own.
+    CertificatePinSink& m_pinSink;
+    NetworkExecutor& m_executor;
     State m_state = State::Idle;
     QString m_pairingError;
     bool m_isPaired = false;
@@ -255,10 +264,9 @@ private:
     // by a fresh pairFromDeepLink()/pairFromPastedLink() call. Meaningful
     // only while pairingState == "confirm".
     std::optional<PairingParams> m_pendingPair;
-    // Guards this controller's network-calling slots against re-entering
-    // through the nested QEventLoop HttpClient runs -- QML keeps delivering
-    // clicks while a blocking call is suspended. See
-    // core/util/ReentrancyGuard.h.
+    // In-flight flag, not a re-entrancy guard: the requests run on the
+    // executor thread, so nothing can re-enter this object. It stops a second
+    // request piling up behind one already out.
     bool m_inNetworkCall = false;
     bool m_reregistrationRejected = false;
     bool m_certificateMismatch = false;

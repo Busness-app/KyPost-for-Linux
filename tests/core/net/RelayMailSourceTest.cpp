@@ -96,7 +96,14 @@ void RelayMailSourceTest::fetchInboxMapsTwoTabsWithAtUtcPassthroughAndOptionalFi
 
     QVERIFY(result.byTab.contains(QStringLiteral("Inbox")));
     QCOMPARE(result.byTab.value(QStringLiteral("Inbox")).size(), 1);
-    const InboxEmailItem& item1 = result.byTab.value(QStringLiteral("Inbox")).at(0);
+    // The list is bound to a named local first: QHash::value() returns by
+    // value, so `const InboxEmailItem& = ....value(k).at(0)` binds a
+    // reference into a temporary QList that dies at the end of the
+    // statement. It happens not to crash today only because QList's
+    // implicit sharing keeps the buffer alive via the copy still in the
+    // hash -- which is luck, not a guarantee (-Wdangling-reference).
+    const QVector<InboxEmailItem> inboxItems = result.byTab.value(QStringLiteral("Inbox"));
+    const InboxEmailItem& item1 = inboxItems.at(0);
     QCOMPARE(item1.email.messageId, QStringLiteral("m1"));
     QCOMPARE(item1.email.sender, QStringLiteral("alice@example.com"));
     QCOMPARE(item1.email.sentTo, QStringLiteral("bob@example.com"));
@@ -126,7 +133,8 @@ void RelayMailSourceTest::fetchInboxMapsTwoTabsWithAtUtcPassthroughAndOptionalFi
 
     QVERIFY(result.byTab.contains(QStringLiteral("Archive")));
     QCOMPARE(result.byTab.value(QStringLiteral("Archive")).size(), 1);
-    const InboxEmailItem& item2 = result.byTab.value(QStringLiteral("Archive")).at(0);
+    const QVector<InboxEmailItem> archiveItems = result.byTab.value(QStringLiteral("Archive"));
+    const InboxEmailItem& item2 = archiveItems.at(0);
     QCOMPARE(item2.email.messageId, QStringLiteral("m2"));
     QCOMPARE(item2.email.folder, QStringLiteral("Archive"));
     // "body"/"detail"/"changeType" absent from the wire -> nullopt/empty, not

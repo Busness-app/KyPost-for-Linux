@@ -532,6 +532,7 @@ Kirigami.ApplicationWindow {
             Text {
                 Layout.fillWidth: true
                 visible: MailApp.lastError !== ""
+                textFormat: Text.PlainText
                 text: MailApp.lastError
                 color: Theme.dangerColor
                 font.family: Theme.fontUi
@@ -627,11 +628,23 @@ Kirigami.ApplicationWindow {
                     // Guards against a double-fire if a user manages to
                     // trigger two click events on the same revealed action
                     // label in quick succession (e.g. a fast double-tap)
-                    // before the model updates and this row disappears --
-                    // MailApp.archiveEmails/deleteEmails run synchronously
-                    // (Phase 6 global constraint 2), so this flag fully
-                    // closes that window for a given row instance.
+                    // before the model updates and this row disappears.
+                    //
+                    // Set when the action is dispatched and cleared only if
+                    // it FAILS. A failed archive ("Not paired" on first
+                    // launch, say) has to stay retryable on this same row
+                    // instance -- reuseItems: false only recreates delegates
+                    // when the model itself rebuilds, so a permanently
+                    // latched row would never offer its swipe actions again.
                     property bool actionTriggered: false
+
+                    Connections {
+                        target: MailApp
+                        function onActionCompleted(action, messageIds, ok) {
+                            if (!ok && messageIds.indexOf(model.messageId) !== -1)
+                                emailRow.actionTriggered = false
+                        }
+                    }
 
                     contentItem: RowLayout {
                         spacing: 12
@@ -650,6 +663,7 @@ Kirigami.ApplicationWindow {
 
                                 Text {
                                     Layout.fillWidth: true
+                                    textFormat: Text.PlainText
                                     text: model.sender
                                     color: Theme.inkStrong
                                     font.family: Theme.fontUi
@@ -675,6 +689,7 @@ Kirigami.ApplicationWindow {
 
                                 Text {
                                     visible: !!model.pgpMarker
+                                    textFormat: Text.PlainText
                                     text: model.pgpMarker || ""
                                     color: Theme.inkStrong
                                     font.family: Theme.fontUi
@@ -686,6 +701,7 @@ Kirigami.ApplicationWindow {
                                 }
                                 Text {
                                     Layout.fillWidth: true
+                                    textFormat: Text.PlainText
                                     text: model.subject
                                     color: Theme.inkStrong
                                     font.family: Theme.fontUi
@@ -695,6 +711,7 @@ Kirigami.ApplicationWindow {
                             }
                             Text {
                                 Layout.fillWidth: true
+                                textFormat: Text.PlainText
                                 text: model.preview
                                 color: Theme.ink
                                 font.family: Theme.fontUi
@@ -736,20 +753,17 @@ Kirigami.ApplicationWindow {
                             SwipeDelegate.onClicked: {
                                 if (emailRow.actionTriggered)
                                     return
-                                // Only latch the guard once the action has
-                                // actually committed (mirrors EmailDetail.qml's
-                                // own Archive/Junk/Delete handlers). deleteEmails
-                                // returns false without touching the cached list
-                                // when requirePairing()/the network call fails
-                                // (see MailController::performActionCommon), and
-                                // this delegate instance survives that failure
-                                // (reuseItems: false only recreates delegates
-                                // when the model itself rebuilds) -- latching
-                                // unconditionally here would permanently disable
-                                // this row's swipe actions after any transient
-                                // failure, e.g. "Not paired" on first launch.
-                                if (MailApp.deleteEmails([model.messageId]))
-                                    emailRow.actionTriggered = true
+                                // Latched BEFORE the call, and released by
+                                // emailRow's onActionCompleted below if the
+                                // action failed. The old code latched on
+                                // success instead, which worked only because
+                                // deleteEmails ran synchronously: the double-
+                                // tap window it guards is now the whole round
+                                // trip, so latching afterwards would leave it
+                                // wide open for exactly as long as the guard
+                                // matters.
+                                emailRow.actionTriggered = true
+                                MailApp.deleteEmails([model.messageId])
                             }
                         }
                     }
@@ -775,11 +789,10 @@ Kirigami.ApplicationWindow {
                                 if (emailRow.actionTriggered)
                                     return
                                 // See the matching comment on the Delete
-                                // handler above -- only latch on success so a
-                                // failed archive (e.g. "Not paired") can be
-                                // retried on this same row instance.
-                                if (MailApp.archiveEmails([model.messageId]))
-                                    emailRow.actionTriggered = true
+                                // handler above -- latch first, release below
+                                // on failure.
+                                emailRow.actionTriggered = true
+                                MailApp.archiveEmails([model.messageId])
                             }
                         }
                     }
@@ -838,6 +851,7 @@ Kirigami.ApplicationWindow {
                             anchors.verticalCenter: parent.verticalCenter
                             anchors.left: parent.left
                             anchors.leftMargin: 10 + (modelData.depth || 0) * 14
+                            textFormat: Text.PlainText
                             text: modelData.displayName
                             color: Theme.inkStrong
                             font.family: Theme.fontUi
@@ -881,5 +895,16 @@ Kirigami.ApplicationWindow {
     // is one definition of "what the lock screen covers" rather than two
     // hand-maintained copies. Mobile has no pop-out windows, so this single
     // instance covers everything here.
+    // See DesktopRoot.qml for the reasoning: QQuickOverlay stacks above the
+    // content item, so anything open when the lock engages outlives it.
+    Connections {
+        target: AppLock
+        function onLockedChanged() {
+            if (!AppLock.locked)
+                return;
+            folderPopup.close();
+        }
+    }
+
     LockOverlay { id: unlockOverlay }
 }

@@ -252,6 +252,91 @@ defect.
   deliberately is not. DNS lookups on this path are bounded
   (`kResolveTimeoutMs`), never `QHostInfo::fromName()`.
 
+## 6d. Rules added by the 2026-07-27 security audit (run 2)
+
+Same standard as 6b and 6c: each one is here because breaking it produced a
+real defect. The theme of this round is that the previous round's fixes were
+applied to the *instance* that was reported rather than to the *class*.
+
+- **`Text.AutoText` is banned. Every `Text` bound to wire or sender data sets
+  `textFormat: Text.PlainText`.** QML's default runs
+  `Qt::mightBeRichText()` and hands markup-shaped strings to the StyledText
+  parser, which supports `<img src>` and fetches it over the *QML engine's*
+  `QNetworkAccessManager`. That is a different network stack from
+  `EmailDetail.qml`'s WebEngineView, so `settings.autoLoadImages` and
+  `RemoteContentInterceptor` cannot see it: an `<img>` tag in a Subject header
+  beaconed when the inbox list laid out, before the message was opened, while
+  the UI said "Images are hidden to protect your privacy." An earlier fix set
+  `textFormat` on two labels in `PgpScanContactKey.qml` and left the other
+  ~25 sites; they are all set now. `tests/qml/tst_PlainTextRendering.qml`
+  holds the line.
+- **Security state is read from the authority that owns it, never inferred
+  from a side effect.** `PairingStore` decided whether the credential gate was
+  on by looking for its own sealed blob. `clear()` removes the blob and cannot
+  reach `applock.credentialPinGateEnabled`, so unpair-then-re-pair wrote the
+  device secret in plaintext under a flag still claiming protection; a failed
+  keychain read did the same, because `SecureStore::get()` collapses "absent"
+  and "read failed" into one `std::nullopt`. The gate is now flag-OR-blob, so
+  both directions fail closed.
+- **A precondition checked before a blocking call must be *captured*, not
+  re-read after it.** `HttpClient` runs a nested `QEventLoop`, so a window
+  minimise reaches `AppLock.lockNow()` mid-request. `DeviceRegistrationService`
+  checked `canResealDeviceSecret()`, blocked, and then failed `save()` against
+  a session key that had been dropped in between -- and responded by clearing
+  the entire pairing, including the TOFU pin, after the relay had already
+  rotated the secret. It now snapshots the sealing key first
+  (`PairingStore::sealingKeySnapshot()`).
+- **The TLS pin is per-reply and per-origin.** `QNetworkReply::encrypted`
+  fires once per *connection*, so a pooled keep-alive reuse never fires it and
+  a shared "last SPKI seen anywhere" member held whatever host handshook most
+  recently -- letting a scanned QR code decide what the next unattended
+  re-registration pinned as the relay's key. Read it from
+  `HttpResult::peerSpkiSha256`. Enforce it only on the pinned origin: applying
+  it to the deliberately cross-server PGP QR fetch raised a false "your mail
+  server is being impersonated" banner on any third-party scan. And clear it
+  (`HttpClient::clearCertificatePin()`) wherever the trust anchor is discarded
+  or re-established, or the banner's own "unpair and pair again" advice cannot
+  be followed without restarting the process.
+- **Redirects are refused by default.** Qt's `NoLessSafeRedirectPolicy`
+  follows cross-host redirects and strips nothing: every redirect status
+  forwards `X-Kypost-Device-Secret`, and 307/308 forward the body. All four
+  verbs now default to same-origin-only; pass a `RedirectValidator` to widen
+  it deliberately.
+- **Validate a response before persisting anything from it.** A 200 carrying
+  any JSON object counted as a successful registration -- `ok` was parsed and
+  read by nobody, and an empty `deviceId`/`deviceSecret` was stored over a
+  working one. Combined with `reg`'s path being unconstrained (origin was
+  checked, path was not), one deep link naming the user's *own* server could
+  POST to `/api/health` and destroy the pairing.
+- **Anything shown to authorize a security decision is displayed in its
+  unambiguous form.** `QUrl::host()` defaults to `FullyDecoded`, which decodes
+  punycode, and Qt applies no confusable-script policy. The pairing confirm
+  dialog now shows `QUrl::FullyEncoded` and brackets IPv6 literals.
+- **`QQuickOverlay` stacks above the lock gate.** Popups and
+  `Kirigami.OverlaySheet`s left open when the app locks stay visible *and*
+  clickable over the PIN screen, and being modal, their dimmer swallows clicks
+  aimed at it. Both roots now close their root-scope popups on
+  `AppLock.locked`, and `PairingController::removePairing()` -- which
+  deregisters the device and destroys the credential -- carries the same
+  `m_appLocked` guard its two siblings already had. Every PIN verification
+  goes through `AppLockManager::verifyPinRateLimited()`, so the Settings
+  prompts are subject to the lockout and the wipe threshold too.
+- **Strip C0 controls from any externally-supplied filename.** `QFile::open()`
+  passes the path to `open(2)`, which truncates at a NUL, while
+  `QFile::exists()`/`remove()` reject the same string -- so a sender-chosen
+  `Invoice.desktop\0.pdf` satisfied the ephemeral-attachment extension gate
+  and landed as `Invoice.desktop`, and every cleanup call silently no-op'd.
+- **Values used as indices or loop bounds are bounded on BOTH sides.**
+  `PRAGMA user_version` was bounded only above and then indexed a
+  function-pointer array; negative values called whatever sat before it, and
+  `INT_MAX` made `version + 1` signed-overflow UB, which let the optimizer
+  drop the migration loop and open an unmigrated database.
+- **Hostile Location Protection is decided before anything touches the disk.**
+  The pre-rename database migration ran first, so the memory-only mode copied
+  the entire legacy database out to `kypost.db` on every launch before
+  deleting it again. The legacy paths are now hoisted into `legacyDbPaths` and
+  every wipe path names them.
+
 ## 7. DOX framework
 
 ### Core Contract

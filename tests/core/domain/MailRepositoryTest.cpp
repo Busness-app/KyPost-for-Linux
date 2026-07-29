@@ -33,6 +33,8 @@ private slots:
     void refreshFolderUpdatedDeltaKeepsCachedBody();
     void refreshFolderUpdatedDeltaDoesNotTurnDecryptedMailIntoClientProtected();
     void refreshFolderNewDeltaWithNoBodyStaysClientProtected();
+    void planRefreshReturnsNothingWhenUnpairedAndCarriesTheStoredCursorOtherwise();
+    void applyRefreshPersistsTheSameRowsWithNoNetworkAndNoStoreReads();
 
 private:
     static void savePairing(PairingStore& pairingStore, quint16 port);
@@ -630,6 +632,112 @@ void MailRepositoryTest::refreshFolderNewDeltaWithNoBodyStaysClientProtected()
     const std::optional<Email> stored = emailDao.findById(QStringLiteral("m-sealed"));
     QVERIFY(stored.has_value());
     QCOMPARE(pgpMessageStateOf(*stored), PgpMessageState::ClientProtected);
+}
+
+// Phase 1 is the only phase that reads the thread-confined stores, so it is
+// the only phase that can answer "not paired" -- and it must carry the stored
+// cursor across the thread hop, because the executor thread cannot read
+// CursorStore itself.
+void MailRepositoryTest::planRefreshReturnsNothingWhenUnpairedAndCarriesTheStoredCursorOtherwise()
+{
+    Database db;
+    QVERIFY(db.open(QStringLiteral(":memory:")));
+    EmailDao emailDao(db.handle());
+
+    QTemporaryDir secureDir;
+    QVERIFY(secureDir.isValid());
+    SecureStoreFile secureStore(secureDir.path());
+    PairingStore pairingStore(secureStore);
+
+    QTemporaryDir cursorDir;
+    QVERIFY(cursorDir.isValid());
+    CursorStore cursorStore(cursorDir.filePath(QStringLiteral("cursor.ini")));
+    cursorStore.setMailCursor(QStringLiteral("4242"));
+
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    RelayMailSource source(http);
+    MailRepository repository(source, emailDao, pairingStore, cursorStore);
+
+    // Unpaired: no plan, so the caller never dispatches anything.
+    QVERIFY(!repository.planRefresh(QStringLiteral("INBOX"), false).has_value());
+
+    savePairing(pairingStore, 1); // port is irrelevant, nothing is sent here
+
+    const std::optional<MailRefreshPlan> delta = repository.planRefresh(QStringLiteral("INBOX"), false);
+    QVERIFY(delta.has_value());
+    QCOMPARE(delta->folder, QStringLiteral("INBOX"));
+    QCOMPARE(delta->endpoint.auth.deviceId, QStringLiteral("dev-1"));
+    QVERIFY(delta->since.has_value());
+    QCOMPARE(*delta->since, 4242);
+
+    // forceFullResync must OMIT `since` rather than send 0 -- `since` present
+    // at all puts this endpoint into delta mode. Same rule the synchronous
+    // form has always followed; pinned here because the plan is now the only
+    // thing carrying that decision to the request.
+    const std::optional<MailRefreshPlan> full = repository.planRefresh(QStringLiteral("INBOX"), true);
+    QVERIFY(full.has_value());
+    QVERIFY(!full->since.has_value());
+}
+
+// Phase 3 does the delta merge and every database write. Proving it needs no
+// network and no pairing is what makes it safe to run from a completion
+// handler: the reply is already in hand, and re-reading a store that may have
+// changed while the request was out (the app locking, say) would be a TOCTOU.
+void MailRepositoryTest::applyRefreshPersistsTheSameRowsWithNoNetworkAndNoStoreReads()
+{
+    Database db;
+    QVERIFY(db.open(QStringLiteral(":memory:")));
+    EmailDao emailDao(db.handle());
+
+    QTemporaryDir secureDir;
+    QVERIFY(secureDir.isValid());
+    SecureStoreFile secureStore(secureDir.path());
+    PairingStore pairingStore(secureStore); // never saved -- deliberately unpaired
+
+    QTemporaryDir cursorDir;
+    QVERIFY(cursorDir.isValid());
+    CursorStore cursorStore(cursorDir.filePath(QStringLiteral("cursor.ini")));
+
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    RelayMailSource source(http);
+    MailRepository repository(source, emailDao, pairingStore, cursorStore);
+
+    // Hand-built rather than fetched: there is no server in this test, which
+    // is the point.
+    Email work;
+    work.messageId = QStringLiteral("m1");
+    work.folder = QStringLiteral("Work"); // the tab name, as RelayMailSource stamps it
+    work.atUtc = QStringLiteral("2026-07-01T00:00:00Z");
+
+    InboxFetchResult result;
+    result.tabs = QStringList{ QStringLiteral("Work"), QStringLiteral("Uncategorized") };
+    result.byTab[QStringLiteral("Work")] = QVector<InboxEmailItem>{ InboxEmailItem{ work, QString(), std::nullopt } };
+    result.isDelta = true;
+    result.cursor = 99;
+
+    MailRefreshPlan plan;
+    plan.folder = QStringLiteral("INBOX");
+
+    QCOMPARE(repository.applyRefresh(plan, result).outcome, MailRepositoryOutcome::Success);
+
+    // Both wire-mapping fixes this layer owns still happen: folder corrected
+    // to the requested mailbox, keywords populated from the tab bucket.
+    const std::optional<Email> stored = emailDao.findById(QStringLiteral("m1"));
+    QVERIFY(stored.has_value());
+    QCOMPARE(stored->folder, QStringLiteral("INBOX"));
+    QCOMPARE(stored->keywords, QStringList{ QStringLiteral("Work") });
+    QCOMPARE(cursorStore.mailCursor(), QStringLiteral("99"));
+
+    // A transport error is reported without touching the cache at all.
+    InboxFetchResult failed;
+    failed.error = NetworkError::ServiceUnavailable;
+    failed.detail = QStringLiteral("relay down");
+    const MailFetchOutcome outcome = repository.applyRefresh(plan, failed);
+    QCOMPARE(outcome.outcome, MailRepositoryOutcome::ServiceUnavailable);
+    QCOMPARE(outcome.detail, QStringLiteral("relay down"));
+    QVERIFY(emailDao.findById(QStringLiteral("m1")).has_value());
 }
 
 QTEST_GUILESS_MAIN(MailRepositoryTest)

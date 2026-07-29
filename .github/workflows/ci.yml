@@ -149,6 +149,17 @@ jobs:
       # already had the package. The Flatpak needs no matching module --
       # org.kde.Platform already ships OpenSSL.
       #
+      # libargon2-dev backs core/CMakeLists.txt's
+      # pkg_check_modules(ARGON2 REQUIRED libargon2), added when the
+      # credential seal's key derivation moved from PBKDF2 to Argon2id (see
+      # core/security/CredentialCipher.h -- a six-digit PIN under PBKDF2-150k
+      # is a few GPU-hours offline). Package name verified against
+      # packages.ubuntu.com for noble, not guessed, per the note above.
+      # Unlike libssl-dev this one DOES need a Flatpak module:
+      # org.kde.Platform ships OpenSSL but not libargon2, so
+      # packaging/flatpak/com.urlxl.mail.yaml builds it from the reference
+      # implementation.
+      #
       # No package was added for the QmlTests target (Qt Quick Test, added
       # 2026-07-26): Qt6QuickTestConfig.cmake ships in the same upstream
       # qtdeclarative module as Qt6Quick/Qt6Qml, i.e. qt6-declarative-dev,
@@ -179,7 +190,8 @@ jobs:
             kf6-kstatusnotifieritem-dev \
             qtkeychain-qt6-dev \
             kunifiedpush-dev \
-            libssl-dev
+            libssl-dev \
+            libargon2-dev
 
       # ZXing (zxing-cpp) backs the PGP QR key exchange feature's
       # encode/decode (app/pgp/PgpQrController.cpp, app/pgp/PgpQrScanner.cpp
@@ -231,3 +243,31 @@ jobs:
       # session required).
       - name: Test
         run: ctest --test-dir build --output-on-failure
+
+      # A second build of the same tree under AddressSanitizer and
+      # UndefinedBehaviorSanitizer.
+      #
+      # Not paranoia for its own sake: this code does raw EVP_* calls with
+      # manual length arithmetic and reinterpret_cast<quint32*> over
+      # QByteArray buffers (core/security/CredentialCipher.cpp), and indexes
+      # a function-pointer table by a value read out of the database
+      # (core/db/Database.cpp). Those are precisely the defects a passing
+      # test suite does not notice -- the suite already passed while
+      # Database::open() would happily call whatever sat before the start of
+      # kKyPostMigrationSql for a negative user_version.
+      #
+      # detect_leaks=0: Qt's QApplication/QML engine internals hold
+      # deliberately-unfreed singletons, so LeakSanitizer reports are noise
+      # here. ASan's use-after-free/overflow detection and all of UBSan
+      # remain on, which is the part that matters.
+      - name: Configure (sanitizers)
+        run: cmake -B build-asan -S . -G Ninja -DCMAKE_BUILD_TYPE=Debug -DKYPOST_SANITIZE=ON
+
+      - name: Build (sanitizers)
+        run: cmake --build build-asan
+
+      - name: Test (sanitizers)
+        env:
+          ASAN_OPTIONS: detect_leaks=0
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: ctest --test-dir build-asan --output-on-failure

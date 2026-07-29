@@ -102,6 +102,7 @@ Item {
         Text {
             Layout.fillWidth: true
             visible: root.showSyncStatus && (ContactsApp.lastError !== "" || ContactsApp.statusMessage !== "")
+            textFormat: Text.PlainText
             text: ContactsApp.lastError !== "" ? ContactsApp.lastError : ContactsApp.statusMessage
             color: ContactsApp.lastError !== "" ? Theme.dangerColor : Theme.ink
             font.family: Theme.fontUi
@@ -175,6 +176,7 @@ Item {
                         Text {
                             Layout.fillWidth: true
                             visible: model.primaryEmail !== ""
+                            textFormat: Text.PlainText
                             text: model.primaryEmail
                             color: Theme.ink
                             font.family: Theme.fontUi

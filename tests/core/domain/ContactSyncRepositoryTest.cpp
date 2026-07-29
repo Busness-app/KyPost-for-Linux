@@ -40,6 +40,7 @@ private slots:
     void dedupeSuccessReturnsMergedCountAndGroupsWithoutTouchingCache();
     void dedupeUnauthorizedFrom401MapsStatus();
     void dedupeServiceUnavailableFrom503MapsStatus();
+    void deletingAnUnsyncedContactDropsItsLaterEditsToo();
 
 private:
     static void savePairing(PairingStore& pairingStore, quint16 port);
@@ -795,5 +796,55 @@ void ContactSyncRepositoryTest::dedupeServiceUnavailableFrom503MapsStatus()
     QCOMPARE(outcome.status, ContactDedupeStatus::ServiceUnavailable);
 }
 
+
+// queueDelete() cancelled only the pending record whose WIRE uid was empty --
+// the create. An edit saved after the create carries the temporary uid, so it
+// survived and was pushed on the next sync as a change naming a uid the
+// server had never seen. The relay treats that as a create under that uid, so
+// the contact the user deleted was recreated account-wide and echoed straight
+// back into the local database.
+void ContactSyncRepositoryTest::deletingAnUnsyncedContactDropsItsLaterEditsToo()
+{
+    Database db;
+    QVERIFY(db.open(QStringLiteral(":memory:")));
+    ContactDao contactDao(db.handle());
+    PendingContactChangeDao pendingDao(db.handle());
+
+    QTemporaryDir cursorDir;
+    QVERIFY(cursorDir.isValid());
+    CursorStore cursorStore(cursorDir.filePath(QStringLiteral("cursor.ini")));
+
+    QTemporaryDir secureDir;
+    QVERIFY(secureDir.isValid());
+    SecureStoreFile secureStore(secureDir.path());
+    PairingStore pairingStore(secureStore);
+
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    ContactSyncClient client(http);
+    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore);
+
+    Contact created;
+    created.fn = QStringLiteral("Temp Person");
+    const QString tempUid = repository.queueCreate(created);
+    QVERIFY(!tempUid.isEmpty());
+
+    // The user reopens it and fixes a typo before ever syncing.
+    Contact edited = created;
+    edited.uid = tempUid;
+    edited.org = QStringLiteral("Acme");
+    repository.queueUpdate(edited);
+    QCOMPARE(pendingDao.findAll().size(), 2);
+
+    // ...then decides to remove it.
+    repository.queueDelete(tempUid, 0);
+
+    // Nothing queued survives: no create, no edit, and no tombstone for a
+    // contact the server never heard of.
+    QCOMPARE(pendingDao.findAll().size(), 0);
+    QVERIFY(contactDao.findAll().isEmpty());
+}
+
 QTEST_GUILESS_MAIN(ContactSyncRepositoryTest)
 #include "ContactSyncRepositoryTest.moc"
+

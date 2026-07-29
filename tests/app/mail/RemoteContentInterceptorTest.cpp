@@ -20,7 +20,9 @@ private slots:
     void stylesheetRequestIsBlockedWhenImagesNotLoaded();
     void fontResourceRequestIsBlockedWhenImagesNotLoaded();
     void mediaRequestIsBlockedWhenImagesNotLoaded();
-    void nonMainFrameRequestsAreAllowedOnceImagesLoaded();
+    void imagesAreAllowedOnceImagesLoaded();
+    void nonImageResourcesStayBlockedOnceImagesLoaded();
+    void subframesStayBlockedOnceImagesLoaded();
 };
 
 void RemoteContentInterceptorTest::mainFrameNavigationIsNeverBlocked()
@@ -56,11 +58,37 @@ void RemoteContentInterceptorTest::mediaRequestIsBlockedWhenImagesNotLoaded()
     QVERIFY(shouldBlockRemoteContentRequest(QWebEngineUrlRequestInfo::ResourceTypeMedia, false));
 }
 
-void RemoteContentInterceptorTest::nonMainFrameRequestsAreAllowedOnceImagesLoaded()
+void RemoteContentInterceptorTest::imagesAreAllowedOnceImagesLoaded()
 {
+    // What the button actually promises.
     QVERIFY(!shouldBlockRemoteContentRequest(QWebEngineUrlRequestInfo::ResourceTypeImage, true));
-    QVERIFY(!shouldBlockRemoteContentRequest(QWebEngineUrlRequestInfo::ResourceTypeStylesheet, true));
-    QVERIFY(!shouldBlockRemoteContentRequest(QWebEngineUrlRequestInfo::ResourceTypeMedia, true));
+    QVERIFY(!shouldBlockRemoteContentRequest(QWebEngineUrlRequestInfo::ResourceTypeFavicon, true));
+}
+
+void RemoteContentInterceptorTest::nonImageResourcesStayBlockedOnceImagesLoaded()
+{
+    // This case previously asserted the opposite, which is how the bypass
+    // survived: "Show images" flipped the interceptor to allow-everything,
+    // re-opening the very stylesheet and media vectors the three tests
+    // above exist to guard. Opting in to images must not opt in to a
+    // sender-controlled stylesheet, font fetch, XHR or beacon -- each is an
+    // equally good read-receipt channel.
+    QVERIFY(shouldBlockRemoteContentRequest(QWebEngineUrlRequestInfo::ResourceTypeStylesheet, true));
+    QVERIFY(shouldBlockRemoteContentRequest(QWebEngineUrlRequestInfo::ResourceTypeMedia, true));
+    QVERIFY(shouldBlockRemoteContentRequest(QWebEngineUrlRequestInfo::ResourceTypeFontResource, true));
+    QVERIFY(shouldBlockRemoteContentRequest(QWebEngineUrlRequestInfo::ResourceTypeXhr, true));
+    QVERIFY(shouldBlockRemoteContentRequest(QWebEngineUrlRequestInfo::ResourceTypePing, true));
+    QVERIFY(shouldBlockRemoteContentRequest(QWebEngineUrlRequestInfo::ResourceTypeScript, true));
+}
+
+void RemoteContentInterceptorTest::subframesStayBlockedOnceImagesLoaded()
+{
+    // A subframe is the one vector with no second line of defence:
+    // EmailDetail.qml's navigationRequested handler only sees main-frame
+    // navigations, so an <iframe src="https://tracker/..."> reached the
+    // network on nothing but this decision.
+    QVERIFY(shouldBlockRemoteContentRequest(QWebEngineUrlRequestInfo::ResourceTypeSubFrame, false));
+    QVERIFY(shouldBlockRemoteContentRequest(QWebEngineUrlRequestInfo::ResourceTypeSubFrame, true));
 }
 
 QTEST_GUILESS_MAIN(RemoteContentInterceptorTest)

@@ -14,12 +14,23 @@
 // it is the key-encryption key for the relay device secret
 // (core/security/CredentialCipher.h). An attacker holding a copy of the
 // keychain entry can attack it offline, where the runtime backoff and
-// wipe-after-10 policy (core/security/LockoutPolicy.h) do not exist. Length
-// is the only thing standing between them and the credential.
+// wipe-after-10 policy (core/security/LockoutPolicy.h) do not exist.
 namespace PinPolicy {
 
-// Six digits is the floor the sibling clients use, and the point at which an
-// offline PBKDF2-150k search stops being trivially cheap.
+// Six digits, matching the sibling clients.
+//
+// This file used to claim six digits was "the point at which an offline
+// PBKDF2-150k search stops being trivially cheap". It was not: 10^6
+// candidates at 150k iterations is ~1.5e11 HMACs of a function that is
+// embarrassingly parallel and needs almost no memory, which one consumer GPU
+// walks in hours. Length was doing far less work than that sentence claimed.
+//
+// The fix was the KDF, not the floor -- the seal now derives its key with
+// Argon2id at 64 MiB per guess, which caps an attacker's parallelism at
+// however many spare gigabytes their hardware has. See
+// CredentialCipher::kMagicArgon2id. Six digits remains the minimum for
+// parity with Android and iOS; a longer or alphanumeric PIN still helps and
+// nothing here prevents one (see kMaximumLength).
 inline constexpr int kMinimumLength = 6;
 inline constexpr int kMaximumLength = 64;
 

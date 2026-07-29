@@ -5,8 +5,111 @@
 // inject tags when placed inside a Text.RichText item. Was duplicated
 // verbatim as escapeHtml() in EmailDetail.qml, Compose.qml, and
 // AutocompleteDropdown.qml.
+// Quotes are escaped as well as the angle brackets. Every current call site
+// puts the result in text position, where they do not matter -- but the
+// function is named for what it promises ("escape HTML"), not for its
+// current callers, and the first person to write
+// `'<a title="' + escapeHtml(name) + '">'` would otherwise reintroduce
+// attribute injection with no warning from the name or this comment.
 function escapeHtml(s) {
-    return (s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    return (s || "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;")
+}
+
+// ---- email body rendering ------------------------------------------------
+//
+// Both functions below live here rather than in EmailDetail.qml for the same
+// reason isExternallyOpenableUrl does: EmailDetail needs QtWebEngine and the
+// whole singleton graph to instantiate, and these two rules are the ones
+// standing between a hostile message and the renderer. They are pure string
+// functions and are tested directly (tests/qml/tst_EmailBodyRendering.qml).
+
+// Whether `body` should be handed to the renderer as HTML rather than
+// escaped and wrapped in <pre>.
+//
+// This is a sniff, and a sniff is the wrong mechanism: /api/inbox returns a
+// single `body` string with no content-type marker, even though the server
+// distinguishes the parts internally (imapadapter.Message has both Body and
+// BodyHTML). Until the wire carries the type, the client has to guess.
+//
+// What it must NOT do is the previous rule, which matched any of seventeen
+// tag names ANYWHERE in the string. A plain-text message quoting markup --
+// a bug report, a snippet from a colleague, a phishing sample forwarded to
+// IT -- was reclassified as HTML and rendered, so a literal
+// `<img src="https://tracker/...">` typed into a text/plain mail became a
+// live fetch the moment the user pressed "Show images".
+//
+// The rule here is "the body BEGINS as a document", which is what a real
+// text/html part looks like and what quoted markup in prose does not: skip
+// whitespace/BOM, an optional doctype, and any leading comments, then
+// require a known tag at that position. Misclassifying HTML as text renders
+// visible markup -- ugly, and safe; the inverse is the one that fetches.
+var htmlLeadingTagRegex = /^<(?:html|head|body|div|p|br|table|span|ul|ol|h[1-6]|center|font|blockquote|pre|meta|style|title|section|article|main)\b/i
+
+function looksLikeHtmlDocument(body) {
+    var s = String(body === undefined || body === null ? "" : body)
+    // Byte-order mark, then leading whitespace.
+    s = s.replace(/^﻿/, "").replace(/^\s+/, "")
+    // An optional doctype and any number of leading comments, in either
+    // order, each followed by more whitespace.
+    for (;;) {
+        var before = s
+        s = s.replace(/^<!doctype[^>]*>/i, "").replace(/^\s+/, "")
+        s = s.replace(/^<!--[\s\S]*?-->/, "").replace(/^\s+/, "")
+        if (s === before)
+            break
+    }
+    return htmlLeadingTagRegex.test(s)
+}
+
+// Content-Security-Policy for the untrusted-sender document.
+//
+// Everything the email view renders is written by whoever sent the message.
+// Three separate mechanisms already constrain it -- javascriptEnabled false,
+// RemoteContentInterceptor, and onNavigationRequested -- and every one of
+// them has needed a fix at least once. CSP is the only one of the four that
+// Blink enforces itself, so it keeps holding if the interceptor is not
+// installed on a future profile, if navigationRequested stops covering a
+// frame type, or if a Qt upgrade changes any of that wiring.
+//
+// default-src 'none' is the point: every fetch directive not named below
+// inherits it and is refused. style-src 'unsafe-inline' is required because
+// the scaffold injects the theme's own <style> block, and because mail is
+// built out of inline style= attributes -- for styles that keyword grants no
+// script capability. img-src widens to the network only once the user has
+// asked for images, mirroring the interceptor rather than trusting it.
+//
+// No `sandbox` directive: it is specified to be ignored when CSP arrives via
+// <meta> rather than an HTTP header, and loadHtml() offers no way to set a
+// header. Listing it would look like a control and be none.
+function emailContentSecurityPolicy(imagesLoaded) {
+    return "default-src 'none'; "
+        + "style-src 'unsafe-inline'; "
+        + (imagesLoaded ? "img-src http: https: data:; " : "img-src data:; ")
+        + "frame-src 'none'; object-src 'none'; media-src 'none'; font-src 'none'; "
+        + "connect-src 'none'; script-src 'none'; form-action 'none'; base-uri 'none'"
+}
+
+// The full document handed to WebEngineView.loadHtml(). `style` is the
+// caller's already-resolved theme CSS (colours come from a QML singleton
+// this module deliberately does not import).
+function renderedEmailHtml(body, imagesLoaded, style) {
+    var inner = looksLikeHtmlDocument(body)
+        ? String(body === undefined || body === null ? "" : body)
+        : ("<pre>" + escapeHtml(body) + "</pre>")
+    return "<html><head>"
+        + "<meta charset=\"utf-8\">"
+        // First, before anything that could trigger a fetch: a CSP meta tag
+        // only governs what follows it in the document.
+        + "<meta http-equiv=\"Content-Security-Policy\" content=\""
+        + emailContentSecurityPolicy(imagesLoaded) + "\">"
+        + "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />"
+        + "<style>" + style + "</style>"
+        + "</head><body>" + inner + "</body></html>"
 }
 
 // Schemes a URL taken from message content may be handed to

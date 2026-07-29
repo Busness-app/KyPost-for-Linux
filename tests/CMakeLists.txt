@@ -34,7 +34,15 @@ kypost_add_test(PushNotificationTest core/models/PushNotificationTest.cpp)
 # core/security: PIN policy, lockout backoff, and the PIN-derived AEAD that
 # backs the credential gate. All three are pure/store-only, no GUI.
 kypost_add_test(LockoutPolicyTest core/security/LockoutPolicyTest.cpp)
+# Links libcrypto directly (kypostcore keeps it PRIVATE): the KDF-migration
+# test has to hand-build a pre-Argon2id blob in the old PBKDF2 + AES-GCM
+# layout, because that is the only way to prove an existing user's sealed
+# credential still opens after the format change. find_package is repeated
+# here because imported targets are directory-scoped and core/'s call does
+# not reach this list.
+find_package(OpenSSL REQUIRED)
 kypost_add_test(CredentialCipherTest core/security/CredentialCipherTest.cpp)
+target_link_libraries(CredentialCipherTest PRIVATE OpenSSL::Crypto)
 kypost_add_test(AppLockStoreTest core/security/AppLockStoreTest.cpp)
 # PinPolicy: what counts as an acceptable PIN. Enforced in C++ because
 # the PIN is the key-encryption key for the relay device secret whenever
@@ -61,6 +69,9 @@ kypost_add_test(DeviceRegistrationServiceTest core/domain/DeviceRegistrationServ
 kypost_add_test(MailRepositoryTest core/domain/MailRepositoryTest.cpp)
 kypost_add_test(FolderRepositoryTest core/domain/FolderRepositoryTest.cpp)
 kypost_add_test(PairingStoreSealTest core/domain/PairingStoreSealTest.cpp)
+# The two data-destruction paths, which lived as untestable lambdas inside
+# main() until they were extracted into core/domain/LocalDataWipe.
+kypost_add_test(LocalDataWipeTest core/domain/LocalDataWipeTest.cpp)
 kypost_add_test(PgpMessageStateTest core/domain/PgpMessageStateTest.cpp)
 kypost_add_test(PgpComposeStateTest core/domain/PgpComposeStateTest.cpp)
 kypost_add_test(KeywordRepositoryTest core/domain/KeywordRepositoryTest.cpp)
@@ -76,6 +87,12 @@ kypost_add_test(PgpQrRepositoryTest core/domain/PgpQrRepositoryTest.cpp)
 kypost_add_test(NetworkErrorTest core/net/NetworkErrorTest.cpp)
 kypost_add_test(RelayAuthTest core/net/RelayAuthTest.cpp)
 kypost_add_test(HttpClientTest core/net/HttpClientTest.cpp)
+# Asserts the property the whole threading migration exists for: that the
+# calling thread is never re-entered while a request is in flight.
+kypost_add_test(NetworkExecutorTest core/net/NetworkExecutorTest.cpp)
+# Guards the unpinned-path regression the first threading conversion caused.
+kypost_add_test(CertificatePinSinkTest core/net/CertificatePinSinkTest.cpp)
+target_include_directories(NetworkExecutorTest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/core/net)
 kypost_add_test(NativeRegistrationClientTest core/net/NativeRegistrationClientTest.cpp)
 kypost_add_test(PushNotificationClientTest core/net/PushNotificationClientTest.cpp)
 kypost_add_test(MfaResponseClientTest core/net/MfaResponseClientTest.cpp)
@@ -309,3 +326,28 @@ target_compile_definitions(QmlTests PRIVATE
 # item state, never on rendered pixels.
 add_test(NAME QmlTests COMMAND QmlTests)
 set_tests_properties(QmlTests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# QmlTests above instantiates a handful of leaf components. It cannot load
+# DesktopRoot or MobileRoot -- those need every C++ singleton -- so a property
+# assignment that makes a whole root fail to load slips through it entirely.
+# That is not hypothetical: it shipped, and the app would not start.
+#
+# qmllint reads the files instead of running them, so it needs no singletons.
+# See tests/qml/qmllint-gate.sh for why it gates on one warning category.
+#
+# Qt's qmllint, NOT whatever `qmllint` is first on PATH -- on at least one
+# distro that name belongs to an unrelated tool which exits 0 on everything.
+find_program(KYPOST_QMLLINT
+  NAMES qmllint
+  HINTS "${QT6_INSTALL_PREFIX}/${QT6_INSTALL_BINS}" "${QT6_INSTALL_PREFIX}/${QT6_INSTALL_LIBEXECS}"
+  PATHS /usr/lib/qt6/bin
+  NO_DEFAULT_PATH
+)
+if(KYPOST_QMLLINT)
+  add_test(NAME QmlPropertyLint
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/qml/qmllint-gate.sh
+            ${KYPOST_QMLLINT} ${CMAKE_SOURCE_DIR}/app/qml)
+else()
+  message(WARNING "Qt's qmllint not found -- QmlPropertyLint will not run. "
+                  "A .qml file assigning a non-existent property will not be caught.")
+endif()

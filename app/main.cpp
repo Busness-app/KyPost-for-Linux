@@ -27,6 +27,7 @@
 #include "domain/ContactSyncRepository.h"
 #include "domain/DeviceRegistrationService.h"
 #include "domain/GroupsRepository.h"
+#include "domain/LocalDataWipe.h"
 #include "domain/KeywordRepository.h"
 #include "domain/FolderRepository.h"
 #include "security/AppLockStore.h"
@@ -41,7 +42,9 @@
 #include "net/ContactSyncClient.h"
 #include "net/FolderClient.h"
 #include "net/GroupsClient.h"
+#include "net/CertificatePinSink.h"
 #include "net/HttpClient.h"
+#include "net/NetworkExecutor.h"
 #include "net/MfaResponseClient.h"
 #include "net/DeregisterClient.h"
 #include "net/NativeRegistrationClient.h"
@@ -269,6 +272,30 @@ int main(int argc, char* argv[])
     // gets tightened too, not just freshly created ones.
     QFile::setPermissions(settingsDir,
                            QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
+
+    // KUnifiedPush writes its client state one directory up, with plain
+    // QSettings -- so it lands 0644 after umask. The Endpoint inside it is a
+    // bearer capability: anyone who reads it can push arbitrary notifications
+    // to this app instance from anywhere on the internet, which is why
+    // UnifiedPushConnector refuses to log more than its host. Upstream should
+    // write it 0600; until it does, tighten it here on every startup. The
+    // path is deterministic (ConfigLocation + "/kunifiedpush-" + the D-Bus
+    // service name), so this needs no cooperation from the library.
+    //
+    // Only reachable on systems whose home directories are world-traversable
+    // -- distributions defaulting to HOME_MODE 0700 already block it -- but
+    // the file is the one piece of this app's state that main() does not own
+    // and therefore never hardened.
+    // Suffixed with the D-Bus service name UnifiedPushConnector is
+    // constructed with further down, NOT applicationName() -- those differ
+    // ("com.urlxl.mail" vs "mail").
+    const QString unifiedPushStatePath =
+        QStandardPaths::writableLocation(QStandardPaths::ConfigLocation)
+        + QStringLiteral("/kunifiedpush-com.urlxl.mail");
+    if (QFile::exists(unifiedPushStatePath)) {
+        QFile::setPermissions(unifiedPushStatePath, QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+    }
+
     SettingsStore settingsStore(settingsDir + QStringLiteral("/settings.ini"));
 
     // Convergent root selection (see the comment further below at
@@ -346,13 +373,28 @@ int main(int argc, char* argv[])
     // mail. Such profiles keep their old data orphaned on disk and re-sync
     // from the relay instead. See docs/RENAME_NOTES.md.
     const QString newDbPath = dataDir + QStringLiteral("/kypost.db");
-    if (!QFile::exists(newDbPath)) {
-        const QString legacyDataDir =
-            QFileInfo(dataDir).absolutePath() + QStringLiteral("/LlamaMail");
-        const QStringList oldDbCandidates = {
-            dataDir + QStringLiteral("/llamamail.db"),
-            legacyDataDir + QStringLiteral("/llamamail.db"),
-        };
+    const QString legacyDataDir = QFileInfo(dataDir).absolutePath() + QStringLiteral("/LlamaMail");
+    // Hoisted out of the migration block below so the wipe paths can name
+    // them too. A pre-rename database was copied (deliberately, for
+    // recoverability) and then known to nobody: neither the wipe after ten
+    // failed PIN attempts nor Hostile Location Protection's pre-clean ever
+    // mentioned these paths, so both reported success while a byte-identical
+    // plaintext copy of every cached message and contact stayed on disk.
+    const QStringList legacyDbPaths = {
+        dataDir + QStringLiteral("/llamamail.db"),
+        legacyDataDir + QStringLiteral("/llamamail.db"),
+    };
+
+    // Read before the migration, not after. This used to be read below, so
+    // the copy ran first and Hostile Location Protection -- whose whole
+    // promise is that nothing touches the disk -- wrote the entire legacy
+    // database out to kypost.db on EVERY launch before deleting it again
+    // with a plain unlink. There is nothing to migrate into in this mode
+    // anyway: the database is ":memory:".
+    const bool hostileLocation = settingsStore.hostileLocationProtectionEnabled();
+
+    if (!hostileLocation && !QFile::exists(newDbPath)) {
+        const QStringList oldDbCandidates = legacyDbPaths;
         for (const QString& oldDbPath : oldDbCandidates) {
             if (!QFile::exists(oldDbPath))
                 continue;
@@ -377,7 +419,6 @@ int main(int argc, char* argv[])
     // chain of stack locals from Database down through every DAO,
     // repository, controller and QML singleton, and there is no supported
     // way to re-point it at a different database at runtime.
-    const bool hostileLocation = settingsStore.hostileLocationProtectionEnabled();
 
     Database database;
     if (hostileLocation) {
@@ -385,6 +426,8 @@ int main(int argc, char* argv[])
         // "delete the file", there could still be a database on disk holding
         // exactly what this mode exists to prevent.
         SecurityWipe::removeDatabaseFiles(newDbPath);
+        for (const QString& legacyDbPath : legacyDbPaths)
+            SecurityWipe::removeDatabaseFiles(legacyDbPath);
         SecurityWipe::clearCacheDirectory(dataDir + QStringLiteral("/contact-photos"));
         if (!database.open(QStringLiteral(":memory:")))
             qFatal("main: Database::open failed for in-memory database");
@@ -442,6 +485,38 @@ int main(int argc, char* argv[])
         qCritical("main: the system secret store is not writable -- pairing and the app lock "
                   "cannot persist. Start a keyring service (gnome-keyring or kwallet) and "
                   "relaunch KyPost.");
+        // This warning is no longer the only thing standing between an
+        // unreachable keyring and a silently-disabled app lock.
+        // SecureStore::read() now reports Failed separately from Absent
+        // (see core/stores/SecureStore.h), SecureStoreKeychain maps
+        // QKeychain's EntryNotFound to Absent and every other error to
+        // Failed, and AppLockStore::lockEnabled()/credentialPinGateEnabled()
+        // both fail CLOSED on Failed. A user who stops their keyring now
+        // gets a lock screen they cannot pass -- with AppLock.storeUnavailable
+        // true so the overlay explains why -- rather than a wide-open app.
+    }
+
+    // The embedded ntfy subscriber tier was removed on 2026-07-26
+    // (core/domain/TransportStateMachine.h). Its topic is a bearer secret --
+    // anyone holding the string can read that device's push stream -- and it
+    // was left behind in the keychain, where PairingStore::clear() and the
+    // ten-failure wipe both step over it because neither knows the key
+    // exists. Remove it once, so an orphaned credential cannot outlive a
+    // wipe the user was told had happened.
+    //
+    // ponytail: this only cleans up the client side. A device that last
+    // registered on that tier still has an ntfy URL as its server-side
+    // deviceToken, and the relay keeps publishing to it until the device
+    // re-registers. Upgrade path: force one re-registration here when the key
+    // was present. Not done because no build carrying that tier was ever
+    // released (v0.1-alpha has zero downloads and the OSTree channel 404s),
+    // so the only affected devices are the maintainer's own test hardware,
+    // which a manual re-pair fixes.
+    if (secureStore.contains(QStringLiteral("ntfy-topic"))) {
+        if (secureStore.remove(QStringLiteral("ntfy-topic")))
+            qInfo("main: removed the orphaned ntfy topic left by the pre-2026-07-26 push tier");
+        else
+            qWarning("main: could not remove the orphaned ntfy topic from the secret store");
     }
 
     // 4. CursorStore -- reuses settingsDir (already computed for
@@ -463,21 +538,53 @@ int main(int argc, char* argv[])
     QNetworkAccessManager networkManager;
     HttpClient httpClient(networkManager);
 
+    // 6b. The worker thread Relay HTTP is migrating onto, with its own
+    // QNetworkAccessManager and HttpClient constructed over there.
+    //
+    // Two HttpClients coexist during the migration and that is deliberate,
+    // not an oversight: the GUI-thread one above still serves every
+    // controller that has not been converted, because moving them all at
+    // once would mean rewriting 23 controller methods, ~12 QML call sites
+    // and three 1,000-line test files in a single step. The cost of the
+    // overlap is that TOFU pin state has to be installed in both places
+    // until the last caller moves -- see docs/THREADING.md, which also
+    // records why the mail/contacts controllers cannot follow the same
+    // route as this one (their call chains touch QSqlDatabase, which is
+    // bound to the thread that opened it).
+    //
+    // Currently used by MfaController alone, which is the reference
+    // conversion.
+    NetworkExecutor networkExecutor;
+
+    // 6c. The single sink every certificate-pin mutation goes through.
+    //
+    // There is more than one HttpClient while the threading migration is in
+    // progress, and naming one of them directly is how the first conversion
+    // shipped an unpinned path: MfaController moved to the executor's client,
+    // which nobody had given a pin or a mismatch handler, so its requests
+    // went out under whatever certificate the CA chain accepted and the
+    // impersonation banner had nothing to compare against. Everything that
+    // touches pin state now takes this fan-out instead of an HttpClient, so
+    // "remember to set it on both" is not something anyone has to remember.
+    // Retiring the GUI-thread client later means deleting one entry here.
+    HttpClientPinSink guiThreadPinSink(httpClient);
+    NetworkExecutorPinSink executorPinSink(networkExecutor);
+    FanOutCertificatePinSink certificatePinSink({ &guiThreadPinSink, &executorPinSink });
+
     // Enforce the certificate pin captured when this device paired (trust on
     // first use -- see DeviceRegistrationService::pair). Empty for a pairing
     // made before pinning existed, or over plain http in testing, in which
     // case enforcement stays off rather than bricking every request.
     if (const std::optional<DevicePairing> existingPairing = pairingStore.load();
         existingPairing.has_value() && !existingPairing->certificateSpkiSha256.isEmpty()) {
-        httpClient.setCertificatePin(
-            QByteArray::fromBase64(existingPairing->certificateSpkiSha256.toLatin1()));
+        certificatePinSink.setPin(
+            QByteArray::fromBase64(existingPairing->certificateSpkiSha256.toLatin1()),
+            QUrl(existingPairing->serverBaseUrl));
     }
 
     // 7. core/net clients -- thin wire-format wrappers around httpClient.
     RelayMailSource relayMailSource(httpClient);
     ContactSyncClient contactSyncClient(httpClient);
-    MfaResponseClient mfaResponseClient(httpClient);
-    DeregisterClient deregisterClient(httpClient);
     NativeRegistrationClient nativeRegistrationClient(httpClient);
     // extended-contact-fields Task 2: GET /api/groups, this repo's first
     // per-resource GET client -- see core/net/GroupsClient.h.
@@ -519,7 +626,7 @@ int main(int argc, char* argv[])
     ContactSyncRepository contactSyncRepository(contactSyncClient, contactDao, pendingContactChangeDao,
                                                  cursorStore, pairingStore);
     DeviceRegistrationService deviceRegistrationService(nativeRegistrationClient, pairingStore, settingsStore,
-                                                        httpClient);
+                                                        certificatePinSink);
 
     // 9. Task 41: the push domain graph deferred by the Phase 4 final-review
     // note above -- PushNotificationClient (over httpClient, same
@@ -554,11 +661,13 @@ int main(int argc, char* argv[])
 
     // Task 32: QML-facing bridge over mailRepository/relayMailSource/
     // keywordRepository/pairingStore (all constructed above). Owns its
-    // EmailListModel (parented to itself); every network-calling slot on
-    // this controller blocks the GUI thread synchronously, same accepted
-    // tradeoff as every other Phase 6 controller (see global constraint 2).
+    // EmailListModel (parented to itself). refresh()/selectFolder() run their
+    // request on networkExecutor; every other network-calling slot on this
+    // controller still blocks the GUI thread synchronously (docs/THREADING.md
+    // step 4).
     MailController mailController(mailRepository, relayMailSource, keywordRepository, pairingStore,
-                                   folderRepository, settingsStore, pgpBootstrapClient, pgpRecipientChecker);
+                                   folderRepository, settingsStore, pgpBootstrapClient, pgpRecipientChecker,
+                                   networkExecutor);
     qmlRegisterSingletonInstance<MailController>(
         "com.urlxl.mail", 1, 0, "MailApp", &mailController);
 
@@ -582,34 +691,41 @@ int main(int argc, char* argv[])
     // and it is deliberately everything an attacker could otherwise read:
     // cached mail/contacts, the pairing credential, and the lock itself
     // (leaving a PIN behind would be a hint about the wiped account).
+    // The wipe itself lives in core/domain/LocalDataWipe, not in the lambda
+    // below. It used to be written out inline here, which is why it went
+    // untested for its whole life -- main() is one unbroken chain of stack
+    // locals with no seam a test can reach, and the bug that hid there for
+    // months was real: the pre-rename database was invisible to this handler
+    // AND to the Hostile Location Protection one, so both reported success
+    // while a full plaintext copy of the same mail and contacts stayed on
+    // disk. This handler is now the journal reporting only.
+    LocalDataWipe localDataWipe(database, pairingStore, appLockStore, settingsStore, dataDir, newDbPath,
+                                 legacyDbPaths);
+
     QObject::connect(&appLockManager, &AppLockManager::wipeRequested, &appLockManager,
-                      [&database, &pairingStore, &appLockStore, &settingsStore, dataDir]() {
+                      [&localDataWipe]() {
                           qWarning("App lock: wipe threshold reached, erasing local data");
-                          // Every step's result is checked. These calls all
-                          // return bool and all of them can genuinely fail --
+                          // Each failure is named individually in the
+                          // journal. All of these genuinely fail --
                           // SecureStore writes fail on any machine with no
                           // reachable Secret Service (see the canary at the
-                          // top of main()), and a failed removal here means
-                          // the device secret and cached mail survive a wipe
-                          // the app has already decided to perform. Silently
+                          // top of main()) -- and a failed removal means the
+                          // device secret and cached mail survive a wipe the
+                          // app has already decided to perform. Silently
                           // relaunching into a state that merely LOOKS wiped
-                          // is the worst available outcome, so each failure
-                          // is named individually in the journal.
-                          const bool tablesWiped = database.wipeAllTables();
-                          const bool photosCleared =
-                              SecurityWipe::clearCacheDirectory(dataDir + QStringLiteral("/contact-photos"));
-                          const bool pairingCleared = pairingStore.clear();
-                          const bool lockCleared = appLockStore.clear();
-                          if (!tablesWiped)
+                          // is the worst available outcome.
+                          const LocalDataWipeResult wiped = localDataWipe.wipeEverything();
+                          if (!wiped.tablesWiped)
                               qCritical("App lock: WIPE INCOMPLETE -- cached mail and contacts could not be erased");
-                          if (!photosCleared)
+                          if (!wiped.photoCacheCleared)
                               qCritical("App lock: WIPE INCOMPLETE -- the contact-photo cache could not be erased");
-                          if (!pairingCleared)
+                          if (!wiped.pairingCleared)
                               qCritical("App lock: WIPE INCOMPLETE -- the pairing credential could not be removed "
                                         "from the secret store; this device may still be able to reach the relay");
-                          if (!lockCleared)
+                          if (!wiped.lockCleared)
                               qCritical("App lock: WIPE INCOMPLETE -- the stored PIN material could not be removed");
-                          settingsStore.setDeliveryMode(QString());
+                          if (!wiped.legacyDatabasesRemoved)
+                              qCritical("App lock: WIPE INCOMPLETE -- a pre-rename database could not be erased");
                           // Relaunch regardless of the above: leaving a
                           // running window holding the pre-wipe view of the
                           // world in front of whoever just failed ten PIN
@@ -630,16 +746,21 @@ int main(int argc, char* argv[])
     // persisted; this erases on-disk data when switching the mode ON, then
     // relaunches so the next process picks the right database.
     QObject::connect(&appLockManager, &AppLockManager::relaunchRequired, &appLockManager,
-                      [&database, newDbPath, dataDir](bool wipeDisk) {
+                      [&localDataWipe](bool wipeDisk) {
                           if (wipeDisk) {
-                              // Empty the tables first: the connection is
-                              // still open, so the file cannot be removed
-                              // reliably yet, and this guarantees the content
-                              // is gone even if the unlink below loses a race
-                              // with a straggling writer.
-                              database.wipeAllTables();
-                              SecurityWipe::removeDatabaseFiles(newDbPath);
-                              SecurityWipe::clearCacheDirectory(dataDir + QStringLiteral("/contact-photos"));
+                              // Shares LocalDataWipe with the ten-failure
+                              // path, which is the point: when these were
+                              // two hand-written blocks they disagreed about
+                              // what "everything" meant, and the pre-rename
+                              // database was missing from both. Unlike that
+                              // path this one also unlinks the live database
+                              // file -- the next launch opens ":memory:", so
+                              // nothing may remain on disk.
+                              const LocalDataWipeResult wiped = localDataWipe.wipeOnDiskDataOnly();
+                              if (!wiped.complete()) {
+                                  qCritical("Hostile Location Protection: could not erase all on-disk data; "
+                                            "this device may still hold cached mail after the relaunch");
+                              }
                           }
                           AppRelauncher::requestRelaunch();
                       });
@@ -669,7 +790,8 @@ int main(int argc, char* argv[])
     // the GUI thread synchronously, same accepted tradeoff as MailController
     // above (see global constraint 2). Its model starts empty until QML
     // calls load()/sync() -- see ContactsController's constructor comment.
-    ContactsController contactsController(contactSyncRepository, groupsRepository, contactPhotoRepository);
+    ContactsController contactsController(contactSyncRepository, groupsRepository, contactPhotoRepository,
+                                           networkExecutor);
     qmlRegisterSingletonInstance<ContactsController>(
         "com.urlxl.mail", 1, 0, "ContactsApp", &contactsController);
 
@@ -677,7 +799,7 @@ int main(int argc, char* argv[])
     // pgpQrClient (both constructed above). Persistence of a scanned key
     // onto a contact happens entirely in QML, gluing this singleton to
     // ContactsApp -- see PgpQrController.h's doc comment.
-    PgpQrController pgpQrController(pgpQrRepository, pgpQrClient);
+    PgpQrController pgpQrController(pgpQrRepository, networkExecutor);
     qmlRegisterSingletonInstance<PgpQrController>(
         "com.urlxl.mail", 1, 0, "PgpQr", &pgpQrController);
     // This repo's first creatable (non-singleton) QML-registered C++ type --
@@ -700,7 +822,8 @@ int main(int argc, char* argv[])
     // (Settings > Notifications) can read straight from it -- see
     // PairingController.h's doc comment on why those reuse pairingChanged()
     // rather than a new signal.
-    PairingController pairingController(deviceRegistrationService, pairingStore, settingsStore, deregisterClient);
+    PairingController pairingController(deviceRegistrationService, pairingStore, settingsStore,
+                                        certificatePinSink, networkExecutor);
     qmlRegisterSingletonInstance<PairingController>(
         "com.urlxl.mail", 1, 0, "Pairing", &pairingController);
 
@@ -738,10 +861,20 @@ int main(int argc, char* argv[])
     // the roots' banner supplies the sentence and offers re-pairing, which
     // is the only real recovery. Safe to capture pairingController by
     // reference: httpClient is declared above it and destroyed after it.
-    httpClient.setCertificateMismatchHandler([&pairingController]() {
+    // Installed on EVERY client, via the fan-out. A mismatch detected on a
+    // path whose client had no handler aborted the request and told the user
+    // nothing -- which is what the executor's client did until now.
+    //
+    // The lambda runs on whichever thread served the request, so the
+    // QObject touch is marshalled rather than called inline: from the
+    // executor thread, setCertificateMismatch() would be writing QML-bound
+    // state from the wrong thread.
+    certificatePinSink.setMismatchHandler([&pairingController]() {
         qCritical("main: TLS certificate pin mismatch -- refusing to send credentials to this "
                   "server; the device must be paired again to trust a new certificate");
-        pairingController.setCertificateMismatch(true);
+        QMetaObject::invokeMethod(
+            &pairingController, [&pairingController]() { pairingController.setCertificateMismatch(true); },
+            Qt::QueuedConnection);
     });
 
     // The ntfy-topic rotation hook that used to sit here (rotate the
@@ -770,11 +903,24 @@ int main(int argc, char* argv[])
     // to route a native-pair link to.
     routeDeepLink(app.arguments(), pairingControllerForDeepLinks);
 
-    // Task 34: QML-facing bridge over mfaResponseClient/pairingStore (both
+    // Task 34: QML-facing bridge over the executor/pairingStore (both
     // constructed above).
-    MfaController mfaController(mfaResponseClient, pairingStore);
-    qmlRegisterSingletonInstance<MfaController>(
-        "com.urlxl.mail", 1, 0, "Mfa", &mfaController);
+    //
+    // Constructed but deliberately NOT registered as a QML singleton. See
+    // MfaController.h's STATUS note: no QML consumes it, and none can --
+    // kypost-server filters unifiedpush devices out of every MFA challenge,
+    // so a Linux device is never notified of one. The class is kept because
+    // that filter is explicitly temporary and this is the half that already
+    // works.
+    //
+    // Registering it anyway made a subsystem with no user reachable from
+    // every QML file in the app, where respond() reads the pairing and fires
+    // an authenticated POST. Dead code is tolerable; dead code wired to the
+    // engine as `Mfa` is attack surface with nothing on the other end.
+    // Re-add the qmlRegisterSingletonInstance line in the same commit that
+    // adds the approval screen, once the backend change lands.
+    MfaController mfaController(networkExecutor, pairingStore);
+    Q_UNUSED(mfaController);
 
     QQmlApplicationEngine engine;
 
@@ -1008,6 +1154,15 @@ int main(int argc, char* argv[])
     pushConnector.registerClient(QStringLiteral("KyPost push notifications"));
 
     const int exitCode = app.exec();
+
+    // Stop the network thread FIRST, before any controller is destroyed.
+    // NetworkExecutor delivers completion handlers to controllers by raw
+    // pointer, and shutdown() is the barrier that guarantees none is in
+    // flight -- it waits for executing work and refuses queued work. The
+    // executor cannot simply be declared after the controllers (which would
+    // destroy it first) because they take a reference to it at
+    // construction, so the ordering is made explicit here instead.
+    networkExecutor.shutdown();
 
     // A clean quit should leave nothing behind, rather than relying on
     // five-minute timers that will never fire now the loop has stopped.

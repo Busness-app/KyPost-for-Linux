@@ -8,6 +8,7 @@
 #include <QList>
 #include <QPair>
 #include <QString>
+#include <QThread>
 #include <QUrl>
 #include <functional>
 #include <optional>
@@ -21,8 +22,48 @@ class QNetworkReply;
 // mirrors kypost-for-Mac's HTTPClient async/await call shape one-for-one
 // (verified reference: Data/Networking/HTTPClient.swift, read for structure
 // only), so every Task 14-18 client reads as a straight-line sequence
-// instead of a signal/callback chain. Callers must invoke get()/post() off
-// the GUI thread once app/ wiring exists in a later phase.
+// instead of a signal/callback chain.
+//
+// THREADING, stated accurately rather than aspirationally.
+//
+// An HttpClient is safe to use from whichever thread owns it, and must be
+// used from that thread only -- including its certificate-pin state, which a
+// request reads mid-handshake. core/net/NetworkExecutor owns one on a worker
+// thread and is the supported way to get there; see docs/THREADING.md.
+//
+// MIGRATION IN PROGRESS. Two instances currently coexist: the executor's,
+// used by every converted controller, and one on the GUI thread in main()
+// still serving the rest. For those remaining callers the paragraph below
+// still applies in full.
+//
+// This header used to say "Callers must invoke get()/post() off the GUI
+// thread once app/ wiring exists in a later phase." That phase did not
+// arrive for a long time, and reading an intention as a description of the
+// code is how the following kept being treated as unrelated bugs rather than
+// one consequence:
+//
+//   * a nested QEventLoop keeps delivering QML input, so any controller
+//     method that makes a network call can be re-entered from the UI while
+//     it is suspended (core/util/ReentrancyGuard.h existed for this, and
+//     guarded a method against itself only -- deleted once every caller had
+//     moved to NetworkExecutor, since nothing can re-enter what is not
+//     suspended);
+//   * AppLock.lockNow() can land in the middle of PairingStore::save(),
+//     which is why that function needs a lock epoch;
+//   * DeviceRegistrationService has to snapshot the sealing key before the
+//     call, because re-reading it afterwards is a TOCTOU;
+//   * main.cpp's deferred re-registration retry needs a
+//     QTimer::singleShot(0) purely to escape a half-finished unlock.
+//
+// Each of those is a real fix and none of them is the fix. Moving this
+// class and its QNetworkAccessManager onto a worker thread -- and making the
+// controllers dispatch-and-return against the busy/state properties they
+// already expose -- is what removes the category. That is now underway; see
+// MfaController for the shape and docs/THREADING.md for the order and the
+// two constraints that decide it.
+//
+// Until a given caller is converted: treat its call sites as re-entrant, and
+// assume any member read after a call may have changed underneath it.
 //
 // The QNetworkAccessManager is injected via constructor reference rather
 // than default-constructed internally, so tests can point it at a local
@@ -42,6 +83,18 @@ public:
         // Content-Disposition/Content-Type rather than the JSON body -- empty
         // for the InvalidUrl early-return path, where no reply was made.
         QList<QPair<QString, QString>> headers;
+        // SPKI SHA-256 of the certificate THIS reply was served over, or
+        // empty for a plaintext request. Read from the reply's own
+        // QSslConfiguration rather than from shared state, because
+        // QNetworkReply::encrypted fires once per TLS *connection*, not per
+        // request: on a pooled keep-alive reuse it never fires at all. A
+        // process-global "last handshake seen anywhere" slot therefore
+        // reported whatever host handshook most recently -- which let a
+        // scanned PGP QR code aimed at an attacker's host decide the SPKI
+        // that the next unattended re-registration pinned as the relay's.
+        // peerCertificate() is populated on reused connections too, so this
+        // is both correct and per-request.
+        QByteArray peerSpkiSha256;
     };
 
     // transferTimeoutMs guards waitForReply()'s QEventLoop against a
@@ -68,23 +121,35 @@ public:
     // Task 14-18 client's own responsibility (QJsonDocument::fromJson on
     // HttpResult::body, mapping a QJsonParseError to NetworkError::Decoding
     // if error is unset here but parsing still fails).
+    // When no redirectValidator is supplied, every verb below defaults to
+    // refusing any redirect that leaves the request's own origin. Qt's
+    // default (NoLessSafeRedirectPolicy) follows cross-HOST redirects and
+    // strips nothing: measured per status code, all of 301/302/303/307/308
+    // forward custom headers -- including X-Kypost-Device-Secret -- to the
+    // new host, and 307/308 forward the request body as well, which on the
+    // registration POST is the subscriber id, the pairing token and the
+    // UnifiedPush endpoint. The relay itself emits no redirects, so nothing
+    // legitimate is lost by refusing them.
     HttpResult get(const QUrl& url, const QList<QPair<QString, QString>>& query,
                    const QList<QPair<QString, QString>>& headers = {},
                    const RedirectValidator& redirectValidator = {});
 
     // Sets Content-Type: application/json.
     HttpResult post(const QUrl& url, const QList<QPair<QString, QString>>& query,
-                     const QJsonObject& jsonBody, const QList<QPair<QString, QString>>& headers = {});
+                     const QJsonObject& jsonBody, const QList<QPair<QString, QString>>& headers = {},
+                     const RedirectValidator& redirectValidator = {});
 
     // Sets Content-Type: application/json. Mirrors post()'s signature shape
     // -- added in Task 17 for the folder-rename endpoint.
     HttpResult put(const QUrl& url, const QList<QPair<QString, QString>>& query,
-                    const QJsonObject& jsonBody, const QList<QPair<QString, QString>>& headers = {});
+                    const QJsonObject& jsonBody, const QList<QPair<QString, QString>>& headers = {},
+                    const RedirectValidator& redirectValidator = {});
 
     // No body -- mirrors get()'s signature shape. Added in Task 17 for the
     // folder-delete endpoint, which takes its target via query param.
     HttpResult del(const QUrl& url, const QList<QPair<QString, QString>>& query,
-                    const QList<QPair<QString, QString>>& headers = {});
+                    const QList<QPair<QString, QString>>& headers = {},
+                    const RedirectValidator& redirectValidator = {});
 
     // --- TOFU certificate pinning ---------------------------------------
     // Trust-on-first-use: the SPKI SHA-256 of the server's TLS certificate
@@ -100,14 +165,52 @@ public:
     // pin-generation tooling (and kypost-android's OkHttp CertificatePinner)
     // produces.
 
-    // Empty disables enforcement. Set from the stored pairing at startup.
-    void setCertificatePin(const QByteArray& spkiSha256);
+    // Empty spkiSha256 disables enforcement. Set from the stored pairing at
+    // startup.
+    //
+    // The pin is scoped to `origin` (scheme+host+port) and enforced ONLY on
+    // requests to that origin. It describes the paired relay and nothing
+    // else. Enforcing it on every reply made the PGP QR key-exchange feature
+    // -- which deliberately fetches from other servers
+    // (PgpQrController::scanQrPayload) -- impossible on any paired device,
+    // and worse, raised the persistent "your mail server's certificate
+    // changed, unpair and pair again" banner on a scan of any third-party
+    // QR code. That is an attacker-triggerable false alarm that talks the
+    // user into exactly the unpair/re-pair the pairing-hijack findings need.
+    void setCertificatePin(const QByteArray& spkiSha256, const QUrl& origin);
     QByteArray certificatePin() const;
 
-    // SPKI SHA-256 seen on the most recent TLS handshake, or empty if the
-    // last request was plaintext or never connected. This is the value the
-    // pairing flow captures.
-    QByteArray lastPeerSpkiSha256() const;
+    // The pin AND the origin it is scoped to, as one value.
+    //
+    // certificatePin() alone cannot round-trip the enforcement state,
+    // because a pin without its origin is not restorable -- which is how
+    // DeviceRegistrationService::pair() came to disable pinning
+    // permanently: it clears the pin before registering (it must -- the
+    // registration is what establishes the new anchor) and only re-armed it
+    // on the success path, so ANY failed re-registration left enforcement
+    // off for the rest of the process. reregisterIfPaired() runs unattended
+    // on every push-endpoint rotation, so an on-path attacker needed only
+    // to make one of those fail.
+    struct CertificatePinState
+    {
+        QByteArray spkiSha256;
+        QUrl origin;
+
+        bool isEnforcing() const { return !spkiSha256.isEmpty(); }
+    };
+
+    CertificatePinState certificatePinState() const;
+    void restoreCertificatePin(const CertificatePinState& state);
+
+    // Drops the in-memory pin and its origin. Must be called wherever the
+    // trust anchor is discarded or re-established -- unpairing, and before a
+    // registration request, whose whole purpose is to establish a new one.
+    // Without this, the certificate-mismatch banner's own instruction
+    // ("remove this pairing and pair again") could not succeed: the re-pair
+    // POST met the relay's new certificate, the stale in-process pin aborted
+    // it, and the banner came straight back. Only a full process restart
+    // cleared it, which the UI never mentions and minimize-to-tray hides.
+    void clearCertificatePin();
 
     // Invoked (on the calling thread, from inside the blocking call) every
     // time a request is aborted because the peer's SPKI did not match the
@@ -121,17 +224,51 @@ public:
     void setCertificateMismatchHandler(CertificateMismatchHandler handler);
 
 private:
+    // The thread this client was constructed on, and the only one that may
+    // touch it. Checked by Q_ASSERT on every public entry point.
+    //
+    // This exists because ThreadSanitizer cannot do the job here. Measured,
+    // not assumed: Qt is not built with -fsanitize=thread, so the
+    // happens-before edges its event queue establishes are invisible, and a
+    // 20-line program that does nothing but hand a std::function to a worker
+    // thread via QMetaObject::invokeMethod produces 11 race reports. Two
+    // different suppression sets were tried against a probe carrying both a
+    // real race and the Qt-mediated false positives; both cut the real
+    // reports as well (12 -> 6 and 12 -> 4), and TSan happens-before
+    // annotations at our own seam only moved 11 -> 10 because the residual
+    // reports are Qt's internal QMetaCallEvent storage, which cannot be
+    // annotated from outside. See docs/THREADING.md.
+    //
+    // An affinity assertion is strictly better for the defect that actually
+    // matters -- an HttpClient being touched from the wrong thread, which is
+    // how the pin could be written while a request reads it mid-handshake.
+    // It is deterministic, fires in every debug run including all 76 tests,
+    // and has no false positives at all.
+    void assertOwningThread(const char* where) const;
+    QThread* m_owningThread = nullptr;
+
     QByteArray m_certificatePin;
-    mutable QByteArray m_lastPeerSpkiSha256;
+    QUrl m_pinnedOrigin;
     CertificateMismatchHandler m_certificateMismatchHandler;
     // Appends query items to url via QUrlQuery, preserving any query url
     // already has — mirrors the Swift URL.appending(queryOrThrow:) extension.
     QUrl urlWithQuery(const QUrl& url, const QList<QPair<QString, QString>>& query) const;
 
-    HttpResult waitForReply(QNetworkReply* reply, const RedirectValidator& redirectValidator = {}) const;
+    HttpResult waitForReply(QNetworkReply* reply, const RedirectValidator& redirectValidator) const;
+
+    // Returns redirectValidator when the caller supplied one, otherwise a
+    // same-origin-as-requestUrl validator. Never returns empty, so every
+    // request runs under UserVerifiedRedirectPolicy.
+    static RedirectValidator effectiveRedirectValidator(const QUrl& requestUrl,
+                                                        const RedirectValidator& redirectValidator);
 
     QNetworkAccessManager& m_manager;
 };
+
+// scheme+host+port equality. Shared by HttpClient's redirect default, the
+// pin's origin scoping, DeviceRegistrationService's pullEndpoint check and
+// PairingController's reg/srv check, which all used to hand-roll it.
+bool sameUrlOrigin(const QUrl& a, const QUrl& b);
 
 // Appends apiPath to baseUrl's path -- preserves any existing path on
 // baseUrl and ensures exactly one slash between the two, regardless of

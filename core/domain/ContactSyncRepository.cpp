@@ -191,14 +191,20 @@ void ContactSyncRepository::queueDelete(const QString& uid, qint64 rev)
     // the server never saw this contact -- cancel the create outright
     // rather than pushing a tombstone for something that doesn't exist
     // server-side.
+    //
+    // EVERY queued change for this uid is dropped, not just the create. An
+    // edit saved after the create carries the temporary uid in its wire
+    // payload, so it survived this loop and was pushed on the next sync as a
+    // change naming a uid the server had never seen -- which the relay treats
+    // as a create under that uid. The contact the user deleted was recreated
+    // account-wide and echoed straight back into the local database.
     bool hadUnsyncedCreate = false;
     for (const PendingContactChangeRecord& record : m_pendingDao.findAll()) {
         if (record.contactUid != uid)
             continue;
-        if (deserializeContact(record.changeJson).uid.isEmpty()) {
-            m_pendingDao.deleteById(record.id);
+        if (deserializeContact(record.changeJson).uid.isEmpty())
             hadUnsyncedCreate = true;
-        }
+        m_pendingDao.deleteById(record.id);
     }
 
     m_contactDao.deleteById(uid);
@@ -213,34 +219,46 @@ void ContactSyncRepository::queueDelete(const QString& uid, qint64 rev)
     m_pendingDao.enqueue(uid, serializeContact(tombstone), nowUtc());
 }
 
-ContactSyncOutcome ContactSyncRepository::sync()
+std::optional<ContactSyncRepository::ContactSyncPlan> ContactSyncRepository::planSync() const
 {
     const std::optional<DevicePairing> pairing = m_pairingStore.load();
     if (!pairing.has_value())
-        return { ContactSyncStatus::NotPaired, {}, QStringLiteral("Not paired") };
+        return std::nullopt;
 
-    const RelayAuth auth{ pairing->deviceId, pairing->deviceSecret };
-    const QUrl serverUrl(pairing->serverBaseUrl);
     const QString storedCursor = m_cursorStore.contactBaseCursor();
-    const qint64 cursor = storedCursor.isEmpty() ? 0 : storedCursor.toLongLong();
 
-    const QVector<PendingContactChangeRecord> pending = m_pendingDao.findAll();
+    ContactSyncPlan plan;
+    plan.endpoint = RelayEndpoint{ QUrl(pairing->serverBaseUrl),
+                                    RelayAuth{ pairing->deviceId, pairing->deviceSecret } };
+    plan.cursor = storedCursor.isEmpty() ? 0 : storedCursor.toLongLong();
+    plan.pending = m_pendingDao.findAll();
+    return plan;
+}
 
-    ContactSyncResult result;
-    if (pending.isEmpty()) {
-        result = m_client.pull(serverUrl, auth, cursor);
-    } else {
-        QVector<Contact> changes;
-        changes.reserve(pending.size());
-        for (const PendingContactChangeRecord& record : pending)
-            changes.append(deserializeContact(record.changeJson));
-        result = m_client.push(serverUrl, auth, cursor, changes);
-    }
+ContactSyncResult ContactSyncRepository::syncWith(HttpClient& httpClient, const ContactSyncPlan& plan)
+{
+    // Constructed here rather than reused from m_client: ContactSyncClient is
+    // a stateless wrapper over an HttpClient reference, and on the async path
+    // that HttpClient belongs to the executor thread.
+    ContactSyncClient client(httpClient);
+    if (plan.pending.isEmpty())
+        return client.pull(plan.endpoint.serverBaseUrl, plan.endpoint.auth, plan.cursor);
+
+    QVector<Contact> changes;
+    changes.reserve(plan.pending.size());
+    for (const PendingContactChangeRecord& record : plan.pending)
+        changes.append(deserializeContact(record.changeJson));
+    return client.push(plan.endpoint.serverBaseUrl, plan.endpoint.auth, plan.cursor, changes);
+}
+
+ContactSyncOutcome ContactSyncRepository::applySync(const ContactSyncPlan& plan, const ContactSyncResult& result)
+{
+    const QVector<PendingContactChangeRecord>& pending = plan.pending;
 
     // An unpushed queue must survive to the next sync() call -- pending is
     // deliberately left untouched here.
     if (result.error.has_value())
-        return { statusFromNetworkError(*result.error), {}, result.detail };
+        return { statusFromNetworkError(*result.error), {}, result.detail, {} };
 
     if (result.tooOld) {
         // setContactBaseCursor(QString()) directly rather than
@@ -249,10 +267,14 @@ ContactSyncOutcome ContactSyncRepository::sync()
         // mail sync.
         m_cursorStore.setContactBaseCursor(QString());
         m_contactDao.deleteAll();
-        m_pendingDao.deleteAll();
+        // Same reasoning as the success path below: only the snapshot that
+        // was pushed may be dropped.
+        for (const PendingContactChangeRecord& record : pending)
+            m_pendingDao.deleteById(record.id);
         return { ContactSyncStatus::Success,
                  ContactSyncSummary{ static_cast<int>(pending.size()), 0, 0 },
-                 QString() };
+                 QString(),
+                 {} };
     }
 
     QVector<Contact> pendingCreates;
@@ -286,13 +308,60 @@ ContactSyncOutcome ContactSyncRepository::sync()
         ++applied;
     }
 
-    m_pendingDao.deleteAll();
+    // Delete only what was actually pushed -- by record id, never
+    // deleteAll(). A Save or Delete in the contact pane can land while the
+    // request is out, and truncating the whole queue discarded it: the user
+    // saw "Synced" while their edit -- a replaced PGP key, say -- never
+    // reached the server.
+    //
+    // That used to happen because HttpClient blocked on a nested QEventLoop
+    // and QML kept delivering clicks. The request runs on the executor thread
+    // now, so the GUI thread is simply free for the whole round trip and a
+    // mid-sync edit is the ORDINARY case rather than a race. Same rule, more
+    // load-bearing than before.
+    for (const PendingContactChangeRecord& record : pending)
+        m_pendingDao.deleteById(record.id);
     m_cursorStore.setContactBaseCursor(QString::number(result.cursor));
 
     return { ContactSyncStatus::Success,
              ContactSyncSummary{ static_cast<int>(pending.size()), applied, result.cursor },
              QString(),
              assignments };
+}
+
+ContactDedupeResult ContactSyncRepository::dedupeWith(HttpClient& httpClient, const RelayEndpoint& endpoint)
+{
+    ContactSyncClient client(httpClient);
+    return client.dedupe(endpoint.serverBaseUrl, endpoint.auth);
+}
+
+ContactDedupeOutcome ContactSyncRepository::dedupeOutcomeOf(const ContactDedupeResult& result)
+{
+    if (result.error.has_value())
+        return { dedupeStatusFromNetworkError(*result.error), 0, {}, result.detail };
+    return { ContactDedupeStatus::Success, result.mergedCount, result.groups, QString() };
+}
+
+// The synchronous forms, kept as compositions of the phases above so the
+// async paths cannot drift from the behaviour their tests pin.
+
+ContactSyncOutcome ContactSyncRepository::sync()
+{
+    const std::optional<ContactSyncPlan> plan = planSync();
+    if (!plan.has_value())
+        return { ContactSyncStatus::NotPaired, {}, QStringLiteral("Not paired"), {} };
+
+    ContactSyncResult result;
+    if (plan->pending.isEmpty()) {
+        result = m_client.pull(plan->endpoint.serverBaseUrl, plan->endpoint.auth, plan->cursor);
+    } else {
+        QVector<Contact> changes;
+        changes.reserve(plan->pending.size());
+        for (const PendingContactChangeRecord& record : plan->pending)
+            changes.append(deserializeContact(record.changeJson));
+        result = m_client.push(plan->endpoint.serverBaseUrl, plan->endpoint.auth, plan->cursor, changes);
+    }
+    return applySync(*plan, result);
 }
 
 ContactDedupeOutcome ContactSyncRepository::dedupe()
@@ -303,11 +372,5 @@ ContactDedupeOutcome ContactSyncRepository::dedupe()
 
     const RelayAuth auth{ pairing->deviceId, pairing->deviceSecret };
     const QUrl serverUrl(pairing->serverBaseUrl);
-
-    const ContactDedupeResult result = m_client.dedupe(serverUrl, auth);
-
-    if (result.error.has_value())
-        return { dedupeStatusFromNetworkError(*result.error), 0, {}, result.detail };
-
-    return { ContactDedupeStatus::Success, result.mergedCount, result.groups, QString() };
+    return dedupeOutcomeOf(m_client.dedupe(serverUrl, auth));
 }

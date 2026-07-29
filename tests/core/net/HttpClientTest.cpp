@@ -25,7 +25,7 @@ private slots:
     void transportFailureWhenServerHangs();
     void getFollowsRedirectWhenValidatorApprovesTarget();
     void getDoesNotFollowRedirectWhenValidatorRejectsTarget();
-    void getFollowsRedirectByDefaultWhenNoValidatorGiven();
+    void crossOriginRedirectIsRefusedByDefault();
 };
 
 void HttpClientTest::getSuccessReturnsBodyUnmodifiedAndPreservesExistingQuery()
@@ -235,12 +235,22 @@ void HttpClientTest::getDoesNotFollowRedirectWhenValidatorRejectsTarget()
     // final server's body.
     QVERIFY(result.error.has_value());
     QVERIFY(result.body != finalBody);
+    // ...and it is named for what happened. Aborting mid-redirect leaves
+    // the 3xx as the reply's status, which the status-code mapping turns
+    // into a generic Server error -- so "the relay tried to send the device
+    // secret to another host" and "the relay returned a 500" used to be the
+    // same value to every caller and every log line.
+    QCOMPARE(*result.error, NetworkError::RedirectRefused);
 }
 
-void HttpClientTest::getFollowsRedirectByDefaultWhenNoValidatorGiven()
+void HttpClientTest::crossOriginRedirectIsRefusedByDefault()
 {
-    // Every other existing caller (no redirectValidator argument) keeps
-    // Qt's normal automatic-redirect-following behavior unchanged.
+    // Qt's default (NoLessSafeRedirectPolicy) follows cross-HOST redirects
+    // and strips nothing: every redirect status forwards custom headers --
+    // including X-Kypost-Device-Secret -- and 307/308 forward the body too,
+    // which on the registration POST is the subscriber id, the pairing token
+    // and the UnifiedPush endpoint. A caller that names no validator now gets
+    // a same-origin-only default instead.
     const QByteArray finalBody = "{\"ok\":true,\"from\":\"final\"}";
     FakeRelayServer finalServer(httpResponse(200, "OK", finalBody));
 
@@ -253,11 +263,14 @@ void HttpClientTest::getFollowsRedirectByDefaultWhenNoValidatorGiven()
     HttpClient client(manager);
 
     const QUrl url(QStringLiteral("http://127.0.0.1:%1/start").arg(redirectingServer.port()));
-    const HttpClient::HttpResult result = client.get(url, {});
+    const HttpClient::HttpResult result =
+        client.get(url, {}, { { QStringLiteral("X-Kypost-Device-Secret"), QStringLiteral("top-secret") } });
 
-    QVERIFY(!result.error.has_value());
-    QCOMPARE(result.statusCode, 200);
-    QCOMPARE(result.body, finalBody);
+    // Refused, and the secret never reached the other origin.
+    QVERIFY(result.body != finalBody);
+    QVERIFY(!finalServer.receivedRequest().contains("top-secret"));
+    QVERIFY(result.error.has_value());
+    QCOMPARE(*result.error, NetworkError::RedirectRefused);
 }
 
 QTEST_GUILESS_MAIN(HttpClientTest)

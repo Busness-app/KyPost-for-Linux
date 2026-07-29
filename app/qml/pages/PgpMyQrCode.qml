@@ -82,6 +82,7 @@ Item {
         Text {
             Layout.fillWidth: true
             visible: PgpQr.lastError !== ""
+            textFormat: Text.PlainText
             text: PgpQr.lastError
             color: Theme.dangerColor
             font.family: Theme.fontUi

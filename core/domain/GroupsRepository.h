@@ -1,9 +1,13 @@
 #pragma once
 
-#include <QVector>
+#include "net/GroupsClient.h" // GroupsFetchResult -- crosses the thread hop by value
+#include "net/RelayAuth.h"    // RelayEndpoint
 
-class GroupsClient;
+#include <QVector>
+#include <optional>
+
 class GroupDao;
+class HttpClient;
 class PairingStore;
 struct Group;
 
@@ -36,6 +40,12 @@ public:
     // simply retries; no delta cursor means a retry is always a full,
     // correct refresh.
     void refresh();
+
+    // Three-phase form, same shape as every other repository here. Phase 1 is
+    // just the pairing read; there is no cursor and nothing else to carry.
+    std::optional<RelayEndpoint> planRefresh() const;
+    static GroupsFetchResult fetchWith(HttpClient& httpClient, const RelayEndpoint& endpoint);
+    void applyRefresh(const GroupsFetchResult& result);
 
 private:
     GroupsClient& m_client;

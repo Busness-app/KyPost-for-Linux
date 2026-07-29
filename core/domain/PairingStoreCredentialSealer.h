@@ -14,6 +14,7 @@ public:
 
     bool seal(const QString& pin) override;
     bool unsealPermanently(const QString& pin) override;
+    bool reseal(const QString& oldPin, const QString& newPin) override;
     bool unsealForSession(const QString& pin) override;
     void relock() override;
     bool isSealed() const override;

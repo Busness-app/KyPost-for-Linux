@@ -13,6 +13,7 @@
 #include <QObject>
 #include <QTcpServer>
 #include <QTcpSocket>
+#include <memory>
 #include <utility>
 
 // Builds a raw HTTP/1.1 response with Content-Type/Content-Length/Connection
@@ -36,12 +37,12 @@ inline QByteArray httpResponse(int statusCode, const QByteArray& statusText, con
     return response;
 }
 
-// Accepts exactly one connection on localhost, captures everything the
-// client sends, and replies with a canned raw HTTP response once the full
-// request (headers plus any Content-Length body) has arrived. Runs on the
-// test's own event loop -- the same one HttpClient::get/post block on via
-// their internal QEventLoop -- so plain signal/slot wiring is enough, no
-// extra thread required.
+// Accepts connections on localhost, captures everything the client sends,
+// and replies with a canned raw HTTP response once the full request (headers
+// plus any Content-Length body) has arrived. Runs on the test's own event
+// loop -- the same one HttpClient::get/post block on via their internal
+// QEventLoop -- so plain signal/slot wiring is enough, no extra thread
+// required.
 class FakeRelayServer : public QObject
 {
 public:
@@ -54,6 +55,20 @@ public:
 
     quint16 port() const { return m_server.serverPort(); }
     const QByteArray& receivedRequest() const { return m_received; }
+
+    // Changes what the NEXT connection is answered with. For tests that
+    // drive two different endpoints through one controller -- refresh the
+    // inbox, then act on a message -- which the async conversions made
+    // necessary: the two calls can no longer be given a server each, because
+    // the second one needs the state the first one produced.
+    void setResponse(QByteArray response) { m_response = std::move(response); }
+
+    // How many TCP connections were accepted. Added for the async
+    // controllers: "the second call while one was in flight was coalesced"
+    // cannot be asserted from receivedRequest() alone, which only
+    // accumulates bytes and would look identical whether one request or ten
+    // arrived.
+    int connectionCount() const { return m_connectionCount; }
 
     // Parses the JSON body out of the captured raw request.
     QJsonObject receivedJsonBody() const
@@ -68,10 +83,20 @@ public:
 private:
     void onNewConnection()
     {
+        ++m_connectionCount;
         QTcpSocket* socket = m_server.nextPendingConnection();
-        connect(socket, &QTcpSocket::readyRead, this, [this, socket]() {
-            m_received += socket->readAll();
-            if (!requestComplete())
+        // Per-connection buffer, separate from the cumulative m_received that
+        // tests read. "Has the whole request arrived?" must be judged from
+        // THIS connection's bytes: asking it of the cumulative buffer finds
+        // the first request's headers and Content-Length every time, so from
+        // the second connection onwards it answers "yes" before anything has
+        // actually been read -- and the reply goes out ahead of the POST body.
+        auto request = std::make_shared<QByteArray>();
+        connect(socket, &QTcpSocket::readyRead, this, [this, socket, request]() {
+            const QByteArray chunk = socket->readAll();
+            *request += chunk;
+            m_received += chunk;
+            if (!requestComplete(*request))
                 return;
             socket->write(m_response);
             socket->flush();
@@ -79,12 +104,12 @@ private:
         });
     }
 
-    bool requestComplete() const
+    static bool requestComplete(const QByteArray& received)
     {
-        const int headerEnd = m_received.indexOf("\r\n\r\n");
+        const int headerEnd = received.indexOf("\r\n\r\n");
         if (headerEnd < 0)
             return false;
-        const QByteArray headers = m_received.left(headerEnd);
+        const QByteArray headers = received.left(headerEnd);
         const int idx = headers.indexOf("Content-Length:");
         if (idx < 0)
             return true; // no body expected (e.g. GET)
@@ -95,10 +120,11 @@ private:
         const int contentLength = headers.mid(idx + 15, lineEnd - idx - 15).trimmed().toInt(&ok);
         if (!ok)
             return true;
-        return m_received.size() >= headerEnd + 4 + contentLength;
+        return received.size() >= headerEnd + 4 + contentLength;
     }
 
     QTcpServer m_server;
+    int m_connectionCount = 0;
     QByteArray m_response;
     QByteArray m_received;
 };

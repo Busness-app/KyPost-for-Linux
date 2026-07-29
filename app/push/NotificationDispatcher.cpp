@@ -6,6 +6,7 @@
 #include <KNotification>
 
 #include <QDebug>
+#include <QRegularExpression>
 
 NotificationDispatcher::NotificationDispatcher(QObject* parent)
     : QObject(parent)
@@ -40,6 +41,15 @@ QString NotificationDispatcher::sanitizeForNotification(const QString& text)
     return text.toHtmlEscaped();
 }
 
+QString NotificationDispatcher::sanitizeTitleForNotification(const QString& text)
+{
+    QString out = text;
+    // C0 controls and DEL, collapsed to spaces rather than removed so words
+    // either side of a stripped newline do not run together.
+    out.replace(QRegularExpression(QStringLiteral("[\\x{0000}-\\x{001F}\\x{007F}]")), QStringLiteral(" "));
+    return out.simplified();
+}
+
 // The app lock exists to stop someone at an unattended machine reading this
 // user's mail. A notification popup carrying the sender and subject hands
 // over exactly that, on the lock screen, without a PIN -- the same leak
@@ -57,7 +67,7 @@ QString NotificationDispatcher::displayTitle(const PushNotification& payload, bo
 {
     if (contentHidden)
         return i18n("KyPost");
-    return sanitizeForNotification(pickTitle(payload));
+    return sanitizeTitleForNotification(pickTitle(payload));
 }
 
 QString NotificationDispatcher::displayText(const PushNotification& payload, bool contentHidden)

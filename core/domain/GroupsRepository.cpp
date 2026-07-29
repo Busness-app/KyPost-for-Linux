@@ -21,19 +21,35 @@ QVector<Group> GroupsRepository::groups() const
     return m_groupDao.findAll();
 }
 
-void GroupsRepository::refresh()
+std::optional<RelayEndpoint> GroupsRepository::planRefresh() const
 {
     const std::optional<DevicePairing> pairing = m_pairingStore.load();
     if (!pairing.has_value())
-        return;
+        return std::nullopt;
+    return RelayEndpoint{ QUrl(pairing->serverBaseUrl),
+                          RelayAuth{ pairing->deviceId, pairing->deviceSecret } };
+}
 
-    const RelayAuth auth{ pairing->deviceId, pairing->deviceSecret };
-    const QUrl serverUrl(pairing->serverBaseUrl);
+GroupsFetchResult GroupsRepository::fetchWith(HttpClient& httpClient, const RelayEndpoint& endpoint)
+{
+    GroupsClient client(httpClient);
+    return client.fetch(endpoint.serverBaseUrl, endpoint.auth);
+}
 
-    const GroupsFetchResult result = m_client.fetch(serverUrl, auth);
+void GroupsRepository::applyRefresh(const GroupsFetchResult& result)
+{
     if (result.error.has_value())
         return; // degrade gracefully -- next sync cycle retries, no crash
 
     for (const Group& group : result.groups)
         m_groupDao.insertOrReplace(group);
+}
+
+// The synchronous form, kept as the composition of the three phases above.
+void GroupsRepository::refresh()
+{
+    const std::optional<RelayEndpoint> endpoint = planRefresh();
+    if (!endpoint.has_value())
+        return;
+    applyRefresh(m_client.fetch(endpoint->serverBaseUrl, endpoint->auth));
 }

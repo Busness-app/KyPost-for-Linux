@@ -75,8 +75,27 @@ Item {
 
         Text {
             Layout.fillWidth: true
+            visible: !AppLock.storeUnavailable
             text: i18n("Enter your PIN to continue.")
             color: Theme.ink
+            font.family: Theme.fontUi
+            font.pixelSize: 13
+            horizontalAlignment: Text.AlignHCenter
+            wrapMode: Text.WordWrap
+        }
+
+        // The lock fails closed when the secret store cannot be read, which
+        // is the right answer and a baffling one on its own: the stored PIN
+        // hash lives in that same store, so verifyPin() cannot succeed
+        // either and the correct PIN is refused like every other. Without
+        // this the screen silently implies the user has forgotten it.
+        Text {
+            Layout.fillWidth: true
+            visible: AppLock.storeUnavailable
+            text: i18n("KyPost cannot reach your system keyring, so it cannot check your PIN. "
+                       + "Start a keyring service (GNOME Keyring or KWallet), unlock it, then "
+                       + "restart KyPost.")
+            color: Theme.dangerColor
             font.family: Theme.fontUi
             font.pixelSize: 13
             horizontalAlignment: Text.AlignHCenter
@@ -86,7 +105,7 @@ Item {
         ThemedTextField {
             id: pinField
             Layout.fillWidth: true
-            enabled: !root.lockedOut
+            enabled: !root.lockedOut && !AppLock.storeUnavailable
             placeholderText: i18n("PIN")
 
             // echoMode/inputMethodHints live on the inner TextField --

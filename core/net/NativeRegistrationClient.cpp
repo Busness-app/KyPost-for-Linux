@@ -47,6 +47,7 @@ NativeRegistrationResult NativeRegistrationClient::registerDevice(
     const HttpClient::HttpResult result = m_httpClient.post(registrationEndpoint, {}, body);
 
     NativeRegistrationResult out;
+    out.peerSpkiSha256 = result.peerSpkiSha256;
 
     if (result.error.has_value()) {
         switch (*result.error) {
@@ -85,6 +86,22 @@ NativeRegistrationResult NativeRegistrationClient::registerDevice(
     if (response.pullEndpoint.isEmpty())
         response.pullEndpoint = derivePullEndpoint(registrationEndpoint);
     response.transport = json.value(QStringLiteral("transport")).toString();
+
+    // A 200 carrying *any* JSON object used to count as Success: `ok` was
+    // parsed and never read, and an empty deviceId/deviceSecret was persisted
+    // as-is. Combined with the registration URL's path being unconstrained,
+    // that let one deep link -- naming the user's own real mail server, so
+    // the confirm dialog showed nothing amiss -- POST to an unrelated
+    // same-origin endpoint (the relay's unauthenticated /api/health answers
+    // POST with a JSON object) and overwrite the working device credential
+    // with empty strings. Every later relay call then 401s while the UI
+    // still reports "Paired", and the pairing token has been consumed.
+    // Refuse before the caller can persist anything.
+    if (!response.ok || response.deviceId.isEmpty() || response.deviceSecret.isEmpty()) {
+        out.outcome = RegistrationOutcome::Failure;
+        out.detail = QStringLiteral("The server did not return a usable device credential.");
+        return out;
+    }
 
     out.outcome = RegistrationOutcome::Success;
     out.response = response;

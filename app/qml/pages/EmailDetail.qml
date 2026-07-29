@@ -52,9 +52,66 @@ Item {
     // re-blocks images until asked again.
     property bool imagesLoaded: false
 
+    // Whether there is any message content for the image-blocking notices
+    // below to sit under.
+    //
+    // The `!!` is load-bearing, not decoration. `email` is {} until a message
+    // is loaded, so both member reads are undefined then, and JavaScript's
+    // `a || b` yields undefined rather than false -- which QML cannot assign
+    // to a bool, and logged "Unable to assign [undefined] to bool" twice on
+    // every startup. Hoisted to one property because the expression was
+    // duplicated across the two notices that share it.
+    readonly property bool hasRenderableBody: !!(root.email && (root.email.body || root.email.preview))
+
     onMessageIdChanged: reload()
     onFolderChanged: reload()
     Component.onCompleted: reload()
+
+    // Archive/Junk/Delete dispatch and return; the answer arrives here.
+    //
+    // MailApp is a singleton, so this fires for every EmailDetail alive --
+    // DesktopRoot can have an embedded one and a popped-out Window showing a
+    // different message at the same time. `messageIds` is what tells them
+    // apart: only the instance whose own message was acted on reacts. The
+    // old code could rely on "my call is on the stack" instead, because the
+    // request ran synchronously inside the click handler; nothing has a call
+    // on the stack any more.
+    Connections {
+        target: MailApp
+        function onActionCompleted(action, messageIds, ok) {
+            if (!ok || root.messageId === "" || messageIds.indexOf(root.messageId) === -1)
+                return
+            // "spam" is the wire verb; this component's own signal has always
+            // called it "junk", matching the button.
+            root.actionCompleted(action === "spam" ? "junk" : action)
+        }
+
+        // Both checks matter. mailbox/messageId keeps another EmailDetail's
+        // answer out of this one, and it also drops a reply for a message
+        // this instance has since navigated away from -- otherwise a slow
+        // list would repopulate the chips with the previous mail's
+        // attachments after the user had already moved on.
+        function onAttachmentsListed(mailbox, messageId, attachments) {
+            if (mailbox === root.folder && messageId === root.messageId)
+                root.attachments = attachments
+        }
+
+        function onAttachmentDownloaded(messageId, index, ok) {
+            if (messageId !== root.messageId)
+                return
+            // Under Hostile Location Protection the file is opened from a
+            // temporary location rather than saved, so say so -- claiming
+            // "Saved to Downloads" would be wrong, and claiming "never
+            // touched disk" would oversell a tmpfs file. See
+            // MailController::openAttachmentEphemerally.
+            root.attachmentStatus = ok
+                ? (AppLock.hostileLocationEnabled
+                    ? i18n("Opened temporarily — not saved")
+                    : i18n("Saved to Downloads"))
+                : MailApp.lastError
+            attachmentStatusTimer.restart()
+        }
+    }
 
     // Clears the refused-link notice a few seconds after it appears.
     Timer {
@@ -74,9 +131,14 @@ Item {
             return
         }
         root.email = MailApp.findByMessageId(root.messageId)
-        root.attachments = (root.email && root.email.hasAttachments)
-            ? MailApp.listAttachments(root.folder, root.messageId)
-            : []
+        // Cleared, then refilled by onAttachmentsListed below. The list is
+        // fetched off-thread now, so it cannot be assigned here -- and
+        // leaving the previous message's attachments up while the new
+        // message's are in flight would offer downloads that belong to the
+        // mail the user just navigated away from.
+        root.attachments = []
+        if (root.email && root.email.hasAttachments)
+            MailApp.listAttachments(root.folder, root.messageId)
         webViewLoader.applyContent()
     }
 
@@ -159,11 +221,6 @@ Item {
         return "#" + pad(c.r) + pad(c.g) + pad(c.b)
     }
 
-    // HTML-vs-plain-text sniff per Task 35's brief: a handful of common tags
-    // followed by whitespace/'>'/'/' is treated as "this is already HTML";
-    // anything else is escaped and wrapped in <pre> so it renders literally.
-    readonly property var htmlSniffRegex: /<(html|head|body|div|p|br|table|tr|td|a|img|span|ul|ol|li|h[1-6])[\s>/]/i
-
     // Schemes a message is allowed to open in the outside world live in
     // Format (utils/format.js) so the rule is testable on its own -- see
     // isExternallyOpenableUrl() there for what it protects against.
@@ -176,20 +233,22 @@ Item {
     // nothing. Cleared by the notice's own timer.
     property string blockedLinkScheme: ""
 
-    function renderedHtml(body) {
-        const inner = htmlSniffRegex.test(body) ? body : ("<pre>" + Format.escapeHtml(body) + "</pre>")
-        return "<html><head>"
-            + "<meta charset=\"utf-8\">"
-            + "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />"
-            + "<style>"
-            + "body { font-family: monospace; font-size: 14px; line-height: 1.5;"
+    // The theme half of the body document. Colours come from the Theme
+    // singleton, which is why this stays here and the security-relevant half
+    // (the CSP, the HTML-vs-text decision, the escaping) lives in Format --
+    // see utils/format.js. Those three are what a test needs to reach, and
+    // they must not require QtWebEngine and the singleton graph to reach.
+    function bodyStyle() {
+        return "body { font-family: monospace; font-size: 14px; line-height: 1.5;"
             + " color: " + colorToHex(Theme.inkStrong) + "; background-color: " + colorToHex(Theme.bg) + ";"
             + " margin: 0; padding: 12px; word-break: break-word; }"
             + "a { color: " + colorToHex(Theme.accent) + "; }"
             + "img { max-width: 100%; height: auto; }"
             + "pre { white-space: pre-wrap; }"
-            + "</style>"
-            + "</head><body>" + inner + "</body></html>"
+    }
+
+    function renderedHtml(body) {
+        return Format.renderedEmailHtml(body, root.imagesLoaded, root.bodyStyle())
     }
 
     // ---- layout ----------------------------------------------------
@@ -244,6 +303,7 @@ Item {
 
                 Text {
                     Layout.fillWidth: true
+                    textFormat: Text.PlainText
                     text: root.email.subject || ""
                     color: Theme.inkStrong
                     font.family: Theme.fontUi
@@ -253,6 +313,7 @@ Item {
                 }
                 Text {
                     Layout.fillWidth: true
+                    textFormat: Text.PlainText
                     text: root.email.sender || ""
                     color: Theme.ink
                     font.family: Theme.fontUi
@@ -263,6 +324,7 @@ Item {
                     // Raw ISO string as-is for v1 -- no date-formatting
                     // library decision needed this task (see Task 35 brief);
                     // follow-up: format this for display in a later task.
+                    textFormat: Text.PlainText
                     text: root.email.atUtc || ""
                     color: Theme.ink
                     opacity: 0.6
@@ -356,29 +418,20 @@ Item {
                 icon: "mail-archive"
                 tooltip: i18n("Archive")
                 enabled: !MailApp.isBusy
-                onClicked: {
-                    if (MailApp.archiveEmails([root.messageId]))
-                        root.actionCompleted("archive")
-                }
+                onClicked: MailApp.archiveEmails([root.messageId])
             }
             IconButton {
                 icon: "mail-mark-junk"
                 tooltip: i18n("Junk")
                 enabled: !MailApp.isBusy
-                onClicked: {
-                    if (MailApp.markSpam([root.messageId]))
-                        root.actionCompleted("junk")
-                }
+                onClicked: MailApp.markSpam([root.messageId])
             }
             IconButton {
                 icon: "edit-delete"
                 tooltip: i18n("Delete")
                 variant: "danger"
                 enabled: !MailApp.isBusy
-                onClicked: {
-                    if (MailApp.deleteEmails([root.messageId]))
-                        root.actionCompleted("delete")
-                }
+                onClicked: MailApp.deleteEmails([root.messageId])
             }
             IconButton {
                 // "Images blocked" affordance -- settings.autoLoadImages is
@@ -389,7 +442,7 @@ Item {
                 // one more toolbar action instead of a separate banner.
                 icon: "image-x-generic"
                 tooltip: i18n("Show images")
-                visible: !root.imagesLoaded && (root.email.body || root.email.preview)
+                visible: !root.imagesLoaded && root.hasRenderableBody
                 onClicked: root.showImages()
             }
             IconButton {
@@ -413,7 +466,7 @@ Item {
 
         Text {
             Layout.fillWidth: true
-            visible: !root.imagesLoaded && (root.email.body || root.email.preview)
+            visible: !root.imagesLoaded && root.hasRenderableBody
             text: i18n("Images are hidden to protect your privacy.")
             color: Theme.ink
             font.family: Theme.fontUi
@@ -514,6 +567,7 @@ Item {
 
                 Text {
                     Layout.fillWidth: true
+                    textFormat: Text.PlainText
                     text: root.email.pgpBannerTitle || ""
                     color: Theme.inkStrong
                     font.family: Theme.fontUi
@@ -524,6 +578,7 @@ Item {
 
                 Text {
                     Layout.fillWidth: true
+                    textFormat: Text.PlainText
                     text: root.email.pgpBannerBody || ""
                     color: Theme.ink
                     font.family: Theme.fontUi
@@ -709,6 +764,7 @@ Item {
                             spacing: 8
 
                             Text {
+                                textFormat: Text.PlainText
                                 text: i18n("%1 (%2)", modelData.name, root.formatSize(modelData.size))
                                 color: Theme.inkStrong
                                 font.family: Theme.fontUi
@@ -717,29 +773,20 @@ Item {
                         }
 
                         TapHandler {
-                            onTapped: {
-                                const ok = MailApp.downloadAttachment(
-                                    root.folder, root.messageId, modelData.index, modelData.name)
-                                // Under Hostile Location Protection the file
-                                // is opened from a temporary location rather
-                                // than saved, so say so -- claiming "Saved to
-                                // Downloads" would be wrong, and claiming
-                                // "never touched disk" would oversell a
-                                // tmpfs file. See
-                                // MailController::openAttachmentEphemerally.
-                                root.attachmentStatus = ok
-                                    ? (AppLock.hostileLocationEnabled
-                                        ? i18n("Opened temporarily — not saved")
-                                        : i18n("Saved to Downloads"))
-                                    : MailApp.lastError
-                                attachmentStatusTimer.restart()
-                            }
+                            // Fire and forget -- the outcome is reported by
+                            // root's onAttachmentDownloaded handler, which
+                            // has to live up there rather than here: the
+                            // status line outlives this chip, and the chip
+                            // does not survive a reload().
+                            onTapped: MailApp.downloadAttachment(
+                                root.folder, root.messageId, modelData.index, modelData.name)
                         }
                     }
                 }
             }
 
             Text {
+                textFormat: Text.PlainText
                 text: root.attachmentStatus
                 visible: root.attachmentStatus !== ""
                 color: Theme.ink

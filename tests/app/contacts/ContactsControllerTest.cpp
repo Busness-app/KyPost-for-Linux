@@ -20,6 +20,7 @@
 #include "stores/SecureStoreFile.h"
 
 #include "../../core/net/FakeRelayServer.h"
+#include "../ExecutorShutdownGuard.h"
 
 #include <QHostAddress>
 #include <QNetworkAccessManager>
@@ -239,7 +240,9 @@ void ContactsControllerTest::updateContactReplacesEmailsPhonesAddressesWholesale
                                              std::nullopt, std::nullopt, std::nullopt } };
     QVERIFY(contactDao.insertOrReplace(seed));
 
-    ContactsController controller(repository, groupsRepository, photoRepository);
+    NetworkExecutor executor(3000);
+    ContactsController controller(repository, groupsRepository, photoRepository, executor);
+    ExecutorShutdownGuard shutdownGuard{ executor };
 
     QVariantMap newEmail;
     newEmail[QStringLiteral("value")] = QStringLiteral("new@example.com");
@@ -310,7 +313,9 @@ void ContactsControllerTest::isSyncedReflectsPendingState()
     ContactPhotoRepository photoRepository(photoClient, photoCache, pairingStore);
 
     ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore);
-    ContactsController controller(repository, groupsRepository, photoRepository);
+    NetworkExecutor executor(3000);
+    ContactsController controller(repository, groupsRepository, photoRepository, executor);
+    ExecutorShutdownGuard shutdownGuard{ executor };
 
     // Unknown uid: never existed, not synced.
     QVERIFY(!controller.isSynced(QStringLiteral("does-not-exist")));
@@ -361,7 +366,9 @@ void ContactsControllerTest::createContactRejectsBlankName()
     ContactPhotoRepository photoRepository(photoClient, photoCache, pairingStore);
 
     ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore);
-    ContactsController controller(repository, groupsRepository, photoRepository);
+    NetworkExecutor executor(3000);
+    ContactsController controller(repository, groupsRepository, photoRepository, executor);
+    ExecutorShutdownGuard shutdownGuard{ executor };
 
     QSignalSpy errorSpy(&controller, &ContactsController::lastErrorChanged);
 
@@ -416,7 +423,9 @@ void ContactsControllerTest::updateContactRejectsBlankName()
     seed.fn = QStringLiteral("Old Name");
     QVERIFY(contactDao.insertOrReplace(seed));
 
-    ContactsController controller(repository, groupsRepository, photoRepository);
+    NetworkExecutor executor(3000);
+    ContactsController controller(repository, groupsRepository, photoRepository, executor);
+    ExecutorShutdownGuard shutdownGuard{ executor };
 
     QVariantMap fields;
     fields[QStringLiteral("fn")] = QString();
@@ -462,7 +471,9 @@ void ContactsControllerTest::syncWithoutPairingSetsNotPairedMessage()
     ContactPhotoRepository photoRepository(photoClient, photoCache, pairingStore);
 
     ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore);
-    ContactsController controller(repository, groupsRepository, photoRepository);
+    NetworkExecutor executor(3000);
+    ContactsController controller(repository, groupsRepository, photoRepository, executor);
+    ExecutorShutdownGuard shutdownGuard{ executor };
 
     QSignalSpy errorSpy(&controller, &ContactsController::lastErrorChanged);
     QSignalSpy statusSpy(&controller, &ContactsController::statusMessageChanged);
@@ -470,13 +481,15 @@ void ContactsControllerTest::syncWithoutPairingSetsNotPairedMessage()
 
     controller.sync();
 
+    // Refused synchronously: the pairing read is phase 1, on this thread, so
+    // there is nothing to wait for and nothing was dispatched.
     QCOMPARE(controller.lastError(), QStringLiteral("Not paired"));
     QCOMPARE(controller.statusMessage(), QString());
     QVERIFY(errorSpy.count() >= 1);
     QCOMPARE(statusSpy.count(), 0); // was already "", stayed ""
-    // isBusy toggled true then back to false around the (short-circuited,
-    // no-network) sync() call.
-    QVERIFY(busySpy.count() >= 2);
+    // isBusy never went true: it is only set once a request is actually on
+    // its way, and this never got that far.
+    QCOMPARE(busySpy.count(), 0);
     QCOMPARE(controller.isBusy(), false);
 }
 
@@ -531,11 +544,14 @@ void ContactsControllerTest::syncSuccessRefreshesGroupsCache()
     ContactPhotoRepository photoRepository(photoClient, photoCache, pairingStore);
 
     ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore);
-    ContactsController controller(repository, groupsRepository, photoRepository);
+    NetworkExecutor executor(3000);
+    ContactsController controller(repository, groupsRepository, photoRepository, executor);
+    ExecutorShutdownGuard shutdownGuard{ executor };
 
     QVERIFY(groupsRepository.groups().isEmpty()); // nothing cached before sync()
 
     controller.sync();
+    QTRY_VERIFY_WITH_TIMEOUT(!controller.isBusy(), 10000);
 
     QCOMPARE(controller.lastError(), QString());
     QCOMPARE(controller.statusMessage(), QStringLiteral("Synced -- 0 pushed, 0 applied"));
@@ -600,7 +616,9 @@ void ContactsControllerTest::loadSortsSelfContactFirst()
     ContactPhotoRepository photoRepository(photoClient, photoCache, pairingStore);
 
     ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore);
-    ContactsController controller(repository, groupsRepository, photoRepository);
+    NetworkExecutor executor(3000);
+    ContactsController controller(repository, groupsRepository, photoRepository, executor);
+    ExecutorShutdownGuard shutdownGuard{ executor };
 
     controller.load();
 
@@ -650,7 +668,9 @@ void ContactsControllerTest::createAndUpdateContactRoundTripExtendedFields()
     ContactPhotoRepository photoRepository(photoClient, photoCache, pairingStore);
 
     ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore);
-    ContactsController controller(repository, groupsRepository, photoRepository);
+    NetworkExecutor executor(3000);
+    ContactsController controller(repository, groupsRepository, photoRepository, executor);
+    ExecutorShutdownGuard shutdownGuard{ executor };
 
     QVariantMap imEntry;
     imEntry[QStringLiteral("service")] = QStringLiteral("Matrix");
@@ -801,7 +821,9 @@ void ContactsControllerTest::allGroupsReturnsCachedGroupsAsIdNameMaps()
     ContactPhotoRepository photoRepository(photoClient, photoCache, pairingStore);
 
     ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore);
-    ContactsController controller(repository, groupsRepository, photoRepository);
+    NetworkExecutor executor(3000);
+    ContactsController controller(repository, groupsRepository, photoRepository, executor);
+    ExecutorShutdownGuard shutdownGuard{ executor };
 
     // Empty cache (nothing synced yet) -> empty list, not a crash.
     QVERIFY(controller.allGroups().isEmpty());
@@ -880,9 +902,14 @@ void ContactsControllerTest::dedupeSuccessWithMergesChainsIntoSyncAndReloadsMode
     ContactPhotoRepository photoRepository(photoClient, photoCache, pairingStore);
 
     ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore);
-    ContactsController controller(repository, groupsRepository, photoRepository);
+    NetworkExecutor executor(3000);
+    ContactsController controller(repository, groupsRepository, photoRepository, executor);
+    ExecutorShutdownGuard shutdownGuard{ executor };
 
     controller.dedupe();
+    // dedupe dispatches, then chains into a sync from its own completion
+    // handler -- so the whole chain is done only once isBusy has settled.
+    QTRY_VERIFY_WITH_TIMEOUT(!controller.isBusy(), 10000);
 
     QVERIFY(fake.dedupeRequestReceived());
     QVERIFY(fake.contactsSyncRequestReceived()); // proves dedupe() chained into sync()
@@ -939,9 +966,12 @@ void ContactsControllerTest::dedupeSuccessWithZeroMergedSkipsSyncButReloadsModel
     ContactPhotoRepository photoRepository(photoClient, photoCache, pairingStore);
 
     ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore);
-    ContactsController controller(repository, groupsRepository, photoRepository);
+    NetworkExecutor executor(3000);
+    ContactsController controller(repository, groupsRepository, photoRepository, executor);
+    ExecutorShutdownGuard shutdownGuard{ executor };
 
     controller.dedupe();
+    QTRY_VERIFY_WITH_TIMEOUT(!controller.isBusy(), 10000);
 
     QCOMPARE(controller.lastError(), QString());
     QCOMPARE(controller.statusMessage(), QStringLiteral("No duplicates found"));
@@ -987,9 +1017,12 @@ void ContactsControllerTest::dedupeUnauthorizedSetsLastErrorNotStatusMessage()
     ContactPhotoRepository photoRepository(photoClient, photoCache, pairingStore);
 
     ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore);
-    ContactsController controller(repository, groupsRepository, photoRepository);
+    NetworkExecutor executor(3000);
+    ContactsController controller(repository, groupsRepository, photoRepository, executor);
+    ExecutorShutdownGuard shutdownGuard{ executor };
 
     controller.dedupe();
+    QTRY_VERIFY_WITH_TIMEOUT(!controller.isBusy(), 10000);
 
     QCOMPARE(controller.lastError(), QStringLiteral("Unauthorized -- please re-pair this device"));
     QCOMPARE(controller.statusMessage(), QString());
@@ -1039,7 +1072,9 @@ void ContactsControllerTest::searchContactsMatchesAcrossMultipleEmailsPerContact
     ContactPhotoCache photoCache(photoCacheDir.path());
     ContactPhotoRepository photoRepository(photoClient, photoCache, pairingStore);
     ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore);
-    ContactsController controller(repository, groupsRepository, photoRepository);
+    NetworkExecutor executor(3000);
+    ContactsController controller(repository, groupsRepository, photoRepository, executor);
+    ExecutorShutdownGuard shutdownGuard{ executor };
 
     // "ada" matches both of Ada's emails -- each is its own candidate.
     const QVariantList results = controller.searchContacts(QStringLiteral("ada"), 5);
@@ -1084,7 +1119,9 @@ void ContactsControllerTest::searchContactsIsCaseInsensitiveSubstring()
     ContactPhotoCache photoCache(photoCacheDir.path());
     ContactPhotoRepository photoRepository(photoClient, photoCache, pairingStore);
     ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore);
-    ContactsController controller(repository, groupsRepository, photoRepository);
+    NetworkExecutor executor(3000);
+    ContactsController controller(repository, groupsRepository, photoRepository, executor);
+    ExecutorShutdownGuard shutdownGuard{ executor };
 
     QCOMPARE(controller.searchContacts(QStringLiteral("HOPPER"), 5).size(), 1);
     QCOMPARE(controller.searchContacts(QStringLiteral("example"), 5).size(), 1);
@@ -1130,7 +1167,9 @@ void ContactsControllerTest::searchContactsRanksPrefixMatchesFirst()
     ContactPhotoCache photoCache(photoCacheDir.path());
     ContactPhotoRepository photoRepository(photoClient, photoCache, pairingStore);
     ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore);
-    ContactsController controller(repository, groupsRepository, photoRepository);
+    NetworkExecutor executor(3000);
+    ContactsController controller(repository, groupsRepository, photoRepository, executor);
+    ExecutorShutdownGuard shutdownGuard{ executor };
 
     const QVariantList results = controller.searchContacts(QStringLiteral("ann"), 5);
     QCOMPARE(results.size(), 2);
@@ -1174,7 +1213,9 @@ void ContactsControllerTest::searchContactsRespectsLimit()
     ContactPhotoCache photoCache(photoCacheDir.path());
     ContactPhotoRepository photoRepository(photoClient, photoCache, pairingStore);
     ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore);
-    ContactsController controller(repository, groupsRepository, photoRepository);
+    NetworkExecutor executor(3000);
+    ContactsController controller(repository, groupsRepository, photoRepository, executor);
+    ExecutorShutdownGuard shutdownGuard{ executor };
 
     QCOMPARE(controller.searchContacts(QStringLiteral("match"), 5).size(), 5);
 }
@@ -1217,7 +1258,9 @@ void ContactsControllerTest::searchContactsEmptyQueryReturnsEverythingUpToLimit(
     ContactPhotoCache photoCache(photoCacheDir.path());
     ContactPhotoRepository photoRepository(photoClient, photoCache, pairingStore);
     ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore);
-    ContactsController controller(repository, groupsRepository, photoRepository);
+    NetworkExecutor executor(3000);
+    ContactsController controller(repository, groupsRepository, photoRepository, executor);
+    ExecutorShutdownGuard shutdownGuard{ executor };
 
     QCOMPARE(controller.searchContacts(QString(), 5).size(), 2);
     QCOMPARE(controller.searchContacts(QStringLiteral("   "), 5).size(), 2); // whitespace-only trims to empty
@@ -1257,7 +1300,9 @@ void ContactsControllerTest::searchContactsZeroOrNegativeLimitIsUnbounded()
     ContactPhotoCache photoCache(photoCacheDir.path());
     ContactPhotoRepository photoRepository(photoClient, photoCache, pairingStore);
     ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore);
-    ContactsController controller(repository, groupsRepository, photoRepository);
+    NetworkExecutor executor(3000);
+    ContactsController controller(repository, groupsRepository, photoRepository, executor);
+    ExecutorShutdownGuard shutdownGuard{ executor };
 
     QCOMPARE(controller.searchContacts(QStringLiteral("match"), 0).size(), 10);
     QCOMPARE(controller.searchContacts(QStringLiteral("match"), -1).size(), 10);

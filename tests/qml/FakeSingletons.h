@@ -21,6 +21,7 @@ class FakeAppLock : public QObject
     Q_PROPERTY(int remainingLockoutSeconds MEMBER m_remainingLockoutSeconds NOTIFY lockedChanged)
     Q_PROPERTY(int failedAttempts MEMBER m_failedAttempts NOTIFY lockedChanged)
     Q_PROPERTY(int minimumPinLength MEMBER m_minimumPinLength CONSTANT)
+    Q_PROPERTY(bool storeUnavailable MEMBER m_storeUnavailable NOTIFY lockedChanged)
 
 public:
     using QObject::QObject;
@@ -48,6 +49,7 @@ private:
     int m_remainingLockoutSeconds = 0;
     int m_failedAttempts = 0;
     int m_minimumPinLength = 6;
+    bool m_storeUnavailable = false;
 };
 
 class FakePairing : public QObject

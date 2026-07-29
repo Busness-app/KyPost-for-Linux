@@ -77,7 +77,25 @@ public:
     // malicious or compromised relay can't plant a phishing link or
     // tracking-pixel image in the desktop notification. Public and
     // static for the same testability reason as pickTitle/pickText above.
+    //
+    // Applies to the BODY only -- see sanitizeTitleForNotification below for
+    // why the summary is a different question.
     static QString sanitizeForNotification(const QString& text);
+
+    // The summary (setTitle) half, and deliberately NOT HTML escaping.
+    //
+    // "body-markup" is exactly what it says: the freedesktop Desktop
+    // Notifications spec defines the summary as a single line of plain text
+    // and the capability governs the body only. Running the title through
+    // toHtmlEscaped() therefore escaped nothing dangerous and instead
+    // corrupted ordinary content -- a message from "Smith & Jones" was
+    // displayed as "Smith &amp; Jones", every time.
+    //
+    // What the summary DOES need is control-character stripping: it is
+    // specified as one line, and a sender name carrying a newline (or a
+    // terminal escape, on a notification server that passes them through)
+    // can push text into the region the user reads as the body.
+    static QString sanitizeTitleForNotification(const QString& text);
 
     // What notify() actually passes to setTitle()/setText(): the sanitized
     // pickTitle()/pickText() result, or fixed non-revealing copy when

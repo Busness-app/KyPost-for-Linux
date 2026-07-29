@@ -36,14 +36,27 @@ FolderRepository::FolderRepository(FolderClient& client, FolderDao& folderDao, P
 {
 }
 
-MailFetchOutcome FolderRepository::refresh(const QString& parent)
+std::optional<RelayEndpoint> FolderRepository::planRequest() const
 {
     const std::optional<DevicePairing> pairing = m_pairingStore.load();
     if (!pairing.has_value())
-        return { MailRepositoryOutcome::NotPaired, QStringLiteral("Not paired") };
+        return std::nullopt;
+    return RelayEndpoint{ QUrl(pairing->serverBaseUrl),
+                          RelayAuth{ pairing->deviceId, pairing->deviceSecret } };
+}
 
-    const RelayAuth auth{ pairing->deviceId, pairing->deviceSecret };
-    const FolderListResult result = m_client.list(QUrl(pairing->serverBaseUrl), auth, parent);
+FolderListResult FolderRepository::listWith(HttpClient& httpClient, const RelayEndpoint& endpoint,
+                                             const QString& parent)
+{
+    // Constructed here rather than reused from m_client: FolderClient is a
+    // stateless wrapper over an HttpClient reference, and on the async path
+    // that HttpClient belongs to the executor thread.
+    FolderClient client(httpClient);
+    return client.list(endpoint.serverBaseUrl, endpoint.auth, parent);
+}
+
+MailFetchOutcome FolderRepository::applyList(const QString& parent, const FolderListResult& result)
+{
     if (result.error.has_value())
         return { outcomeFromNetworkError(*result.error), result.detail };
 
@@ -51,6 +64,74 @@ MailFetchOutcome FolderRepository::refresh(const QString& parent)
     // observable as an absence from this list.
     m_folderDao.replaceParentSnapshot(parent, result.folders, kSourceMode);
     return { MailRepositoryOutcome::Success, QString() };
+}
+
+FolderRepository::FolderMutationFetch FolderRepository::createWith(HttpClient& httpClient,
+                                                                     const RelayEndpoint& endpoint,
+                                                                     const QString& parent, const QString& name)
+{
+    FolderClient client(httpClient);
+    FolderMutationFetch fetched;
+    fetched.mutation = client.create(endpoint.serverBaseUrl, endpoint.auth, parent, name);
+    if (fetched.mutation.error.has_value())
+        return fetched;
+    fetched.listedParent = parent;
+    fetched.listing = client.list(endpoint.serverBaseUrl, endpoint.auth, parent);
+    return fetched;
+}
+
+FolderRepository::FolderMutationFetch FolderRepository::renameWith(HttpClient& httpClient,
+                                                                     const RelayEndpoint& endpoint,
+                                                                     const QString& folder, const QString& name)
+{
+    FolderClient client(httpClient);
+    FolderMutationFetch fetched;
+    fetched.mutation = client.rename(endpoint.serverBaseUrl, endpoint.auth, folder, name);
+    if (fetched.mutation.error.has_value())
+        return fetched;
+    // The response's `parent` is the authority on which subtree changed --
+    // a rename keeps the folder under its existing parent, but deriving that
+    // here would mean re-implementing the server's separator rules.
+    fetched.listedParent = fetched.mutation.parent;
+    fetched.listing = client.list(endpoint.serverBaseUrl, endpoint.auth, fetched.listedParent);
+    return fetched;
+}
+
+FolderRepository::FolderMutationFetch FolderRepository::removeWith(HttpClient& httpClient,
+                                                                     const RelayEndpoint& endpoint,
+                                                                     const QString& folder)
+{
+    FolderClient client(httpClient);
+    FolderMutationFetch fetched;
+    fetched.mutation = client.remove(endpoint.serverBaseUrl, endpoint.auth, folder);
+    if (fetched.mutation.error.has_value())
+        return fetched;
+    fetched.listedParent = fetched.mutation.parent;
+    fetched.listing = client.list(endpoint.serverBaseUrl, endpoint.auth, fetched.listedParent);
+    return fetched;
+}
+
+FolderRepository::FolderMutationOutcome FolderRepository::applyMutation(const FolderMutationFetch& fetched)
+{
+    if (fetched.mutation.error.has_value())
+        return { outcomeFromNetworkError(*fetched.mutation.error), fetched.mutation.detail, QString() };
+
+    // The re-list's own outcome is deliberately discarded, matching the
+    // synchronous form: the mutation succeeded on the server, and a failed
+    // re-list only means the sidebar is stale until the next refresh. Turning
+    // it into a failure would report "could not create folder" for a folder
+    // that exists.
+    applyList(fetched.listedParent, fetched.listing);
+    return { MailRepositoryOutcome::Success, QString(), fetched.mutation.folder };
+}
+
+MailFetchOutcome FolderRepository::refresh(const QString& parent)
+{
+    const std::optional<RelayEndpoint> endpoint = planRequest();
+    if (!endpoint.has_value())
+        return { MailRepositoryOutcome::NotPaired, QStringLiteral("Not paired") };
+
+    return applyList(parent, m_client.list(endpoint->serverBaseUrl, endpoint->auth, parent));
 }
 
 QVector<MailFolder> FolderRepository::cachedFolders(const QString& parent) const
@@ -70,50 +151,51 @@ QVector<MailFolder> FolderRepository::cachedFolders(const QString& parent) const
     return folders;
 }
 
+// The three synchronous mutating verbs, kept as compositions of the phases
+// above so the async path cannot drift from the behaviour their tests pin.
+// Each re-uses m_client (this thread's) rather than the *With() statics.
+
 FolderRepository::FolderMutationOutcome FolderRepository::create(const QString& parent, const QString& name)
 {
-    const std::optional<DevicePairing> pairing = m_pairingStore.load();
-    if (!pairing.has_value())
+    const std::optional<RelayEndpoint> endpoint = planRequest();
+    if (!endpoint.has_value())
         return { MailRepositoryOutcome::NotPaired, QStringLiteral("Not paired"), QString() };
 
-    const RelayAuth auth{ pairing->deviceId, pairing->deviceSecret };
-    const FolderMutationResult result = m_client.create(QUrl(pairing->serverBaseUrl), auth, parent, name);
-    if (result.error.has_value())
-        return { outcomeFromNetworkError(*result.error), result.detail, QString() };
-
-    refresh(parent);
-    return { MailRepositoryOutcome::Success, QString(), result.folder };
+    FolderMutationFetch fetched;
+    fetched.mutation = m_client.create(endpoint->serverBaseUrl, endpoint->auth, parent, name);
+    if (!fetched.mutation.error.has_value()) {
+        fetched.listedParent = parent;
+        fetched.listing = m_client.list(endpoint->serverBaseUrl, endpoint->auth, parent);
+    }
+    return applyMutation(fetched);
 }
 
 FolderRepository::FolderMutationOutcome FolderRepository::rename(const QString& folder, const QString& name)
 {
-    const std::optional<DevicePairing> pairing = m_pairingStore.load();
-    if (!pairing.has_value())
+    const std::optional<RelayEndpoint> endpoint = planRequest();
+    if (!endpoint.has_value())
         return { MailRepositoryOutcome::NotPaired, QStringLiteral("Not paired"), QString() };
 
-    const RelayAuth auth{ pairing->deviceId, pairing->deviceSecret };
-    const FolderMutationResult result = m_client.rename(QUrl(pairing->serverBaseUrl), auth, folder, name);
-    if (result.error.has_value())
-        return { outcomeFromNetworkError(*result.error), result.detail, QString() };
-
-    // The response's `parent` is the authority on which subtree changed --
-    // a rename keeps the folder under its existing parent, but deriving that
-    // here would mean re-implementing the server's separator rules.
-    refresh(result.parent);
-    return { MailRepositoryOutcome::Success, QString(), result.folder };
+    FolderMutationFetch fetched;
+    fetched.mutation = m_client.rename(endpoint->serverBaseUrl, endpoint->auth, folder, name);
+    if (!fetched.mutation.error.has_value()) {
+        fetched.listedParent = fetched.mutation.parent;
+        fetched.listing = m_client.list(endpoint->serverBaseUrl, endpoint->auth, fetched.listedParent);
+    }
+    return applyMutation(fetched);
 }
 
 FolderRepository::FolderMutationOutcome FolderRepository::remove(const QString& folder)
 {
-    const std::optional<DevicePairing> pairing = m_pairingStore.load();
-    if (!pairing.has_value())
+    const std::optional<RelayEndpoint> endpoint = planRequest();
+    if (!endpoint.has_value())
         return { MailRepositoryOutcome::NotPaired, QStringLiteral("Not paired"), QString() };
 
-    const RelayAuth auth{ pairing->deviceId, pairing->deviceSecret };
-    const FolderMutationResult result = m_client.remove(QUrl(pairing->serverBaseUrl), auth, folder);
-    if (result.error.has_value())
-        return { outcomeFromNetworkError(*result.error), result.detail, QString() };
-
-    refresh(result.parent);
-    return { MailRepositoryOutcome::Success, QString(), result.folder };
+    FolderMutationFetch fetched;
+    fetched.mutation = m_client.remove(endpoint->serverBaseUrl, endpoint->auth, folder);
+    if (!fetched.mutation.error.has_value()) {
+        fetched.listedParent = fetched.mutation.parent;
+        fetched.listing = m_client.list(endpoint->serverBaseUrl, endpoint->auth, fetched.listedParent);
+    }
+    return applyMutation(fetched);
 }

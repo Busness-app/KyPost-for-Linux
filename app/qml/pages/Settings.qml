@@ -114,6 +114,10 @@ Item {
                 Repeater {
                     model: root.paneNames
                     delegate: PillTab {
+                        // No textFormat here: PillTab is not a Text, and its
+                        // own label already pins Text.PlainText. Assigning it
+                        // from outside made the whole component fail to load,
+                        // which took DesktopRoot down with it.
                         text: modelData
                         selected: root.currentPane === index
                         onClicked: root.currentPane = index
@@ -257,6 +261,7 @@ Item {
                             // (item 3) forbids linking KI18n into -- they're
                             // also the literal identifier Theme.setTheme()
                             // stores/compares, not just display text.
+                            textFormat: Text.PlainText
                             text: modelData
                             color: Theme.inkStrong
                             font.family: Theme.fontUi
@@ -319,6 +324,7 @@ Item {
 
                             Text {
                                 Layout.fillWidth: true
+                                textFormat: Text.PlainText
                                 text: modelData.keyword
                                 color: Theme.inkStrong
                                 font.family: Theme.fontUi
@@ -364,6 +370,7 @@ Item {
 
                     Text {
                         Layout.fillWidth: true
+                        textFormat: Text.PlainText
                         text: ContactsApp.lastError !== "" ? ContactsApp.lastError
                             : (ContactsApp.statusMessage !== "" ? ContactsApp.statusMessage : i18n("No sync yet."))
                         color: ContactsApp.lastError !== "" ? Theme.dangerColor : Theme.ink
@@ -610,6 +617,20 @@ Item {
                     MutedHint {
                         Layout.fillWidth: true
                         text: i18n("A PIN is required every time KyPost starts, and whenever the window is hidden or minimised. After 10 failed attempts all local data is erased.")
+                    }
+
+                    // Says plainly what the PIN does not do.
+                    //
+                    // Cached mail and contacts live in an unencrypted SQLite
+                    // file, so anyone who can read this account's files can
+                    // read them without ever meeting this PIN. The lock
+                    // guards the running app; "Keep nothing on this device"
+                    // below is the setting that guards the disk. Leaving
+                    // that unsaid let a PIN prompt imply at-rest protection
+                    // it has never provided.
+                    MutedHint {
+                        Layout.fillWidth: true
+                        text: i18n("The PIN protects this app while it is running. It does not encrypt the cached mail and contacts stored on this computer — for that, turn on Keep nothing on this device below.")
                     }
 
                     GhostButton {

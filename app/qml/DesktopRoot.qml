@@ -228,6 +228,22 @@ Kirigami.ApplicationWindow {
             root.raise()
             root.requestActivate()
         }
+
+        // The mail list's context-menu Delete dispatches and returns, so the
+        // "was it the message the detail pane is showing?" test has to live
+        // somewhere that outlives the row -- the optimistic removal destroys
+        // that delegate before the reply lands.
+        //
+        // Only the embedded pane is closed here. The popped-out Windows
+        // handle their own EmailDetail's actionCompleted (see
+        // emailWindowComponent), which is why this checks
+        // root.selectedMessageId rather than acting on any deleted id.
+        function onActionCompleted(action, messageIds, ok) {
+            if (ok && action === "delete" && root.detailMode === "email"
+                && messageIds.indexOf(root.selectedMessageId) !== -1) {
+                root.closeDetail()
+            }
+        }
     }
 
     // ---- keyboard shortcuts ----------------------------------------------
@@ -368,14 +384,23 @@ Kirigami.ApplicationWindow {
             const name = folderPromptField.text.trim()
             if (name.length === 0)
                 return
-            const ok = folderPrompt.mode === "create"
-                ? MailApp.createFolder(folderPrompt.targetFolder, name)
-                : MailApp.renameFolder(folderPrompt.targetFolder, name)
-            // Stay open on failure so the typed name isn't lost; MailApp
-            // has already put the reason in lastError, which the sidebar's
-            // error Text below binds to.
-            if (ok)
-                folderPrompt.close()
+            if (folderPrompt.mode === "create")
+                MailApp.createFolder(folderPrompt.targetFolder, name)
+            else
+                MailApp.renameFolder(folderPrompt.targetFolder, name)
+        }
+
+        // Stay open on failure so the typed name isn't lost; MailApp has
+        // already put the reason in lastError, which the sidebar's error Text
+        // below binds to. Only reached while this popup is open, because
+        // nothing else can start a folder mutation: both dialogs are modal.
+        Connections {
+            target: MailApp
+            enabled: folderPrompt.opened
+            function onFolderMutationCompleted(ok) {
+                if (ok)
+                    folderPrompt.close()
+            }
         }
     }
 
@@ -433,11 +458,19 @@ Kirigami.ApplicationWindow {
                 DangerButton {
                     text: i18n("Delete")
                     enabled: !MailApp.isBusy
-                    onClicked: {
-                        if (MailApp.deleteFolder(folderDeleteConfirm.targetFolder))
-                            folderDeleteConfirm.close()
-                    }
+                    onClicked: MailApp.deleteFolder(folderDeleteConfirm.targetFolder)
                 }
+            }
+        }
+
+        // Same shape as folderPrompt's above -- stay open on failure so the
+        // reason in lastError is read next to the thing that failed.
+        Connections {
+            target: MailApp
+            enabled: folderDeleteConfirm.opened
+            function onFolderMutationCompleted(ok) {
+                if (ok)
+                    folderDeleteConfirm.close()
             }
         }
     }
@@ -672,7 +705,14 @@ Kirigami.ApplicationWindow {
             property string popMessageId: ""
             property string popFolder: ""
 
-            title: (poppedEmail.email && poppedEmail.email.subject) ? poppedEmail.email.subject : i18n("Email")
+            // Window.title is drawn by the compositor, so LockOverlay cannot
+            // cover it: the subject stayed legible in the titlebar, taskbar and
+            // Alt-Tab switcher while the PIN screen was up. Same reasoning as
+            // NotificationDispatcher::setContentHidden(), which redacts push
+            // content for exactly this reason.
+            title: AppLock.locked
+                ? i18n("Email")
+                : ((poppedEmail.email && poppedEmail.email.subject) ? poppedEmail.email.subject : i18n("Email"))
 
             EmailDetail {
                 id: poppedEmail
@@ -761,7 +801,9 @@ Kirigami.ApplicationWindow {
 
             property string popUid: ""
 
-            title: (poppedContact.contact && poppedContact.contact.fn) ? poppedContact.contact.fn : i18n("Contact")
+            title: AppLock.locked
+                ? i18n("Contact")
+                : ((poppedContact.contact && poppedContact.contact.fn) ? poppedContact.contact.fn : i18n("Contact"))
 
             ContactDetail {
                 id: poppedContact
@@ -961,6 +1003,7 @@ Kirigami.ApplicationWindow {
                                 anchors.verticalCenter: parent.verticalCenter
                                 anchors.left: parent.left
                                 anchors.leftMargin: 10 + (modelData.depth || 0) * 14
+                                textFormat: Text.PlainText
                                 text: modelData.displayName
                                 color: Theme.inkStrong
                                 font.family: Theme.fontUi
@@ -1167,6 +1210,7 @@ Kirigami.ApplicationWindow {
                     Text {
                         Layout.fillWidth: true
                         visible: MailApp.lastError !== ""
+                        textFormat: Text.PlainText
                         text: MailApp.lastError
                         color: Theme.dangerColor
                         font.family: Theme.fontUi
@@ -1236,6 +1280,7 @@ Kirigami.ApplicationWindow {
 
                                     Text {
                                         Layout.fillWidth: true
+                                        textFormat: Text.PlainText
                                         text: model.sender
                                         color: Theme.inkStrong
                                         font.family: Theme.fontUi
@@ -1254,6 +1299,7 @@ Kirigami.ApplicationWindow {
 
                                         Text {
                                             visible: !!model.pgpMarker
+                                            textFormat: Text.PlainText
                                             text: model.pgpMarker || ""
                                             color: Theme.inkStrong
                                             font.family: Theme.fontUi
@@ -1265,6 +1311,7 @@ Kirigami.ApplicationWindow {
                                         }
                                         Text {
                                             Layout.fillWidth: true
+                                            textFormat: Text.PlainText
                                             text: model.subject
                                             color: Theme.inkStrong
                                             font.family: Theme.fontUi
@@ -1274,6 +1321,7 @@ Kirigami.ApplicationWindow {
                                     }
                                     Text {
                                         Layout.fillWidth: true
+                                        textFormat: Text.PlainText
                                         text: model.preview
                                         color: Theme.ink
                                         font.family: Theme.fontUi
@@ -1310,10 +1358,15 @@ Kirigami.ApplicationWindow {
                                 id: emailContextMenu
                                 MenuItem {
                                     text: i18n("Delete")
-                                    onTriggered: {
-                                        if (MailApp.deleteEmails([model.messageId]) && root.selectedMessageId === model.messageId)
-                                            root.closeDetail()
-                                    }
+                                    // Fire and forget -- the detail pane is
+                                    // closed by root's own onActionCompleted
+                                    // handler if the deleted message was the
+                                    // one it was showing. Doing it here
+                                    // would need this delegate to still be
+                                    // alive when the reply lands, and the
+                                    // optimistic row removal is exactly what
+                                    // destroys it.
+                                    onTriggered: MailApp.deleteEmails([model.messageId])
                                 }
                             }
                         }
@@ -1453,5 +1506,27 @@ Kirigami.ApplicationWindow {
     // ---- app lock -----------------------------------------------------
     // One per Window, including every pop-out below -- see
     // components/LockOverlay.qml for why this cannot live only here.
+    // Every QQC2 Popup and Kirigami.OverlaySheet renders inside QQuickOverlay,
+    // which Qt stacks ABOVE the window's content item -- so LockOverlay's
+    // z: 1000 cannot reach it, and a sheet left open when the app locked
+    // stayed visible and clickable over the PIN screen. Because these popups
+    // are modal, their dimmer also swallowed clicks aimed at the PIN field, so
+    // they blocked unlocking as well as sitting on top of it.
+    //
+    // Only root-scope ids are reachable here; menus declared inside delegates
+    // are transient and close on their own.
+    Connections {
+        target: AppLock
+        function onLockedChanged() {
+            if (!AppLock.locked)
+                return;
+            settingsSheet.close();
+            pgpMyQrCodeSheet.close();
+            pgpScanContactKeySheet.close();
+            folderPrompt.close();
+            folderDeleteConfirm.close();
+        }
+    }
+
     LockOverlay { id: unlockOverlay }
 }

@@ -20,6 +20,8 @@ private slots:
     void unauthorizedFrom401();
     void backendMisconfiguredFrom503();
     void noQueryParamsOnRequestUrl();
+    void unusableCredentialInA200IsRefused_data();
+    void unusableCredentialInA200IsRefused();
 };
 
 void NativeRegistrationClientTest::successParsesResponseAndSendsExpectedBody()
@@ -64,7 +66,7 @@ void NativeRegistrationClientTest::successParsesResponseAndSendsExpectedBody()
 
 void NativeRegistrationClientTest::successOmitsOptionalFieldsWhenNotProvided()
 {
-    const QByteArray body = R"({"ok":true,"synced":false,"deviceId":"dev-2","devices":1,)"
+    const QByteArray body = R"({"ok":true,"synced":false,"deviceId":"dev-2","deviceSecret":"sec-2","devices":1,)"
                              R"("deliveryMode":"push","pullEndpoint":"","transport":"unifiedpush"})";
     FakeRelayServer fake(httpResponse(200, "OK", body));
     QNetworkAccessManager manager;
@@ -77,9 +79,6 @@ void NativeRegistrationClientTest::successOmitsOptionalFieldsWhenNotProvided()
         QString(), QString());
 
     QCOMPARE(result.outcome, RegistrationOutcome::Success);
-    // deviceSecret is absent from this response on purpose (an older/
-    // misbehaving server) -- must decode as empty, not crash.
-    QVERIFY(result.response.deviceSecret.isEmpty());
 
     const QJsonObject sent = fake.receivedJsonBody();
     QVERIFY(!sent.contains(QStringLiteral("subscriberHash")));
@@ -90,7 +89,7 @@ void NativeRegistrationClientTest::successOmitsOptionalFieldsWhenNotProvided()
 
 void NativeRegistrationClientTest::successDerivesPullEndpointWhenServerOmitsIt()
 {
-    const QByteArray body = R"({"ok":true,"synced":true,"deviceId":"dev-3","devices":1,)"
+    const QByteArray body = R"({"ok":true,"synced":true,"deviceId":"dev-3","deviceSecret":"sec-3","devices":1,)"
                              R"("deliveryMode":"pull","pullEndpoint":"","transport":"unifiedpush"})";
     FakeRelayServer fake(httpResponse(200, "OK", body));
     QNetworkAccessManager manager;
@@ -105,6 +104,47 @@ void NativeRegistrationClientTest::successDerivesPullEndpointWhenServerOmitsIt()
     QCOMPARE(result.outcome, RegistrationOutcome::Success);
     QCOMPARE(result.response.pullEndpoint,
              QStringLiteral("http://127.0.0.1:%1/api/notifications/native/pull").arg(fake.port()));
+}
+
+// A 200 carrying any JSON object used to count as Success: `ok` was parsed
+// and never read, and an empty deviceId/deviceSecret was stored as-is. That
+// let a deep link whose `reg` named an unrelated same-origin endpoint -- the
+// relay's unauthenticated /api/health answers POST with a JSON object --
+// overwrite the working device credential with empty strings while the UI
+// still reported "Paired".
+void NativeRegistrationClientTest::unusableCredentialInA200IsRefused_data()
+{
+    QTest::addColumn<QByteArray>("body");
+
+    QTest::newRow("health-endpoint-shaped")
+        << QByteArray(R"({"status":"ok","uptime":42})");
+    QTest::newRow("ok-false")
+        << QByteArray(R"({"ok":false,"deviceId":"d","deviceSecret":"s"})");
+    QTest::newRow("empty-deviceId")
+        << QByteArray(R"({"ok":true,"deviceId":"","deviceSecret":"s"})");
+    QTest::newRow("empty-deviceSecret")
+        << QByteArray(R"({"ok":true,"deviceId":"d","deviceSecret":""})");
+}
+
+void NativeRegistrationClientTest::unusableCredentialInA200IsRefused()
+{
+    QFETCH(QByteArray, body);
+
+    FakeRelayServer fake(httpResponse(200, "OK", body));
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    NativeRegistrationClient client(http);
+
+    const QUrl endpoint(QStringLiteral("http://127.0.0.1:%1/api/notifications/native/register").arg(fake.port()));
+    const NativeRegistrationResult result = client.registerDevice(
+        endpoint, QStringLiteral("sub-1"), QStringLiteral("pair-tok"), QStringLiteral("https://push.example/endpoint"),
+        QString(), QString());
+
+    QCOMPARE(result.outcome, RegistrationOutcome::Failure);
+    QVERIFY(!result.detail.isEmpty());
+    // Nothing usable escapes to the caller, so PairingStore::save() can never
+    // be handed an empty credential to persist over a working one.
+    QVERIFY(result.response.deviceSecret.isEmpty());
 }
 
 void NativeRegistrationClientTest::unauthorizedFrom401()

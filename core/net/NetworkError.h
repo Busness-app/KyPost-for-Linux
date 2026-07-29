@@ -22,11 +22,23 @@ enum class NetworkError
     // different things to a user: "the network is flaky, retry" versus
     // "something is impersonating your mail server, do not retry".
     CertificateMismatch,
+    // A redirect was offered and refused, because the target failed the
+    // request's redirect validator (by default: it left the origin the
+    // caller named).
+    //
+    // Distinct from Server for the same reason CertificateMismatch is
+    // distinct from Transport. Aborting the reply mid-redirect leaves the
+    // 3xx as the reply's status, which networkErrorFromStatusCode() maps to
+    // Server -- so "the relay tried to send your device secret to another
+    // host" and "the relay returned a 500" arrived at every caller, and
+    // every log line, as the same value. The relay emits no redirects at
+    // all, so this firing is a security event, not a hiccup.
+    RedirectRefused,
     Decoding,           // JSON parse failure; produced by each Task 14-18
                         // client's own decode step, never by HttpClient
 };
 
 // Maps a non-2xx HTTP status code to its NetworkError. Returns std::nullopt
-// for 2xx (success). Never returns Transport or Decoding — those arise
-// outside the HTTP status code itself (see NetworkError above).
+// for 2xx (success). Never returns Transport, Decoding or RedirectRefused —
+// those arise outside the HTTP status code itself (see NetworkError above).
 std::optional<NetworkError> networkErrorFromStatusCode(int statusCode);

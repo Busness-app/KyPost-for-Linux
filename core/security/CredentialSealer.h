@@ -38,6 +38,19 @@ public:
     // destroy that PIN.
     virtual bool unsealPermanently(const QString& pin) = 0;
 
+    // Moves the secret from `oldPin` to `newPin` without the plaintext ever
+    // touching the store.
+    //
+    // A PIN change is NOT unsealPermanently() followed by seal(), even
+    // though that composes correctly on paper. That pair writes the device
+    // secret to the keychain in the clear and deletes it again two PBKDF2
+    // derivations later; anything that interrupts the process in between
+    // leaves it plaintext on disk under a gate flag still claiming it is
+    // sealed. This is one operation with one durable write.
+    //
+    // False means nothing changed and the secret is still under `oldPin`.
+    virtual bool reseal(const QString& oldPin, const QString& newPin) = 0;
+
     // Opens the sealed blob into memory for this session only. False means
     // authenticated requests will keep failing until a successful unlock.
     virtual bool unsealForSession(const QString& pin) = 0;
@@ -59,6 +72,7 @@ class NullCredentialSealer : public CredentialSealer
 public:
     bool seal(const QString&) override { return true; }
     bool unsealPermanently(const QString&) override { return true; }
+    bool reseal(const QString&, const QString&) override { return true; }
     bool unsealForSession(const QString&) override { return true; }
     void relock() override { }
     bool isSealed() const override { return false; }

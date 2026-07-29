@@ -108,6 +108,7 @@ Item {
                     spacing: 6
 
                     Text {
+                        textFormat: Text.PlainText
                         text: modelData.email
                         color: modelData.valid ? Theme.inkStrong : Theme.dangerColor
                         font.family: Theme.fontUi

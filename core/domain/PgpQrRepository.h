@@ -1,9 +1,16 @@
 #pragma once
 
-#include <QString>
+#include "net/RelayAuth.h"
 
+#include <QString>
+#include <QUrl>
+#include <optional>
+#include <utility>
+
+class HttpClient;
 class PgpQrClient;
 class PairingStore;
+struct RelayAuth;
 
 enum class PgpQrTokenStatus { Success, NotPaired, NoPgpIdentity, Unauthorized, ServiceUnavailable, Retry };
 
@@ -31,6 +38,21 @@ public:
     PgpQrRepository(PgpQrClient& client, PairingStore& pairingStore);
 
     PgpQrTokenOutcome fetchMyToken();
+
+    // The half of fetchMyToken() that may run off the calling thread: the
+    // request and the pure status mapping, with the pairing already resolved
+    // into plain values by the caller.
+    //
+    // Static and taking an HttpClient because PairingStore must NOT be
+    // reached from another thread -- it caches, and the credential gate
+    // mutates it. See docs/THREADING.md; this is the same prepare/send split
+    // DeviceRegistrationService needed, minus the persistence.
+    static PgpQrTokenOutcome fetchTokenWith(HttpClient& httpClient, const QUrl& serverBaseUrl,
+                                             const RelayAuth& auth);
+
+    // Resolves the pairing on the CALLING thread. Returns nullopt when not
+    // paired, which the caller reports without any request.
+    std::optional<std::pair<QUrl, RelayAuth>> resolvePairing() const;
 
 private:
     PgpQrClient& m_client;

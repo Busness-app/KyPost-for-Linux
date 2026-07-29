@@ -12,6 +12,19 @@
 // yet contained one of those, i.e. it was one ordinary schema change away
 // from silently producing invalid SQL fragments.
 //
+// This exists because QSqlQuery::exec() runs exactly one statement, so
+// something has to divide the file up. It is deliberately NOT a SQL parser
+// and must not grow into one; the alternative considered and rejected was
+// handing the whole script to sqlite3_exec(), which needs the raw sqlite3*
+// out of Qt's driver and a libsqlite3 of our own -- and a process holding
+// two copies of SQLite, passing a handle from one into the other, is a worse
+// hazard than the thing it would fix.
+//
+// Known limitation, stated rather than discovered later: a migration must
+// not contain `BEGIN TRANSACTION`. Database::open() wraps each migration in
+// its own transaction already, and the depth counter below would read that
+// BEGIN as opening a block that never closes.
+//
 // Exposed (rather than file-local) so DatabaseTest can cover those cases
 // directly instead of only through a live migration.
 QStringList splitSqlStatements(const QString& sql);

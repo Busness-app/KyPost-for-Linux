@@ -1,13 +1,16 @@
 #pragma once
 
 #include "models/Email.h"
+#include "net/RelayAuth.h"
+#include "net/RelayMailSource.h" // InboxFetchResult -- crosses the thread hop by value
 
 #include <QString>
+#include <QUrl>
 #include <QVector>
 #include <optional>
 
-class RelayMailSource;
 class EmailDao;
+class HttpClient;
 class PairingStore;
 class CursorStore;
 
@@ -17,6 +20,18 @@ struct MailFetchOutcome
 {
     MailRepositoryOutcome outcome = MailRepositoryOutcome::Retry;
     QString detail; // meaningful when outcome != Success
+};
+
+// Everything a refresh needs from the thread-confined stores, read before the
+// request and carried across the thread hop by value. Plain data on purpose:
+// it must not hold a reference to anything owned by the calling thread.
+struct MailRefreshPlan
+{
+    RelayEndpoint endpoint;
+    QString folder;
+    // Absent means "full snapshot" -- see refreshFolder()'s note on why an
+    // omitted `since` is not the same as `since=0` on this endpoint.
+    std::optional<qint64> since;
 };
 
 // Sits between RelayMailSource and EmailDao, matching the Domain/
@@ -56,6 +71,33 @@ public:
     // CursorStore-persisted mail cursor (also omitted when empty --
     // first-ever fetch for this folder is a full snapshot the same way).
     MailFetchOutcome refreshFolder(const QString& folder, bool forceFullResync = false);
+
+    // ---- three-phase form, for callers that must not block ---------------
+    //
+    // Same shape as DeviceRegistrationService's split and for the same
+    // reason: only the HTTP request may leave the calling thread. Here the
+    // confined parts are PairingStore (caches, mutated by the credential
+    // gate), CursorStore (a QSettings file) and EmailDao (a QSqlDatabase
+    // connection, usable only from the thread that opened it).
+    //
+    // Note what this does NOT require: moving the database. The reconcile and
+    // every DAO write stay on the calling thread, so nothing about the
+    // composition root has to change. docs/THREADING.md previously
+    // recommended the opposite; see there for why that was wrong.
+
+    // Phase 1, on the calling thread. Reads the pairing and the stored
+    // cursor. Returns nullopt when there is no pairing -- the caller reports
+    // MailRepositoryOutcome::NotPaired, exactly as refreshFolder() does.
+    std::optional<MailRefreshPlan> planRefresh(const QString& folder, bool forceFullResync) const;
+
+    // Phase 2. The only part that may run on another thread: it touches
+    // nothing but the HttpClient it is handed and the plain plan. Static for
+    // that reason -- there is no `this` to accidentally reach through.
+    static InboxFetchResult fetchWith(HttpClient& httpClient, const MailRefreshPlan& plan);
+
+    // Phase 3, back on the calling thread. Does the keyword/folder wire
+    // mapping, the delta merge, and the EmailDao + CursorStore writes.
+    MailFetchOutcome applyRefresh(const MailRefreshPlan& plan, const InboxFetchResult& result);
 
 private:
     RelayMailSource& m_source;
