@@ -11,6 +11,7 @@
 #include "net/RelayAuth.h"
 #include "models/MailFolder.h"
 #include "net/FolderClient.h"
+#include "net/NetworkExecutor.h"
 #include "net/PgpBootstrapClient.h"
 #include "net/PgpRecipientChecker.h"
 #include "net/RelayMailSource.h"
@@ -39,7 +40,7 @@ MailController::MailController(MailRepository& mailRepository, RelayMailSource& 
                                 KeywordRepository& keywordRepository, PairingStore& pairingStore,
                                 FolderRepository& folderRepository, SettingsStore& settingsStore,
                                 PgpBootstrapClient& pgpBootstrapClient, PgpRecipientChecker& pgpRecipientChecker,
-                                QObject* parent)
+                                NetworkExecutor& networkExecutor, QObject* parent)
     : QObject(parent)
     , m_mailRepository(mailRepository)
     , m_folderRepository(folderRepository)
@@ -49,6 +50,7 @@ MailController::MailController(MailRepository& mailRepository, RelayMailSource& 
     , m_pairingStore(pairingStore)
     , m_pgpBootstrapClient(pgpBootstrapClient)
     , m_pgpRecipientChecker(pgpRecipientChecker)
+    , m_executor(networkExecutor)
     , m_model(new EmailListModel(this))
 {
 }
@@ -84,7 +86,7 @@ QVariantList MailController::keywordTabs() const
 
 bool MailController::isBusy() const
 {
-    return m_isBusy;
+    return m_busyDepth > 0;
 }
 
 QString MailController::lastError() const
@@ -112,12 +114,17 @@ QStringList MailController::pgpKeylessRecipients() const
     return m_pgpKeylessRecipients;
 }
 
-void MailController::setBusy(bool busy)
+void MailController::pushBusy()
 {
-    if (m_isBusy == busy)
-        return;
-    m_isBusy = busy;
-    emit isBusyChanged();
+    if (++m_busyDepth == 1)
+        emit isBusyChanged();
+}
+
+void MailController::popBusy()
+{
+    Q_ASSERT(m_busyDepth > 0);
+    if (--m_busyDepth == 0)
+        emit isBusyChanged();
 }
 
 void MailController::setLastError(const QString& error)
@@ -175,11 +182,15 @@ bool MailController::requirePairing(QUrl& serverBaseUrl, RelayAuth& auth)
 // showing a mailbox that no longer exists. Only the QML-facing boundary is
 // guarded; internal callers use the unguarded bodies, which is safe because
 // the outer guard is already held for the whole chain.
+//
+// selectFolder() and refresh() take NO guard any more. Their request runs on
+// the executor thread, so neither one is ever suspended inside a nested event
+// loop and there is nothing to re-enter. Taking the guard would now be
+// actively wrong: it would be released the instant the method returned, while
+// the request was still outstanding, so it would guard nothing and would
+// still block a genuine second folder selection.
 void MailController::selectFolder(const QString& wireFolder)
 {
-    ReentrancyGuard guard(m_inNetworkCall);
-    if (!guard.entered())
-        return;
     selectFolderInternal(wireFolder);
 }
 
@@ -193,10 +204,15 @@ void MailController::selectFolderInternal(const QString& wireFolder)
         m_selectedKeyword.clear();
         emit selectedKeywordChanged();
     }
+    reloadCurrentFolder();
+    refreshInternal(false);
+}
+
+void MailController::reloadCurrentFolder()
+{
     m_currentFolderEmails = m_mailRepository.cachedEmails(m_currentFolder);
     emit keywordTabsChanged();
     applyFilter();
-    refreshInternal(false);
 }
 
 void MailController::selectKeyword(const QString& keyword)
@@ -210,26 +226,64 @@ void MailController::selectKeyword(const QString& keyword)
 
 void MailController::refresh(bool forceFullResync)
 {
-    ReentrancyGuard guard(m_inNetworkCall);
-    if (!guard.entered())
-        return;
     refreshInternal(forceFullResync);
 }
 
 void MailController::refreshInternal(bool forceFullResync)
 {
-    setBusy(true);
-    const MailFetchOutcome outcome = m_mailRepository.refreshFolder(m_currentFolder, forceFullResync);
-    setBusy(false);
+    // Coalescing, not re-entrancy. Pull-to-refresh, the toolbar button and a
+    // folder switch can all land inside one round trip; N of them must cost
+    // one follow-up request rather than N queued behind each other on the
+    // single executor thread.
+    if (m_refreshInFlight) {
+        m_refreshPending = true;
+        m_refreshPendingFullResync = m_refreshPendingFullResync || forceFullResync;
+        return;
+    }
 
+    // Phase 1 on this thread: PairingStore caches and is mutated by the
+    // credential gate, CursorStore is a QSettings file. Only the request that
+    // uses what they produce may leave.
+    const std::optional<MailRefreshPlan> plan = m_mailRepository.planRefresh(m_currentFolder, forceFullResync);
+    if (!plan.has_value()) {
+        setLastError(i18n("Not paired"));
+        reloadCurrentFolder();
+        return;
+    }
+
+    m_refreshInFlight = true;
+    pushBusy();
+    m_executor.run(
+        this, [plan = *plan](HttpClient& http) { return MailRepository::fetchWith(http, plan); },
+        [this, plan = *plan](const InboxFetchResult& result) { finishRefresh(plan, result); });
+}
+
+void MailController::finishRefresh(const MailRefreshPlan& plan, const InboxFetchResult& result)
+{
+    m_refreshInFlight = false;
+    popBusy();
+
+    // Phase 3 back on this thread: the delta merge writes through EmailDao,
+    // whose QSqlDatabase connection was opened here and may not be touched
+    // anywhere else.
+    const MailFetchOutcome outcome = m_mailRepository.applyRefresh(plan, result);
     if (outcome.outcome != MailRepositoryOutcome::Success)
         setLastError(outcome.detail.isEmpty() ? i18n("Refresh failed") : outcome.detail);
     else
         setLastError(QString());
 
-    m_currentFolderEmails = m_mailRepository.cachedEmails(m_currentFolder);
-    emit keywordTabsChanged();
-    applyFilter();
+    // m_currentFolder, deliberately -- NOT plan.folder. The user can switch
+    // folders while the request is out, and the reply for the folder they
+    // left must still be written to the database (it is, above, keyed on
+    // plan.folder) without repainting the list with it.
+    reloadCurrentFolder();
+
+    if (m_refreshPending) {
+        const bool fullResync = m_refreshPendingFullResync;
+        m_refreshPending = false;
+        m_refreshPendingFullResync = false;
+        refreshInternal(fullResync);
+    }
 }
 
 bool MailController::performActionCommon(const QStringList& messageIds, const QString& action,
@@ -244,10 +298,10 @@ bool MailController::performActionCommon(const QStringList& messageIds, const QS
     if (!requirePairing(serverBaseUrl, auth))
         return false;
 
-    setBusy(true);
+    pushBusy();
     const ActionResult result =
         m_relayMailSource.performAction(serverBaseUrl, auth, action, messageIds, m_currentFolder, targetMailbox);
-    setBusy(false);
+    popBusy();
 
     if (result.error.has_value() || !result.ok) {
         setLastError(result.detail.isEmpty() ? i18n("Action failed") : result.detail);
@@ -401,9 +455,9 @@ bool MailController::createFolder(const QString& parent, const QString& name)
     if (!guard.entered())
         return false;
 
-    setBusy(true);
+    pushBusy();
     const FolderRepository::FolderMutationOutcome outcome = m_folderRepository.create(parent, name);
-    setBusy(false);
+    popBusy();
 
     if (outcome.outcome != MailRepositoryOutcome::Success) {
         setLastError(outcome.detail.isEmpty() ? i18n("Could not create folder") : outcome.detail);
@@ -420,9 +474,9 @@ bool MailController::renameFolder(const QString& folder, const QString& name)
     if (!guard.entered())
         return false;
 
-    setBusy(true);
+    pushBusy();
     const FolderRepository::FolderMutationOutcome outcome = m_folderRepository.rename(folder, name);
-    setBusy(false);
+    popBusy();
 
     if (outcome.outcome != MailRepositoryOutcome::Success) {
         setLastError(outcome.detail.isEmpty() ? i18n("Could not rename folder") : outcome.detail);
@@ -444,9 +498,9 @@ bool MailController::deleteFolder(const QString& folder)
     if (!guard.entered())
         return false;
 
-    setBusy(true);
+    pushBusy();
     const FolderRepository::FolderMutationOutcome outcome = m_folderRepository.remove(folder);
-    setBusy(false);
+    popBusy();
 
     if (outcome.outcome != MailRepositoryOutcome::Success) {
         setLastError(outcome.detail.isEmpty() ? i18n("Could not delete folder") : outcome.detail);
@@ -481,10 +535,10 @@ bool MailController::saveDraftInternal(const QString& to, const QString& cc, con
     if (!readAttachments(attachmentFilePaths, attachments))
         return false;
 
-    setBusy(true);
+    pushBusy();
     const SaveDraftResult result = m_relayMailSource.saveDraft(serverBaseUrl, auth, to, cc, bcc, subject, body,
                                                                 QStringLiteral("html"), attachments);
-    setBusy(false);
+    popBusy();
 
     if (result.error.has_value() || !result.ok) {
         setLastError(result.detail.isEmpty() ? i18n("Could not save draft") : result.detail);
@@ -522,7 +576,7 @@ bool MailController::sendMail(const QString& to, const QString& cc, const QStrin
     if (!readAttachments(attachmentFilePaths, attachments))
         return false;
 
-    setBusy(true);
+    pushBusy();
     const QString sendMode = QStringLiteral("html");
 
     // Minted into a local, and it is this local -- never m_pendingSend.token --
@@ -546,7 +600,7 @@ bool MailController::sendMail(const QString& to, const QString& cc, const QStrin
     const SendMailResult result = m_relayMailSource.sendMail(
         serverBaseUrl, auth, to, cc, bcc, subject, body, sendMode, attachments,
         sign, encrypt, /*allowPickupFallback=*/false);
-    setBusy(false);
+    popBusy();
 
     if (result.pickupFallbackNeeded) {
         // Nothing was delivered; the pending payload stays cached for the
@@ -622,12 +676,12 @@ bool MailController::confirmPickupFallbackSend(quint64 token)
     // 30s HttpClient timeout, so a user who sees nothing happen presses Send
     // again -- which takes another 409, another confirmation, and delivers
     // the message twice.
-    setBusy(true);
+    pushBusy();
     const SendMailResult result = m_relayMailSource.sendMail(
         serverBaseUrl, auth, pending.to, pending.cc, pending.bcc, pending.subject, pending.body,
         pending.mode, pending.attachments, pending.sign, pending.encrypt,
         /*allowPickupFallback=*/true);
-    setBusy(false);
+    popBusy();
 
     if (!result.ok) {
         // Same detail-or-localized-fallback shape as every other failure in
@@ -799,9 +853,9 @@ QVariantList MailController::listAttachments(const QString& mailbox, const QStri
     if (!requirePairing(serverBaseUrl, auth))
         return {};
 
-    setBusy(true);
+    pushBusy();
     const ListAttachmentsResult result = m_relayMailSource.listAttachments(serverBaseUrl, auth, mailbox, messageId);
-    setBusy(false);
+    popBusy();
 
     if (result.error.has_value()) {
         setLastError(result.detail.isEmpty() ? i18n("Could not list attachments") : result.detail);
@@ -889,10 +943,10 @@ bool MailController::downloadAttachment(const QString& mailbox, const QString& m
     if (!requirePairing(serverBaseUrl, auth))
         return false;
 
-    setBusy(true);
+    pushBusy();
     const DownloadAttachmentResult result =
         m_relayMailSource.downloadAttachment(serverBaseUrl, auth, mailbox, messageId, index);
-    setBusy(false);
+    popBusy();
 
     if (result.error.has_value()) {
         setLastError(result.detail.isEmpty() ? i18n("Download failed") : result.detail);

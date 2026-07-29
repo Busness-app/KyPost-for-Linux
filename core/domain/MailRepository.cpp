@@ -53,29 +53,43 @@ std::optional<Email> MailRepository::findCachedEmail(const QString& messageId) c
     return m_emailDao.findById(messageId);
 }
 
-MailFetchOutcome MailRepository::refreshFolder(const QString& folder, bool forceFullResync)
+std::optional<MailRefreshPlan> MailRepository::planRefresh(const QString& folder, bool forceFullResync) const
 {
     const std::optional<DevicePairing> pairing = m_pairingStore.load();
     if (!pairing.has_value())
-        return { MailRepositoryOutcome::NotPaired, QStringLiteral("Not paired") };
+        return std::nullopt;
 
-    const RelayAuth auth{ pairing->deviceId, pairing->deviceSecret };
-    const QUrl serverBaseUrl(pairing->serverBaseUrl);
+    MailRefreshPlan plan;
+    plan.serverBaseUrl = QUrl(pairing->serverBaseUrl);
+    plan.auth = RelayAuth{ pairing->deviceId, pairing->deviceSecret };
+    plan.folder = folder;
 
     // forceFullResync must leave `since` as std::nullopt (omitted from the
     // request) rather than std::optional<qint64>(0) -- per RelayMailSource's
     // wire contract, `since` present at all (even 0) puts the mail endpoint
     // into delta mode, not full-snapshot mode. Only an omitted `since`
     // triggers the full-snapshot response that routes through
-    // replaceFolderSnapshot below.
-    std::optional<qint64> since;
+    // replaceFolderSnapshot in applyRefresh().
     if (!forceFullResync) {
         const QString storedCursor = m_cursorStore.mailCursor();
         if (!storedCursor.isEmpty())
-            since = storedCursor.toLongLong();
+            plan.since = storedCursor.toLongLong();
     }
+    return plan;
+}
 
-    const InboxFetchResult result = m_source.fetchInbox(serverBaseUrl, auth, std::nullopt, folder, since);
+InboxFetchResult MailRepository::fetchWith(HttpClient& httpClient, const MailRefreshPlan& plan)
+{
+    // Constructed here rather than reused from m_source: RelayMailSource is a
+    // stateless wrapper over an HttpClient reference, and on the async path
+    // that HttpClient belongs to the executor thread.
+    RelayMailSource source(httpClient);
+    return source.fetchInbox(plan.serverBaseUrl, plan.auth, std::nullopt, plan.folder, plan.since);
+}
+
+MailFetchOutcome MailRepository::applyRefresh(const MailRefreshPlan& plan, const InboxFetchResult& result)
+{
+    const QString& folder = plan.folder;
     if (result.error.has_value())
         return { outcomeFromNetworkError(*result.error), result.detail };
 
@@ -164,4 +178,20 @@ MailFetchOutcome MailRepository::refreshFolder(const QString& folder, bool force
     }
 
     return { MailRepositoryOutcome::Success, QString() };
+}
+
+// The synchronous form, kept as the composition of the three phases above.
+//
+// Not a duplicate implementation: every caller that can afford to block goes
+// through here, so the async path cannot drift away from the delta-merge and
+// keyword-mapping behaviour this class's tests pin.
+MailFetchOutcome MailRepository::refreshFolder(const QString& folder, bool forceFullResync)
+{
+    const std::optional<MailRefreshPlan> plan = planRefresh(folder, forceFullResync);
+    if (!plan.has_value())
+        return { MailRepositoryOutcome::NotPaired, QStringLiteral("Not paired") };
+
+    const InboxFetchResult result =
+        m_source.fetchInbox(plan->serverBaseUrl, plan->auth, std::nullopt, plan->folder, plan->since);
+    return applyRefresh(*plan, result);
 }

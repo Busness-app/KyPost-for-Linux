@@ -1,5 +1,6 @@
 #pragma once
 
+#include "domain/MailRepository.h" // MailRefreshPlan -- carried across the thread hop below
 #include "mail/EmailListModel.h"
 #include "models/Email.h"
 #include "net/RelayMailSource.h" // MailAttachmentUpload -- held by value in PendingSend below
@@ -14,25 +15,27 @@
 
 class QFile;
 
-class MailRepository;
 class FolderRepository;
 class SettingsStore;
 class RelayMailSource;
 class KeywordRepository;
+class NetworkExecutor;
 class PairingStore;
 class PgpBootstrapClient;
 class PgpRecipientChecker;
-struct RelayAuth;
 class QUrl;
 
 // QML-facing bridge (Task 32) over the core/domain mail stack: MailRepository
 // (cache + delta-merge), RelayMailSource (direct relay calls for actions/
 // send/attachments -- MailRepository itself only wraps fetchInbox), and
 // KeywordRepository (per-folder keyword tab derivation). Registered as the
-// "MailApp" QML singleton in main.cpp. Every method here that reaches the
-// network runs synchronously on the calling (GUI) thread -- see Phase 6
-// global constraint 2, this is a known, accepted freeze-the-UI tradeoff for
-// this phase, not a bug.
+// "MailApp" QML singleton in main.cpp.
+//
+// THREADING, mid-migration: refresh()/selectFolder() run their request on the
+// NetworkExecutor thread and return immediately. Every OTHER network-reaching
+// method here still runs synchronously on the GUI thread, driving
+// HttpClient's nested event loop -- which is why m_inNetworkCall below still
+// exists. See docs/THREADING.md; this class is the bulk of what is left.
 //
 // Task 39: allKeywordSettings()/setKeywordVisible() (Settings > Keywords
 // pane) are folded in here rather than a new KeywordSettingsController --
@@ -58,7 +61,7 @@ public:
                     KeywordRepository& keywordRepository, PairingStore& pairingStore,
                     FolderRepository& folderRepository, SettingsStore& settingsStore,
                     PgpBootstrapClient& pgpBootstrapClient, PgpRecipientChecker& pgpRecipientChecker,
-                    QObject* parent = nullptr);
+                    NetworkExecutor& networkExecutor, QObject* parent = nullptr);
 
     QObject* emailModel() const;
     QString currentFolder() const;
@@ -270,7 +273,19 @@ signals:
 
 private:
     void applyFilter(); // recomputes m_model from m_currentFolderEmails + m_selectedKeyword
-    void setBusy(bool busy);
+    // Re-reads the current folder's cache into the model. Shared by
+    // selectFolderInternal() and the refresh completion.
+    void reloadCurrentFolder();
+    // isBusy is a DEPTH, not a flag. With refresh() asynchronous and the rest
+    // of this class still synchronous, the two overlap: a click on Archive
+    // while a refresh is in flight used to run setBusy(true)/setBusy(false)
+    // around itself and clear the indicator out from under the refresh, so
+    // the UI reported idle with a request still outstanding. Every
+    // network-reaching method brackets itself with these instead.
+    void pushBusy();
+    void popBusy();
+    // Completion of the asynchronous refresh, on this object's own thread.
+    void finishRefresh(const MailRefreshPlan& plan, const InboxFetchResult& result);
     void setLastError(const QString& error);
     // Loads pairing state via m_pairingStore.load() into serverBaseUrl/auth.
     // Returns false (and sets lastError to "Not paired") without touching
@@ -285,6 +300,10 @@ private:
     // openWebmailDrafts -> saveDraft) go through these so the outer call's
     // ReentrancyGuard doesn't turn its own nested step into a no-op. See the
     // comment above selectFolder() in the .cpp.
+    //
+    // selectFolder/refresh no longer need the split for that reason -- they
+    // hold no guard now -- but they keep it because renameFolder() and
+    // deleteFolder() DO hold one while calling selectFolderInternal().
     void selectFolderInternal(const QString& wireFolder);
     void refreshInternal(bool forceFullResync);
     bool saveDraftInternal(const QString& to, const QString& cc, const QString& bcc, const QString& subject,
@@ -368,11 +387,23 @@ private:
     PairingStore& m_pairingStore;
     PgpBootstrapClient& m_pgpBootstrapClient;
     PgpRecipientChecker& m_pgpRecipientChecker;
+    NetworkExecutor& m_executor;
     EmailListModel* m_model; // owned, parented to this
     QVector<Email> m_currentFolderEmails; // last cachedEmails(currentFolder) result, pre-keyword-filter
     QString m_currentFolder = QStringLiteral("INBOX");
     QString m_selectedKeyword;
-    bool m_isBusy = false;
+    int m_busyDepth = 0;
+    // A refresh is out on the executor thread. Coalescing state, NOT a
+    // re-entrancy guard: the request cannot re-enter this object any more.
+    // Pull-to-refresh, the toolbar button and selectFolder() can all fire
+    // within one round trip, and N of them must cost one follow-up request,
+    // not N.
+    bool m_refreshInFlight = false;
+    bool m_refreshPending = false;
+    // forceFullResync is sticky across coalescing: folding a user-initiated
+    // full resync into a background delta refresh would silently downgrade
+    // the one request the user explicitly asked for.
+    bool m_refreshPendingFullResync = false;
     QString m_lastError;
     bool m_pgpCanEncrypt = false;
     bool m_pgpCanSign = false;

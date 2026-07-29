@@ -1,9 +1,10 @@
 # Getting Relay HTTP off the GUI thread
 
-Status: **Tier A complete.** All three SQL-free controllers are asynchronous;
-Tier B (mail/contacts) has not started. This file is the plan for the rest, and — more importantly — the
-record of the two constraints that decide its shape, because both are
-non-obvious and either one silently breaks a naive attempt.
+Status: **Tier A complete; Tier B started.** All three SQL-free controllers
+are asynchronous, and the mail refresh — the one request the user waits on
+most — is too. This file is the plan for the rest, and — more importantly —
+the record of the constraints that decide its shape, because they are
+non-obvious and any one of them silently breaks a naive attempt.
 
 ## The problem
 
@@ -63,11 +64,23 @@ Measured, not assumed (`grep` for DAO/`QSqlQuery` use in each call chain):
 → `MailController` (14 network methods), `ContactsController` (5).
 
 Tier B cannot simply run its repository call on the executor thread. Either
-the repository is split into *prepare → [worker: HTTP] → apply+persist*, or
-the `Database` and every DAO move to the worker thread as well and the
-controllers marshal plain values back. The second is cleaner and is the
-recommendation, but it means constructing `Database` on that thread — which
-is the composition-root restructure that was deliberately deferred.
+the repository is split into *plan → [worker: HTTP] → apply+persist*, or the
+`Database` and every DAO move to the worker thread as well and the
+controllers marshal plain values back.
+
+**This file used to recommend the second. That was wrong, and the first
+conversion is the evidence.** Splitting `MailRepository::refreshFolder` into
+`planRefresh` / `fetchWith` / `applyRefresh` took one file, changed no QML,
+and needed nothing from the composition root — because SQLite latency was
+never what froze the UI. Moving the database would instead have made every
+*purely local* read asynchronous as well: `findByMessageId()`,
+`mailFolders()`, `allKeywordSettings()` and `cachedEmails()` all return
+values straight to QML with no signal to hang them on, so it would have added
+async conversions rather than removing them, and it would have made the
+composition-root restructure a prerequisite for all of Tier B.
+
+So: **Tier B is not blocked on anything.** It is the same three-phase split
+already applied three times, repeated per method.
 
 ## Constraint 2 — one `HttpClient`, therefore one thread for pin state
 
@@ -121,6 +134,27 @@ for the fan-out, and for the unpinned path that shipped before it existed.
   already fetched, and both call sites already read them from a signal
   handler (`onMyQrDataChanged`, `onKeyScanned`) rather than straight after
   the network call.
+- **`MailController::refresh()` / `selectFolder()`** — the first Tier B
+  conversion. `MailRepository::refreshFolder()` split into `planRefresh()`
+  (pairing + cursor, here) / `fetchWith()` (there) / `applyRefresh()` (delta
+  merge and every DAO write, back here), with the synchronous form kept as
+  the composition. No QML changed: both were already fire-and-forget.
+
+  Two things this one added that the Tier A conversions did not need:
+
+  * **`isBusy` is a depth, not a flag.** While the rest of this class is
+    still synchronous, the two overlap — a click on Archive during an
+    in-flight refresh ran `setBusy(true)`/`setBusy(false)` around itself and
+    cleared the indicator out from under the refresh, reporting idle with a
+    request outstanding. Every network-reaching method now brackets itself
+    with `pushBusy()`/`popBusy()`.
+  * **Coalescing keeps a *pending* flag, not just an in-flight one**, and the
+    follow-up re-reads `m_currentFolder`. Dropping the overlapping call
+    outright (what `PgpQrController` does, correctly, for camera frames)
+    would mean a folder selected during a refresh was never fetched at all.
+    `forceFullResync` is sticky across the fold, so a user-initiated full
+    resync cannot be silently downgraded into the background delta it landed
+    on top of.
 
 ### The conversion pattern
 
@@ -175,13 +209,26 @@ Three rules that make it work:
    before step 4, and the certificate-pin fan-out keeps both targets until
    it does. When it can: drop `guiThreadPinSink` from the fan-out in
    `main()`, leaving the executor as the only target.
-4. **Tier B**: move `Database` + DAOs to the executor thread, which requires
-   extracting the composition root first. `MailController` and
-   `ContactsController` follow, along with ~12 QML sites that currently
-   consume a return value (`if (MailApp.archiveEmails(...))` becomes a
-   signal handler).
+4. **Tier B**, in progress. Not blocked on the composition root — see
+   Constraint 1. Remaining, in the order they are worth doing:
+   - `performActionCommon` (archive/delete/spam/move). No DAO in the chain at
+     all, so it is a straight move; but four QML sites consume the `bool`
+     (`if (MailApp.archiveEmails(...))`) and become signal handlers.
+   - `sendMail` / `saveDraft` / `confirmPickupFallbackSend`. The awkward one:
+     `pickupFallbackRequired` is documented as being emitted *synchronously*
+     so a Compose instance can tell its own send from another window's. That
+     ownership test has to be replaced (carry the token out of `sendMail()`
+     instead) before the emit can become asynchronous.
+   - `FolderRepository` create/rename/delete/refresh, same three-phase split.
+   - `refreshPgpComposeState` / `preflightRecipients`. Both already have their
+     own in-flight flags, so they convert cleanly; `m_preflightInFlight`
+     becomes ordinary coalescing rather than a re-entrancy defence.
+   - `ContactsController` (5 methods) over `ContactSyncRepository`'s 25 DAO
+     uses — the largest single split left.
 5. **Delete `ReentrancyGuard`** and revisit the three other mitigations
-   above. They become unnecessary, not merely redundant.
+   above. They become unnecessary, not merely redundant. `MailController`
+   still holds `m_inNetworkCall` for its unconverted methods and is the last
+   real user.
 
 ## ThreadSanitizer does not work here — use the affinity guard instead
 

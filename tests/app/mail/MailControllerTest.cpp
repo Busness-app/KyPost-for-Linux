@@ -11,6 +11,7 @@
 #include "domain/PairingStore.h"
 #include "mail/EmailListModel.h"
 #include "net/HttpClient.h"
+#include "net/NetworkExecutor.h"
 #include "net/PgpBootstrapClient.h"
 #include "net/PgpRecipientChecker.h"
 #include "net/RelayMailSource.h"
@@ -21,6 +22,7 @@
 #include "../../core/net/FakeRelayServer.h"
 
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonObject>
@@ -54,6 +56,9 @@ private slots:
     void openWebmailDraftsRefusesAnInsecurePairingBeforeSavingAnything();
     void refreshPgpComposeStateFailureHidesEveryControl();
     void preflightRecipientsFailureClearsRatherThanReassures();
+    void refreshReturnsWithoutBlockingTheCallingThread();
+    void overlappingRefreshesCollapseToOneFollowUpRequest();
+    void aFolderSwitchDuringARefreshIsStillFetched();
 
 private:
     static void savePairing(PairingStore& pairingStore, quint16 port);
@@ -141,12 +146,16 @@ void MailControllerTest::selectKeywordFiltersCachedEmailsWithoutAnyNetworkCall()
     FolderClient folderClient(http);
     FolderRepository folderRepository(folderClient, folderDao, pairingStore);
 
+    NetworkExecutor executor(3000);
     MailController controller(mailRepository, source, keywordRepository, pairingStore, folderRepository,
-                               settingsStore, bootstrapClient, recipientChecker);
+                               settingsStore, bootstrapClient, recipientChecker, executor);
 
     // refresh() is the only call in this test allowed to reach the network
     // -- it populates the cache selectKeyword() below must filter locally.
+    // It dispatches to the executor and returns, so isBusy is the barrier:
+    // set before the call returns, cleared by the completion handler.
     controller.refresh();
+    QTRY_VERIFY_WITH_TIMEOUT(!controller.isBusy(), 5000);
     auto* model = qobject_cast<EmailListModel*>(controller.emailModel());
     QVERIFY(model != nullptr);
     QCOMPARE(model->rowCount(), 2);
@@ -202,8 +211,9 @@ void MailControllerTest::archiveEmailsNotPairedShortCircuitsWithNoNetworkCall()
     FolderClient folderClient(http);
     FolderRepository folderRepository(folderClient, folderDao, pairingStore);
 
+    NetworkExecutor executor(3000);
     MailController controller(mailRepository, source, keywordRepository, pairingStore, folderRepository,
-                               settingsStore, bootstrapClient, recipientChecker);
+                               settingsStore, bootstrapClient, recipientChecker, executor);
 
     QSignalSpy errorSpy(&controller, &MailController::lastErrorChanged);
     const bool ok = controller.archiveEmails({ QStringLiteral("m1") });
@@ -247,8 +257,9 @@ void MailControllerTest::sendMailOverAttachmentCapRejectsBeforeAnyNetworkCall()
     FolderClient folderClient(http);
     FolderRepository folderRepository(folderClient, folderDao, pairingStore);
 
+    NetworkExecutor executor(3000);
     MailController controller(mailRepository, source, keywordRepository, pairingStore, folderRepository,
-                               settingsStore, bootstrapClient, recipientChecker);
+                               settingsStore, bootstrapClient, recipientChecker, executor);
 
     QTemporaryDir attachmentDir;
     QVERIFY(attachmentDir.isValid());
@@ -302,8 +313,9 @@ void MailControllerTest::sendMailUsesHtmlSendMode()
     FolderClient folderClient(http);
     FolderRepository folderRepository(folderClient, folderDao, pairingStore);
 
+    NetworkExecutor executor(3000);
     MailController controller(mailRepository, source, keywordRepository, pairingStore, folderRepository,
-                               settingsStore, bootstrapClient, recipientChecker);
+                               settingsStore, bootstrapClient, recipientChecker, executor);
 
     const bool ok = controller.sendMail(QStringLiteral("to@example.com"), QString(), QString(),
                                          QStringLiteral("Subject"), QStringLiteral("<b>Body</b>"), {},
@@ -359,8 +371,9 @@ void MailControllerTest::downloadAttachmentSanitizesPathTraversalInSuggestedName
     FolderClient folderClient(http);
     FolderRepository folderRepository(folderClient, folderDao, pairingStore);
 
+    NetworkExecutor executor(3000);
     MailController controller(mailRepository, source, keywordRepository, pairingStore, folderRepository,
-                               settingsStore, bootstrapClient, recipientChecker);
+                               settingsStore, bootstrapClient, recipientChecker, executor);
 
     const QString downloadDir = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
     QDir().mkpath(downloadDir);
@@ -420,8 +433,9 @@ void MailControllerTest::downloadAttachmentSanitizesPathTraversalInServerFilenam
     FolderClient folderClient(http);
     FolderRepository folderRepository(folderClient, folderDao, pairingStore);
 
+    NetworkExecutor executor(3000);
     MailController controller(mailRepository, source, keywordRepository, pairingStore, folderRepository,
-                               settingsStore, bootstrapClient, recipientChecker);
+                               settingsStore, bootstrapClient, recipientChecker, executor);
 
     const QString downloadDir = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
     QDir().mkpath(downloadDir);
@@ -481,8 +495,9 @@ void MailControllerTest::findByMessageIdReturnsMapForCachedEmailAndEmptyMapWhenM
     FolderClient folderClient(http);
     FolderRepository folderRepository(folderClient, folderDao, pairingStore);
 
+    NetworkExecutor executor(3000);
     MailController controller(mailRepository, source, keywordRepository, pairingStore, folderRepository,
-                               settingsStore, bootstrapClient, recipientChecker);
+                               settingsStore, bootstrapClient, recipientChecker, executor);
 
     const QVariantMap found = controller.findByMessageId(QStringLiteral("m-1"));
     QCOMPARE(found.value(QStringLiteral("messageId")).toString(), QStringLiteral("m-1"));
@@ -537,8 +552,9 @@ void MailControllerTest::allKeywordSettingsReflectsInboxCacheAndSetKeywordVisibl
     FolderClient folderClient(http);
     FolderRepository folderRepository(folderClient, folderDao, pairingStore);
 
+    NetworkExecutor executor(3000);
     MailController controller(mailRepository, source, keywordRepository, pairingStore, folderRepository,
-                               settingsStore, bootstrapClient, recipientChecker);
+                               settingsStore, bootstrapClient, recipientChecker, executor);
 
     // "Work" was never toggled -- SettingsStore::keywordVisible() defaults
     // to true (see its own doc comment), so it should show up as visible.
@@ -600,8 +616,9 @@ void MailControllerTest::sendMailEmitsPickupFallbackRequiredWithTheServersAddres
     FolderClient folderClient(http);
     FolderRepository folderRepository(folderClient, folderDao, pairingStore);
 
+    NetworkExecutor executor(3000);
     MailController controller(mailRepository, source, keywordRepository, pairingStore, folderRepository,
-                               settingsStore, bootstrapClient, recipientChecker);
+                               settingsStore, bootstrapClient, recipientChecker, executor);
 
     QSignalSpy spy(&controller, &MailController::pickupFallbackRequired);
     const bool sent = controller.sendMail(QStringLiteral("bob@example.com"), QString(), QString(),
@@ -651,8 +668,9 @@ void MailControllerTest::confirmPickupFallbackSendResendsTheIdenticalBodyWithThe
     FolderClient folderClient(http);
     FolderRepository folderRepository(folderClient, folderDao, pairingStore);
 
+    NetworkExecutor executor(3000);
     MailController controller(mailRepository, source, keywordRepository, pairingStore, folderRepository,
-                               settingsStore, bootstrapClient, recipientChecker);
+                               settingsStore, bootstrapClient, recipientChecker, executor);
 
     // A REAL attachment, deleted between the refusal and the confirm. This is
     // the assertion the whole PendingSend cache exists to satisfy: with an
@@ -753,8 +771,9 @@ void MailControllerTest::confirmPickupFallbackSendWithoutAPendingSendDoesNothing
     FolderClient folderClient(http);
     FolderRepository folderRepository(folderClient, folderDao, pairingStore);
 
+    NetworkExecutor executor(3000);
     MailController controller(mailRepository, source, keywordRepository, pairingStore, folderRepository,
-                               settingsStore, bootstrapClient, recipientChecker);
+                               settingsStore, bootstrapClient, recipientChecker, executor);
 
     // Any token at all, with nothing cached: a stray confirm must not mail.
     QCOMPARE(controller.confirmPickupFallbackSend(1), false);
@@ -802,8 +821,9 @@ void MailControllerTest::sendMailSurfacesAWarningOnAnOtherwiseSuccessfulSend()
     FolderClient folderClient(http);
     FolderRepository folderRepository(folderClient, folderDao, pairingStore);
 
+    NetworkExecutor executor(3000);
     MailController controller(mailRepository, source, keywordRepository, pairingStore, folderRepository,
-                               settingsStore, bootstrapClient, recipientChecker);
+                               settingsStore, bootstrapClient, recipientChecker, executor);
 
     QSignalSpy spy(&controller, &MailController::sendWarning);
     const bool sent = controller.sendMail(QStringLiteral("bob@example.com"), QString(), QString(),
@@ -854,8 +874,9 @@ void MailControllerTest::sendMailClientSideNeededHandsOffAndOffersNoToggles()
     FolderClient folderClient(http);
     FolderRepository folderRepository(folderClient, folderDao, pairingStore);
 
+    NetworkExecutor executor(3000);
     MailController controller(mailRepository, source, keywordRepository, pairingStore, folderRepository,
-                               settingsStore, bootstrapClient, recipientChecker);
+                               settingsStore, bootstrapClient, recipientChecker, executor);
 
     QSignalSpy fallbackSpy(&controller, &MailController::pickupFallbackRequired);
     QSignalSpy composeStateSpy(&controller, &MailController::pgpComposeStateChanged);
@@ -915,8 +936,9 @@ void MailControllerTest::openWebmailDraftsRefusesAnInsecurePairingBeforeSavingAn
     FolderClient folderClient(http);
     FolderRepository folderRepository(folderClient, folderDao, pairingStore);
 
+    NetworkExecutor executor(3000);
     MailController controller(mailRepository, source, keywordRepository, pairingStore, folderRepository,
-                               settingsStore, bootstrapClient, recipientChecker);
+                               settingsStore, bootstrapClient, recipientChecker, executor);
 
     const bool opened = controller.openWebmailDrafts(QStringLiteral("bob@example.com"), QString(), QString(),
                                                        QStringLiteral("Hi"), QStringLiteral("Body"), {});
@@ -963,8 +985,9 @@ void MailControllerTest::refreshPgpComposeStateFailureHidesEveryControl()
     FolderClient folderClient(http);
     FolderRepository folderRepository(folderClient, folderDao, pairingStore);
 
+    NetworkExecutor executor(3000);
     MailController controller(mailRepository, source, keywordRepository, pairingStore, folderRepository,
-                               settingsStore, bootstrapClient, recipientChecker);
+                               settingsStore, bootstrapClient, recipientChecker, executor);
 
     controller.refreshPgpComposeState();
 
@@ -1009,8 +1032,9 @@ void MailControllerTest::preflightRecipientsFailureClearsRatherThanReassures()
     FolderClient folderClient(http);
     FolderRepository folderRepository(folderClient, folderDao, pairingStore);
 
+    NetworkExecutor executor(3000);
     MailController controller(mailRepository, source, keywordRepository, pairingStore, folderRepository,
-                               settingsStore, bootstrapClient, recipientChecker);
+                               settingsStore, bootstrapClient, recipientChecker, executor);
 
     controller.preflightRecipients(QStringLiteral("bob@example.com"), QString(), QString());
 
@@ -1069,8 +1093,9 @@ void MailControllerTest::hostileLocationRefusesToOpenNonAllowlistedAttachmentTyp
     FolderClient folderClient(http);
     FolderRepository folderRepository(folderClient, folderDao, pairingStore);
 
+    NetworkExecutor executor(3000);
     MailController controller(mailRepository, source, keywordRepository, pairingStore, folderRepository,
-                               settingsStore, bootstrapClient, recipientChecker);
+                               settingsStore, bootstrapClient, recipientChecker, executor);
 
     const bool ok = controller.downloadAttachment(QStringLiteral("Inbox"), QStringLiteral("42"), 0,
                                                     QStringLiteral("Invoice.pdf.desktop"));
@@ -1128,8 +1153,9 @@ void MailControllerTest::hostileLocationForcesTheExtensionToMatchTheDeclaredType
     FolderClient folderClient(http);
     FolderRepository folderRepository(folderClient, folderDao, pairingStore);
 
+    NetworkExecutor executor(3000);
     MailController controller(mailRepository, source, keywordRepository, pairingStore, folderRepository,
-                               settingsStore, bootstrapClient, recipientChecker);
+                               settingsStore, bootstrapClient, recipientChecker, executor);
 
     QVERIFY(controller.downloadAttachment(QStringLiteral("Inbox"), QStringLiteral("42"), 0,
                                            QStringLiteral("Invoice.pdf.desktop")));
@@ -1190,8 +1216,9 @@ void MailControllerTest::downloadAttachmentStripsEmbeddedNulFromTheFilename()
     FolderClient folderClient(http);
     FolderRepository folderRepository(folderClient, folderDao, pairingStore);
 
+    NetworkExecutor executor(3000);
     MailController controller(mailRepository, source, keywordRepository, pairingStore, folderRepository,
-                               settingsStore, bootstrapClient, recipientChecker);
+                               settingsStore, bootstrapClient, recipientChecker, executor);
 
     const QString downloadDir = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
     QDir().mkpath(downloadDir);
@@ -1213,6 +1240,156 @@ void MailControllerTest::downloadAttachmentStripsEmbeddedNulFromTheFilename()
     const QString expected = QDir(downloadDir).filePath(QStringLiteral("Invoice.desktop.pdf"));
     QVERIFY(QFile::exists(expected));
     QVERIFY(QFile::remove(expected));
+}
+
+namespace {
+
+// The eight objects every refresh test below needs, in the one order that
+// works. Bundled because the assertions are the interesting part of these
+// three tests and the wiring is not -- and because getting the declaration
+// order wrong here is a use-after-free, not a compile error.
+//
+// The executor is declared BEFORE the controller so it can be handed to it,
+// which means it is destroyed AFTER -- so callers must call shutdown()
+// themselves while the controller is still alive if any work may still be
+// outstanding. NetworkExecutor::run() states that precondition.
+struct RefreshFixture
+{
+    explicit RefreshFixture(quint16 port)
+    {
+        [&] {
+            QVERIFY(db.open(QStringLiteral(":memory:")));
+            QVERIFY(secureDir.isValid());
+            QVERIFY(cursorDir.isValid());
+            QVERIFY(settingsDir.isValid());
+        }();
+
+        DevicePairing pairing;
+        pairing.subscriberId = QStringLiteral("sub-1");
+        pairing.deviceSecret = QStringLiteral("secret-1");
+        pairing.serverBaseUrl = QStringLiteral("http://127.0.0.1:%1").arg(port);
+        pairing.deviceId = QStringLiteral("dev-1");
+        [&] { QVERIFY(pairingStore.save(pairing)); }();
+    }
+
+    Database db;
+    QTemporaryDir secureDir;
+    QTemporaryDir cursorDir;
+    QTemporaryDir settingsDir;
+
+    EmailDao emailDao{ db.handle() };
+    FolderDao folderDao{ db.handle() };
+    SecureStoreFile secureStore{ secureDir.path() };
+    PairingStore pairingStore{ secureStore };
+    CursorStore cursorStore{ cursorDir.filePath(QStringLiteral("cursor.ini")) };
+    SettingsStore settingsStore{ settingsDir.filePath(QStringLiteral("settings.ini")) };
+    KeywordRepository keywordRepository{ settingsStore };
+
+    QNetworkAccessManager manager;
+    HttpClient http{ manager };
+    RelayMailSource source{ http };
+    PgpBootstrapClient bootstrapClient{ http };
+    PgpRecipientChecker recipientChecker{ http };
+    FolderClient folderClient{ http };
+    MailRepository mailRepository{ source, emailDao, pairingStore, cursorStore };
+    FolderRepository folderRepository{ folderClient, folderDao, pairingStore };
+
+    NetworkExecutor executor{ 1500 };
+    MailController controller{ mailRepository,  source,         keywordRepository, pairingStore, folderRepository,
+                               settingsStore,   bootstrapClient, recipientChecker,  executor };
+};
+
+// Two messages, one per tab, in whatever mailbox was asked for.
+const char* const kTwoMessageInbox = R"(
+{
+  "tabs": ["Work", "Uncategorized"],
+  "byTab": {
+    "Work": [{"messageId":"m1","sender":"a@example.com","sentTo":"b@example.com","cc":"","bcc":"",
+              "subject":"Work item","status":"unread","atUtc":"2026-07-01T00:00:00Z",
+              "hasAttachments":false,"label":""}],
+    "Uncategorized": [{"messageId":"m2","sender":"c@example.com","sentTo":"d@example.com","cc":"","bcc":"",
+              "subject":"Solo item","status":"unread","atUtc":"2026-07-02T00:00:00Z",
+              "hasAttachments":false,"label":""}]
+  }
+}
+)";
+
+} // namespace
+
+// The whole point of the conversion: the GUI thread is not suspended in a
+// nested event loop for the duration of the request, so QML keeps rendering
+// and nothing can re-enter this object half-way through its own state
+// changes.
+//
+// The server accepts and never answers, so a synchronous implementation
+// would sit here for the full transfer timeout.
+void MailControllerTest::refreshReturnsWithoutBlockingTheCallingThread()
+{
+    FakeRelayServer fake(QByteArray{});
+    RefreshFixture f(fake.port());
+
+    QElapsedTimer timer;
+    timer.start();
+    f.controller.refresh();
+    const qint64 elapsed = timer.elapsed();
+
+    QVERIFY2(elapsed < 200, qPrintable(QStringLiteral("refresh() blocked for %1 ms").arg(elapsed)));
+    QVERIFY(f.controller.isBusy());
+
+    QTRY_VERIFY_WITH_TIMEOUT(!f.controller.isBusy(), 10000);
+    QVERIFY(!f.controller.lastError().isEmpty());
+}
+
+// Pull-to-refresh, the toolbar button and a folder switch can all fire
+// inside one round trip. They must collapse to ONE follow-up request rather
+// than queueing N behind each other on the single executor thread.
+//
+// Asserted as a comparison against the one-call case rather than as an
+// absolute count, per docs/THREADING.md: the number of TCP connections one
+// logical request costs is Qt's business, not this test's.
+void MailControllerTest::overlappingRefreshesCollapseToOneFollowUpRequest()
+{
+    const auto connectionsForRefreshCount = [](int refreshes) {
+        FakeRelayServer fake(httpResponse(200, "OK", kTwoMessageInbox));
+        RefreshFixture f(fake.port());
+
+        for (int i = 0; i < refreshes; ++i)
+            f.controller.refresh();
+
+        [&] { QTRY_VERIFY_WITH_TIMEOUT(!f.controller.isBusy(), 10000); }();
+        f.executor.shutdown();
+        return fake.connectionCount();
+    };
+
+    const int one = connectionsForRefreshCount(1);
+    const int ten = connectionsForRefreshCount(10);
+    QVERIFY(one > 0);
+    // One in flight plus exactly one coalesced follow-up -- the other eight
+    // were dropped, not queued.
+    QCOMPARE(ten, 2 * one);
+}
+
+// The follow-up re-reads m_currentFolder rather than replaying the folder the
+// coalesced call named, so switching mailboxes while a refresh is out still
+// fetches the mailbox the user actually ended up on. Without that, selecting
+// a folder during a refresh would leave it never fetched at all.
+void MailControllerTest::aFolderSwitchDuringARefreshIsStillFetched()
+{
+    FakeRelayServer fake(httpResponse(200, "OK", kTwoMessageInbox));
+    RefreshFixture f(fake.port());
+
+    f.controller.refresh();                              // INBOX, dispatched
+    f.controller.selectFolder(QStringLiteral("Sent"));   // coalesced into the follow-up
+
+    QCOMPARE(f.controller.currentFolder(), QStringLiteral("Sent"));
+    QTRY_VERIFY_WITH_TIMEOUT(!f.controller.isBusy(), 10000);
+    f.executor.shutdown();
+
+    // FakeRelayServer appends every connection's bytes to one buffer, so both
+    // requests are visible in it.
+    const QByteArray requests = fake.receivedRequest();
+    QVERIFY2(requests.contains("mailbox=INBOX"), requests.constData());
+    QVERIFY2(requests.contains("mailbox=Sent"), requests.constData());
 }
 
 QTEST_GUILESS_MAIN(MailControllerTest)

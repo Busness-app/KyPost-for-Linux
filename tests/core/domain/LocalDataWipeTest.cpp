@@ -42,7 +42,8 @@ private:
 QString writeDummyDatabase(const QString& path)
 {
     QFile f(path);
-    f.open(QIODevice::WriteOnly);
+    if (!f.open(QIODevice::WriteOnly))
+        return {}; // the caller's QVERIFY(QFile::exists(...)) reports it
     f.write("SQLite format 3\0not really, but it is a file with bytes in it", 60);
     f.close();
     return path;

@@ -661,11 +661,13 @@ int main(int argc, char* argv[])
 
     // Task 32: QML-facing bridge over mailRepository/relayMailSource/
     // keywordRepository/pairingStore (all constructed above). Owns its
-    // EmailListModel (parented to itself); every network-calling slot on
-    // this controller blocks the GUI thread synchronously, same accepted
-    // tradeoff as every other Phase 6 controller (see global constraint 2).
+    // EmailListModel (parented to itself). refresh()/selectFolder() run their
+    // request on networkExecutor; every other network-calling slot on this
+    // controller still blocks the GUI thread synchronously (docs/THREADING.md
+    // step 4).
     MailController mailController(mailRepository, relayMailSource, keywordRepository, pairingStore,
-                                   folderRepository, settingsStore, pgpBootstrapClient, pgpRecipientChecker);
+                                   folderRepository, settingsStore, pgpBootstrapClient, pgpRecipientChecker,
+                                   networkExecutor);
     qmlRegisterSingletonInstance<MailController>(
         "com.urlxl.mail", 1, 0, "MailApp", &mailController);
 
