@@ -18,7 +18,6 @@
 
 #include "domain/PgpComposeState.h"
 #include "mail/PgpMessagePresentation.h"
-#include "util/ReentrancyGuard.h"
 
 #include <KLocalizedString>
 
@@ -173,22 +172,12 @@ bool MailController::requirePairing(QUrl& serverBaseUrl, RelayAuth& auth)
     return true;
 }
 
-// Guarded public entry points delegate to the *Internal bodies below.
-//
-// The split exists because several of these legitimately call each other
-// (deleteFolder -> selectFolder -> refresh, openWebmailDrafts -> saveDraft),
-// and a single flag shared by both the outer and inner call would make the
-// inner one a no-op -- deleting the current folder would leave the app
-// showing a mailbox that no longer exists. Only the QML-facing boundary is
-// guarded; internal callers use the unguarded bodies, which is safe because
-// the outer guard is already held for the whole chain.
-//
-// selectFolder() and refresh() take NO guard any more. Their request runs on
-// the executor thread, so neither one is ever suspended inside a nested event
-// loop and there is nothing to re-enter. Taking the guard would now be
-// actively wrong: it would be released the instant the method returned, while
-// the request was still outstanding, so it would guard nothing and would
-// still block a genuine second folder selection.
+// No entry point here takes a re-entrancy guard any more. Every request runs
+// on the executor thread, so nothing is ever suspended inside a nested event
+// loop and there is nothing to re-enter. Taking a guard would now be actively
+// wrong: it would be released the instant the method returned, while the
+// request was still outstanding -- guarding nothing, while still blocking a
+// genuine second call.
 void MailController::selectFolder(const QString& wireFolder)
 {
     selectFolderInternal(wireFolder);
@@ -548,53 +537,62 @@ void MailController::deleteFolder(const QString& folder)
         });
 }
 
-bool MailController::saveDraft(const QString& to, const QString& cc, const QString& bcc, const QString& subject,
-                                const QString& body, const QStringList& attachmentFilePaths)
+quint64 MailController::saveDraft(const QString& to, const QString& cc, const QString& bcc, const QString& subject,
+                                    const QString& body, const QStringList& attachmentFilePaths)
 {
-    ReentrancyGuard guard(m_inNetworkCall);
-    if (!guard.entered())
-        return false;
-    return saveDraftInternal(to, cc, bcc, subject, body, attachmentFilePaths);
+    return saveDraftInternal(to, cc, bcc, subject, body, attachmentFilePaths, /*thenOpenWebmail=*/QUrl());
 }
 
-bool MailController::saveDraftInternal(const QString& to, const QString& cc, const QString& bcc,
-                                        const QString& subject, const QString& body,
-                                        const QStringList& attachmentFilePaths)
+// `thenOpenWebmail`, when non-empty, is opened in the user's browser once the
+// draft has actually reached the server. openWebmailDrafts() needs that
+// ordering and cannot get it any other way now: the save no longer finishes
+// before the call returns, and opening a browser onto a draft that is not
+// there yet loses the user's message.
+quint64 MailController::saveDraftInternal(const QString& to, const QString& cc, const QString& bcc,
+                                            const QString& subject, const QString& body,
+                                            const QStringList& attachmentFilePaths, const QUrl& thenOpenWebmail)
 {
     QUrl serverBaseUrl;
     RelayAuth auth;
     if (!requirePairing(serverBaseUrl, auth))
-        return false;
+        return 0;
 
     QVector<MailAttachmentUpload> attachments;
     if (!readAttachments(attachmentFilePaths, attachments))
-        return false;
+        return 0;
+
+    const quint64 token = m_nextPendingSendToken++;
 
     pushBusy();
-    const SaveDraftResult result = m_relayMailSource.saveDraft(serverBaseUrl, auth, to, cc, bcc, subject, body,
-                                                                QStringLiteral("html"), attachments);
-    popBusy();
-
-    if (result.error.has_value() || !result.ok) {
-        setLastError(result.detail.isEmpty() ? i18n("Could not save draft") : result.detail);
-        return false;
-    }
-    setLastError(QString());
-    return true;
+    m_executor.run(
+        this,
+        [serverBaseUrl, auth, to, cc, bcc, subject, body, attachments](HttpClient& http) {
+            RelayMailSource source(http);
+            return source.saveDraft(serverBaseUrl, auth, to, cc, bcc, subject, body, QStringLiteral("html"),
+                                     attachments);
+        },
+        [this, token, thenOpenWebmail](const SaveDraftResult& result) {
+            popBusy();
+            if (result.error.has_value() || !result.ok) {
+                setLastError(result.detail.isEmpty() ? i18n("Could not save draft") : result.detail);
+                emit draftSaveCompleted(token, false);
+                return;
+            }
+            setLastError(QString());
+            if (!thenOpenWebmail.isEmpty() && !QDesktopServices::openUrl(thenOpenWebmail)) {
+                setLastError(i18n("Saved to Drafts, but KyPost could not open your browser."));
+                emit draftSaveCompleted(token, false);
+                return;
+            }
+            emit draftSaveCompleted(token, true);
+        });
+    return token;
 }
 
-bool MailController::sendMail(const QString& to, const QString& cc, const QString& bcc, const QString& subject,
-                               const QString& body, const QStringList& attachmentFilePaths, bool sign, bool encrypt)
+quint64 MailController::sendMail(const QString& to, const QString& cc, const QString& bcc, const QString& subject,
+                                   const QString& body, const QStringList& attachmentFilePaths, bool sign,
+                                   bool encrypt)
 {
-    // The guard, not the token below, is what actually prevents a second
-    // composer's Send from starting an inner send while this one is
-    // suspended in HttpClient's nested event loop. The token stays as the
-    // second line of defence for the pickup-fallback round trip, which
-    // crosses back out to QML and can be confirmed by a different composer.
-    ReentrancyGuard guard(m_inNetworkCall);
-    if (!guard.entered())
-        return false;
-
     // FIRST statement, before any early return below: PendingSend's own doc
     // comment promises the cached plaintext dies when a fresh send starts,
     // and the guards below (not paired, unreadable/oversized attachment) used
@@ -605,36 +603,35 @@ bool MailController::sendMail(const QString& to, const QString& cc, const QStrin
     QUrl serverBaseUrl;
     RelayAuth auth;
     if (!requirePairing(serverBaseUrl, auth))
-        return false;
+        return 0;
 
     QVector<MailAttachmentUpload> attachments;
     if (!readAttachments(attachmentFilePaths, attachments))
-        return false;
+        return 0;
 
-    pushBusy();
     const QString sendMode = QStringLiteral("html");
-
-    // Minted into a local, and it is this local -- never m_pendingSend.token --
-    // that the refusal below emits. sendMail can re-enter: the relay call runs
-    // a nested event loop, and Send is only disabled once setBusy(true) lands,
-    // so a second composer's Send clicked during requestSendableHtml's async
-    // round trip can start an inner sendMail that replaces m_pendingSend. An
-    // outer call reading the member back would then emit the INNER call's
-    // token beside its OWN recipient list, both instances' ownership flags
-    // would be set, and confirming would mail the other composition. Emitting
-    // the local means a superseded outer call emits a token that no longer
-    // matches, and the confirm is refused instead.
-    const quint64 pendingSendToken = m_nextPendingSendToken++;
+    const quint64 sendToken = m_nextPendingSendToken++;
 
     // Field order matters -- PendingSend is aggregate-initialized. Eleven
     // fields: valid, to, cc, bcc, subject, body, mode, attachments, sign,
     // encrypt, token.
-    m_pendingSend = PendingSend{ true, to, cc, bcc, subject, body, sendMode, attachments, sign, encrypt,
-                                 pendingSendToken };
+    m_pendingSend = PendingSend{ true, to, cc, bcc, subject, body, sendMode, attachments, sign, encrypt, sendToken };
 
-    const SendMailResult result = m_relayMailSource.sendMail(
-        serverBaseUrl, auth, to, cc, bcc, subject, body, sendMode, attachments,
-        sign, encrypt, /*allowPickupFallback=*/false);
+    pushBusy();
+    m_executor.run(
+        this,
+        [serverBaseUrl, auth, to, cc, bcc, subject, body, sendMode, attachments, sign,
+         encrypt](HttpClient& http) {
+            RelayMailSource source(http);
+            return source.sendMail(serverBaseUrl, auth, to, cc, bcc, subject, body, sendMode, attachments, sign,
+                                    encrypt, /*allowPickupFallback=*/false);
+        },
+        [this, sendToken](const SendMailResult& result) { finishSend(sendToken, result); });
+    return sendToken;
+}
+
+void MailController::finishSend(quint64 sendToken, const SendMailResult& result)
+{
     popBusy();
 
     if (result.pickupFallbackNeeded) {
@@ -647,11 +644,9 @@ bool MailController::sendMail(const QString& to, const QString& cc, const QStrin
         // any stale lastError so a leftover red line doesn't sit under the
         // dialog contradicting it.
         setLastError(QString());
-        // Emitted synchronously, inside this invokable, on purpose -- that is
-        // what lets a Compose instance tell "this is my send" from "this is
-        // the other window's send". See the signal's declaration.
-        emit pickupFallbackRequired(pendingSendToken, result.keylessRecipients);
-        return false;
+        emit pickupFallbackRequired(sendToken, result.keylessRecipients);
+        emit sendCompleted(sendToken, false);
+        return;
     }
     if (result.clientSideNeeded) {
         // Categorical: no re-send from this client can fix it.
@@ -666,19 +661,29 @@ bool MailController::sendMail(const QString& to, const QString& cc, const QStrin
         emit pgpComposeStateChanged();
         setLastError(i18n("This account's PGP key is held only in your browser, so this app cannot "
                            "encrypt on its behalf. Continue in webmail to send it."));
-        return false;
+        emit sendCompleted(sendToken, false);
+        return;
     }
-    m_pendingSend = {};
+
+    // Only clear the pending send if it is still THIS send's. A second
+    // composer that started its own send while this reply was in flight has
+    // already replaced m_pendingSend, and clearing it here would throw away
+    // that composition's payload -- so its user's confirmation would find
+    // nothing to re-send.
+    if (m_pendingSend.token == sendToken)
+        m_pendingSend = {};
+
     if (!result.ok) {
         // Same shape as every other failure in this class: prefer the
         // server's own detail, fall back to localized wording.
         setLastError(result.detail.isEmpty() ? i18n("Could not send message") : result.detail);
-        return false;
+        emit sendCompleted(sendToken, false);
+        return;
     }
     if (!result.warning.isEmpty())
         emit sendWarning(result.warning);
     setLastError(QString());
-    return true;
+    emit sendCompleted(sendToken, true);
 }
 
 // Re-sends the exact payload the server refused, with allowPickupFallback
@@ -687,24 +692,25 @@ bool MailController::sendMail(const QString& to, const QString& cc, const QStrin
 // when there is no pending send, or when `token` names a different one, so
 // neither a stray confirm nor a confirmation collected in some other
 // composer's dialog can mail anything.
-bool MailController::confirmPickupFallbackSend(quint64 token)
+quint64 MailController::confirmPickupFallbackSend(quint64 token)
 {
-    ReentrancyGuard guard(m_inNetworkCall);
-    if (!guard.entered())
-        return false;
-
     if (!m_pendingSend.valid || m_pendingSend.token != token)
-        return false;
+        return 0;
 
     QUrl serverBaseUrl;
     RelayAuth auth;
     if (!requirePairing(serverBaseUrl, auth))
-        return false;
+        return 0;
 
     const PendingSend pending = m_pendingSend;
     // Cleared before the call, not after: the opt-in is per-message, and a
     // failure here must not leave a payload a second confirm could re-send.
     m_pendingSend = {};
+
+    // Re-uses the SAME token rather than minting a fresh one. The confirmed
+    // re-send is the same logical send the composer started, so the composer
+    // that is waiting on `token` is the one that must hear about it.
+    const quint64 sendToken = token;
 
     // Bracketed the same way sendMail()/saveDraft() are. Without it the
     // "Sending…" indicator never appears and Send stays enabled for the whole
@@ -712,25 +718,33 @@ bool MailController::confirmPickupFallbackSend(quint64 token)
     // again -- which takes another 409, another confirmation, and delivers
     // the message twice.
     pushBusy();
-    const SendMailResult result = m_relayMailSource.sendMail(
-        serverBaseUrl, auth, pending.to, pending.cc, pending.bcc, pending.subject, pending.body,
-        pending.mode, pending.attachments, pending.sign, pending.encrypt,
-        /*allowPickupFallback=*/true);
-    popBusy();
-
-    if (!result.ok) {
-        // Same detail-or-localized-fallback shape as every other failure in
-        // this class: a 200 carrying {"ok":false} leaves detail empty, and
-        // reporting that verbatim would fail silently.
-        setLastError(result.detail.isEmpty() ? i18n("Could not send message") : result.detail);
-        return false;
-    }
-    if (!result.warning.isEmpty())
-        emit sendWarning(result.warning);
-    // The one send that most needs to read as success: clear any error left
-    // over from the refusal that opened the confirmation.
-    setLastError(QString());
-    return true;
+    m_executor.run(
+        this,
+        [serverBaseUrl, auth, pending](HttpClient& http) {
+            RelayMailSource source(http);
+            return source.sendMail(serverBaseUrl, auth, pending.to, pending.cc, pending.bcc, pending.subject,
+                                    pending.body, pending.mode, pending.attachments, pending.sign,
+                                    pending.encrypt, /*allowPickupFallback=*/true);
+        },
+        [this, sendToken](const SendMailResult& result) {
+            popBusy();
+            if (!result.ok) {
+                // Same detail-or-localized-fallback shape as every other
+                // failure in this class: a 200 carrying {"ok":false} leaves
+                // detail empty, and reporting that verbatim would fail
+                // silently.
+                setLastError(result.detail.isEmpty() ? i18n("Could not send message") : result.detail);
+                emit sendCompleted(sendToken, false);
+                return;
+            }
+            if (!result.warning.isEmpty())
+                emit sendWarning(result.warning);
+            // The one send that most needs to read as success: clear any
+            // error left over from the refusal that opened the confirmation.
+            setLastError(QString());
+            emit sendCompleted(sendToken, true);
+        });
+    return sendToken;
 }
 
 // Cancelling the dialog drops the cached plaintext rather than holding it
@@ -744,10 +758,6 @@ void MailController::discardPendingSend()
 // "couldn't check" is never "no PGP".
 void MailController::refreshPgpComposeState(bool force)
 {
-    ReentrancyGuard guard(m_inNetworkCall);
-    if (!guard.entered())
-        return;
-
     // Unconditional, ahead of the cache check below: pgpKeylessRecipients is
     // singleton state belonging to whatever was composed last, so a fresh
     // composer that ticks Encrypt would otherwise flash the PREVIOUS
@@ -757,12 +767,17 @@ void MailController::refreshPgpComposeState(bool force)
         emit pgpKeylessRecipientsChanged();
     }
 
-    // At most one bootstrap fetch per session. This is a synchronous network
-    // call made from Compose.qml's Component.onCompleted, i.e. a nested event
-    // loop while the object tree is still being built; custody mode is fixed
-    // at key creation and cannot change within a session, so re-asking on
-    // every compose open buys nothing.
+    // At most one bootstrap fetch per session. Custody mode is fixed at key
+    // creation and cannot change within a session, so re-asking on every
+    // compose open buys nothing. The original reason for the cache was
+    // sharper -- this was a synchronous call from Compose.qml's
+    // Component.onCompleted, i.e. a nested event loop while the object tree
+    // was still being built -- and that reason is gone; the cache is kept
+    // for the remaining one.
     if (m_pgpComposeStateFetched && !force)
+        return;
+    // Coalescing: Compose can be opened twice before the first answer lands.
+    if (m_pgpBootstrapInFlight)
         return;
 
     QUrl serverBaseUrl;
@@ -770,19 +785,29 @@ void MailController::refreshPgpComposeState(bool force)
     if (!requirePairing(serverBaseUrl, auth))
         return; // not cached: pairing later must still get a real answer
 
-    const PgpBootstrapResult bootstrap = m_pgpBootstrapClient.fetch(serverBaseUrl, auth);
-    const PgpComposeState state = bootstrap.ok
-        ? pgpComposeStateOf(bootstrap.hasIdentity, bootstrap.protection)
-        : pgpComposeStateOf(std::nullopt, std::nullopt);
+    m_pgpBootstrapInFlight = true;
+    m_executor.run(
+        this,
+        [serverBaseUrl, auth](HttpClient& http) {
+            PgpBootstrapClient client(http);
+            return client.fetch(serverBaseUrl, auth);
+        },
+        [this](const PgpBootstrapResult& bootstrap) {
+            m_pgpBootstrapInFlight = false;
+            const PgpComposeState state = bootstrap.ok
+                ? pgpComposeStateOf(bootstrap.hasIdentity, bootstrap.protection)
+                : pgpComposeStateOf(std::nullopt, std::nullopt);
 
-    // Only a real answer is cached. "Couldn't check" is not a custody mode, so
-    // caching a failure would hide the PGP controls for the rest of the
-    // session over one transient 503; the next compose open retries instead.
-    m_pgpComposeStateFetched = bootstrap.ok;
-    m_pgpCanEncrypt = state.canEncrypt;
-    m_pgpCanSign = state.canSign;
-    m_pgpHandoffToWebmail = state.handoffToWebmail;
-    emit pgpComposeStateChanged();
+            // Only a real answer is cached. "Couldn't check" is not a custody
+            // mode, so caching a failure would hide the PGP controls for the
+            // rest of the session over one transient 503; the next compose
+            // open retries instead.
+            m_pgpComposeStateFetched = bootstrap.ok;
+            m_pgpCanEncrypt = state.canEncrypt;
+            m_pgpCanSign = state.canSign;
+            m_pgpHandoffToWebmail = state.handoffToWebmail;
+            emit pgpComposeStateChanged();
+        });
 }
 
 // Inline, non-blocking warning only. This is a LOWER BOUND: check reads the
@@ -795,14 +820,15 @@ void MailController::refreshPgpComposeState(bool force)
 // the user is still typing recipients.
 void MailController::preflightRecipients(const QString& to, const QString& cc, const QString& bcc)
 {
-    // check() below runs a nested QEventLoop (HttpClient::waitForReply), which
-    // keeps processing timers -- so Compose.qml's 500ms debounce fires again
-    // mid-flight and lands right back here, one frame deeper per 500ms of
-    // typing. Results then unwind LIFO, making the LAST write to
-    // m_pgpKeylessRecipients the OLDEST request's answer: an inline warning
-    // naming an address the user already removed. Dropping the overlapping
-    // call is correct here because this is a debounced, advisory lower bound,
-    // not a gate -- the next edit restarts the timer anyway.
+    // Still dropped while one is in flight, but for a plainer reason than
+    // before. This used to be a re-entrancy defence: check() ran a nested
+    // QEventLoop that kept firing Compose.qml's 500ms debounce, so typing
+    // landed back here one frame deeper per half-second, and the results
+    // unwound LIFO -- the LAST write to m_pgpKeylessRecipients was the OLDEST
+    // request's answer, an inline warning naming an address already removed.
+    // Nothing re-enters now, so this is ordinary coalescing; dropping is
+    // still right because this is a debounced advisory lower bound, not a
+    // gate, and the next keystroke restarts the timer anyway.
     if (m_preflightInFlight)
         return;
 
@@ -818,17 +844,29 @@ void MailController::preflightRecipients(const QString& to, const QString& cc, c
         address = address.trimmed();
     addresses.removeAll(QString());
 
-    QStringList keyless;
-    if (!addresses.isEmpty()) {
-        m_preflightInFlight = true;
-        const RecipientKeyCheckResult result = m_pgpRecipientChecker.check(serverBaseUrl, auth, addresses);
-        m_preflightInFlight = false;
-        // A failed preflight shows nothing rather than a false all-clear --
-        // and clears whatever it showed before, rather than leaving a stale
-        // list standing in for an answer this call did not get.
-        if (result.ok)
-            keyless = result.keylessRecipients;
+    if (addresses.isEmpty()) {
+        applyKeylessRecipients({});
+        return;
     }
+
+    m_preflightInFlight = true;
+    m_executor.run(
+        this,
+        [serverBaseUrl, auth, addresses](HttpClient& http) {
+            PgpRecipientChecker checker(http);
+            return checker.check(serverBaseUrl, auth, addresses);
+        },
+        [this](const RecipientKeyCheckResult& result) {
+            m_preflightInFlight = false;
+            // A failed preflight shows nothing rather than a false all-clear
+            // -- and clears whatever it showed before, rather than leaving a
+            // stale list standing in for an answer this call did not get.
+            applyKeylessRecipients(result.ok ? result.keylessRecipients : QStringList());
+        });
+}
+
+void MailController::applyKeylessRecipients(const QStringList& keyless)
+{
     if (keyless == m_pgpKeylessRecipients)
         return;
     m_pgpKeylessRecipients = keyless;
@@ -843,14 +881,10 @@ void MailController::preflightRecipients(const QString& to, const QString& cc, c
 // a browser onto a draft that is not there loses the user's message. Also
 // returns false when the pairing's base URL is not https, since
 // webmailMailboxUrl() refuses to build a link from a downgraded base.
-bool MailController::openWebmailDrafts(const QString& to, const QString& cc, const QString& bcc,
-                                        const QString& subject, const QString& body,
-                                        const QStringList& attachmentFilePaths)
+quint64 MailController::openWebmailDrafts(const QString& to, const QString& cc, const QString& bcc,
+                                            const QString& subject, const QString& body,
+                                            const QStringList& attachmentFilePaths)
 {
-    ReentrancyGuard guard(m_inNetworkCall);
-    if (!guard.entered())
-        return false;
-
     // Pairing is checked first so the two distinct failures read distinctly:
     // webmailMailboxUrl() returns an empty URL for an unpaired client just as
     // it does for a plain-http one, and reporting "paired over an insecure
@@ -858,7 +892,7 @@ bool MailController::openWebmailDrafts(const QString& to, const QString& cc, con
     QUrl serverBaseUrl;
     RelayAuth auth;
     if (!requirePairing(serverBaseUrl, auth)) // sets "Not paired"
-        return false;
+        return 0;
 
     const QUrl url = webmailMailboxUrl(webmailBaseUrl(), QStringLiteral("Drafts"));
     // Checked BEFORE saving: a draft saved for a handoff that cannot open
@@ -866,49 +900,51 @@ bool MailController::openWebmailDrafts(const QString& to, const QString& cc, con
     if (url.isEmpty()) {
         setLastError(i18n("This device is paired over an insecure connection, so KyPost cannot open "
                            "webmail for you. Open your mail in a browser to send this message."));
-        return false;
+        return 0;
     }
-    if (!saveDraftInternal(to, cc, bcc, subject, body, attachmentFilePaths))
-        return false;
-    if (!QDesktopServices::openUrl(url)) {
-        setLastError(i18n("Saved to Drafts, but KyPost could not open your browser."));
-        return false;
-    }
-    return true;
+    // The browser is opened by the save's completion handler, not here: the
+    // save no longer finishes before this returns, and opening a browser onto
+    // a draft that has not landed yet loses the user's message.
+    return saveDraftInternal(to, cc, bcc, subject, body, attachmentFilePaths, url);
 }
 
-QVariantList MailController::listAttachments(const QString& mailbox, const QString& messageId)
+void MailController::listAttachments(const QString& mailbox, const QString& messageId)
 {
-    ReentrancyGuard guard(m_inNetworkCall);
-    if (!guard.entered())
-        return {};
-
     QUrl serverBaseUrl;
     RelayAuth auth;
-    if (!requirePairing(serverBaseUrl, auth))
-        return {};
+    if (!requirePairing(serverBaseUrl, auth)) {
+        emit attachmentsListed(mailbox, messageId, {});
+        return;
+    }
 
     pushBusy();
-    const ListAttachmentsResult result = m_relayMailSource.listAttachments(serverBaseUrl, auth, mailbox, messageId);
-    popBusy();
+    m_executor.run(
+        this,
+        [serverBaseUrl, auth, mailbox, messageId](HttpClient& http) {
+            RelayMailSource source(http);
+            return source.listAttachments(serverBaseUrl, auth, mailbox, messageId);
+        },
+        [this, mailbox, messageId](const ListAttachmentsResult& result) {
+            popBusy();
+            if (result.error.has_value()) {
+                setLastError(result.detail.isEmpty() ? i18n("Could not list attachments") : result.detail);
+                emit attachmentsListed(mailbox, messageId, {});
+                return;
+            }
+            setLastError(QString());
 
-    if (result.error.has_value()) {
-        setLastError(result.detail.isEmpty() ? i18n("Could not list attachments") : result.detail);
-        return {};
-    }
-    setLastError(QString());
-
-    QVariantList list;
-    list.reserve(result.attachments.size());
-    for (const MailAttachmentInfo& info : result.attachments) {
-        QVariantMap entry;
-        entry[QStringLiteral("index")] = info.index;
-        entry[QStringLiteral("name")] = info.name;
-        entry[QStringLiteral("mimeType")] = info.mimeType;
-        entry[QStringLiteral("size")] = info.size;
-        list.append(entry);
-    }
-    return list;
+            QVariantList list;
+            list.reserve(result.attachments.size());
+            for (const MailAttachmentInfo& info : result.attachments) {
+                QVariantMap entry;
+                entry[QStringLiteral("index")] = info.index;
+                entry[QStringLiteral("name")] = info.name;
+                entry[QStringLiteral("mimeType")] = info.mimeType;
+                entry[QStringLiteral("size")] = info.size;
+                list.append(entry);
+            }
+            emit attachmentsListed(mailbox, messageId, list);
+        });
 }
 
 QString MailController::dedupedFilePath(const QString& directory, const QString& fileName)
@@ -966,23 +1002,40 @@ bool MailController::writeAllOrRemove(QFile& file, const QByteArray& data)
     return false;
 }
 
-bool MailController::downloadAttachment(const QString& mailbox, const QString& messageId, int index,
+void MailController::downloadAttachment(const QString& mailbox, const QString& messageId, int index,
                                          const QString& suggestedName)
 {
-    ReentrancyGuard guard(m_inNetworkCall);
-    if (!guard.entered())
-        return false;
-
     QUrl serverBaseUrl;
     RelayAuth auth;
-    if (!requirePairing(serverBaseUrl, auth))
-        return false;
+    if (!requirePairing(serverBaseUrl, auth)) {
+        emit attachmentDownloaded(messageId, index, false);
+        return;
+    }
 
     pushBusy();
-    const DownloadAttachmentResult result =
-        m_relayMailSource.downloadAttachment(serverBaseUrl, auth, mailbox, messageId, index);
-    popBusy();
+    m_executor.run(
+        this,
+        [serverBaseUrl, auth, mailbox, messageId, index](HttpClient& http) {
+            RelayMailSource source(http);
+            return source.downloadAttachment(serverBaseUrl, auth, mailbox, messageId, index);
+        },
+        [this, messageId, index, suggestedName](const DownloadAttachmentResult& result) {
+            popBusy();
+            // Everything below -- the filename hardening, the exclusive
+            // create, the ephemeral open -- stays on THIS thread. Only the
+            // fetch moved. QStandardPaths, the 5-minute delete QTimer and
+            // m_ephemeralAttachments all belong here, and the security
+            // properties of that code are hard-won; running it somewhere
+            // else would be a rewrite, not a move.
+            emit attachmentDownloaded(messageId, index, storeDownloadedAttachment(suggestedName, result));
+        });
+}
 
+// The half of downloadAttachment() that must not leave this thread: turns a
+// fetched attachment into either a file in Downloads or an ephemeral open.
+bool MailController::storeDownloadedAttachment(const QString& suggestedName,
+                                                 const DownloadAttachmentResult& result)
+{
     if (result.error.has_value()) {
         setLastError(result.detail.isEmpty() ? i18n("Download failed") : result.detail);
         return false;

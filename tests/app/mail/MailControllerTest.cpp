@@ -32,6 +32,27 @@
 #include <QTemporaryDir>
 #include <QTest>
 
+// Calls NetworkExecutor::shutdown() while the controller is still alive.
+//
+// DECLARE IT AFTER THE CONTROLLER. The executor has to be constructed before
+// the controller so it can be handed to it, which means it is destroyed
+// AFTER -- so by the time ~NetworkExecutor runs shutdown() the receiver is
+// already gone, and any callback still queued is delivered into freed memory.
+// This guard, declared after the controller, destructs before it and closes
+// that window.
+//
+// A plain `executor.shutdown()` at the end of the test body is not enough:
+// QVERIFY/QCOMPARE return from the function on failure, so a FAILING test
+// skips it -- which is how this first showed up, as a SIGSEGV inside
+// QCoreApplicationPrivate::sendPostedEvents after four unrelated assertion
+// failures. A test suite whose failure mode is "crash the runner" hides
+// whatever else was about to be reported.
+struct ExecutorShutdownGuard
+{
+    NetworkExecutor& executor;
+    ~ExecutorShutdownGuard() { executor.shutdown(); }
+};
+
 class MailControllerTest : public QObject
 {
     Q_OBJECT
@@ -63,6 +84,17 @@ private slots:
 
 private:
     static void savePairing(PairingStore& pairingStore, quint16 port);
+    // downloadAttachment() dispatches and returns; the answer arrives as
+    // attachmentDownloaded(). Wraps "start it, wait for that signal, report
+    // its ok flag" so the security assertions below read the way they did
+    // when the call was synchronous.
+    //
+    // executor.shutdown() before returning, not after the test's scope ends:
+    // the executor is declared before the controller so it can be handed to
+    // it, which means it is destroyed AFTER -- so anything still queued when
+    // the test returns would be delivered to a dead receiver.
+    static bool downloadAndWait(MailController& controller, NetworkExecutor& executor, const QString& mailbox,
+                                 const QString& messageId, int index, const QString& suggestedName);
 };
 
 void MailControllerTest::savePairing(PairingStore& pairingStore, quint16 port)
@@ -73,6 +105,19 @@ void MailControllerTest::savePairing(PairingStore& pairingStore, quint16 port)
     pairing.serverBaseUrl = QStringLiteral("http://127.0.0.1:%1").arg(port);
     pairing.deviceId = QStringLiteral("dev-1");
     QVERIFY(pairingStore.save(pairing));
+}
+
+bool MailControllerTest::downloadAndWait(MailController& controller, NetworkExecutor& executor,
+                                          const QString& mailbox, const QString& messageId, int index,
+                                          const QString& suggestedName)
+{
+    QSignalSpy spy(&controller, &MailController::attachmentDownloaded);
+    controller.downloadAttachment(mailbox, messageId, index, suggestedName);
+    const bool arrived = spy.wait(10000) || spy.count() > 0;
+    executor.shutdown();
+    if (!arrived || spy.isEmpty())
+        return false;
+    return spy.at(0).at(2).toBool();
 }
 
 void MailControllerTest::selectKeywordFiltersCachedEmailsWithoutAnyNetworkCall()
@@ -150,6 +195,7 @@ void MailControllerTest::selectKeywordFiltersCachedEmailsWithoutAnyNetworkCall()
     NetworkExecutor executor(3000);
     MailController controller(mailRepository, source, keywordRepository, pairingStore, folderRepository,
                                settingsStore, bootstrapClient, recipientChecker, executor);
+    ExecutorShutdownGuard shutdownGuard{ executor };
 
     // refresh() is the only call in this test allowed to reach the network
     // -- it populates the cache selectKeyword() below must filter locally.
@@ -215,6 +261,7 @@ void MailControllerTest::archiveEmailsNotPairedShortCircuitsWithNoNetworkCall()
     NetworkExecutor executor(3000);
     MailController controller(mailRepository, source, keywordRepository, pairingStore, folderRepository,
                                settingsStore, bootstrapClient, recipientChecker, executor);
+    ExecutorShutdownGuard shutdownGuard{ executor };
 
     QSignalSpy errorSpy(&controller, &MailController::lastErrorChanged);
     QSignalSpy doneSpy(&controller, &MailController::actionCompleted);
@@ -267,6 +314,7 @@ void MailControllerTest::sendMailOverAttachmentCapRejectsBeforeAnyNetworkCall()
     NetworkExecutor executor(3000);
     MailController controller(mailRepository, source, keywordRepository, pairingStore, folderRepository,
                                settingsStore, bootstrapClient, recipientChecker, executor);
+    ExecutorShutdownGuard shutdownGuard{ executor };
 
     QTemporaryDir attachmentDir;
     QVERIFY(attachmentDir.isValid());
@@ -278,11 +326,13 @@ void MailControllerTest::sendMailOverAttachmentCapRejectsBeforeAnyNetworkCall()
     QVERIFY(bigFile.resize(25LL * 1024 * 1024 + 1));
     bigFile.close();
 
-    const bool ok = controller.sendMail(QStringLiteral("to@example.com"), QString(), QString(),
-                                         QStringLiteral("Subject"), QStringLiteral("Body"), { bigFilePath },
-                                         /*sign=*/false, /*encrypt=*/false);
+    // 0 = refused before anything was dispatched, which is the property this
+    // test is about: the cap is enforced without contacting the server.
+    const quint64 token = controller.sendMail(QStringLiteral("to@example.com"), QString(), QString(),
+                                               QStringLiteral("Subject"), QStringLiteral("Body"), { bigFilePath },
+                                               /*sign=*/false, /*encrypt=*/false);
 
-    QCOMPARE(ok, false);
+    QCOMPARE(token, 0u);
     QVERIFY(controller.lastError().contains(QStringLiteral("25 MB")));
     QVERIFY(fake.receivedRequest().isEmpty());
 }
@@ -323,12 +373,17 @@ void MailControllerTest::sendMailUsesHtmlSendMode()
     NetworkExecutor executor(3000);
     MailController controller(mailRepository, source, keywordRepository, pairingStore, folderRepository,
                                settingsStore, bootstrapClient, recipientChecker, executor);
+    ExecutorShutdownGuard shutdownGuard{ executor };
 
-    const bool ok = controller.sendMail(QStringLiteral("to@example.com"), QString(), QString(),
-                                         QStringLiteral("Subject"), QStringLiteral("<b>Body</b>"), {},
-                                         /*sign=*/false, /*encrypt=*/false);
+    QSignalSpy sendSpy(&controller, &MailController::sendCompleted);
+    const quint64 token = controller.sendMail(QStringLiteral("to@example.com"), QString(), QString(),
+                                               QStringLiteral("Subject"), QStringLiteral("<b>Body</b>"), {},
+                                               /*sign=*/false, /*encrypt=*/false);
+    QVERIFY(token != 0u);
+    QVERIFY(sendSpy.wait(10000));
+    QCOMPARE(sendSpy.at(0).at(0).toULongLong(), token);
+    QCOMPARE(sendSpy.at(0).at(1).toBool(), true);
 
-    QCOMPARE(ok, true);
     const QJsonObject sent = fake.receivedJsonBody();
     QCOMPARE(sent.value(QStringLiteral("mode")).toString(), QStringLiteral("html"));
     QCOMPARE(sent.value(QStringLiteral("body")).toString(), QStringLiteral("<b>Body</b>"));
@@ -381,14 +436,15 @@ void MailControllerTest::downloadAttachmentSanitizesPathTraversalInSuggestedName
     NetworkExecutor executor(3000);
     MailController controller(mailRepository, source, keywordRepository, pairingStore, folderRepository,
                                settingsStore, bootstrapClient, recipientChecker, executor);
+    ExecutorShutdownGuard shutdownGuard{ executor };
 
     const QString downloadDir = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
     QDir().mkpath(downloadDir);
     const QString escapeTarget = QDir(downloadDir).filePath(QStringLiteral("../evil.txt"));
     QFile::remove(QDir::cleanPath(escapeTarget));
 
-    const bool ok = controller.downloadAttachment(QStringLiteral("Inbox"), QStringLiteral("42"), 0,
-                                                    QStringLiteral("../evil.txt"));
+    const bool ok = downloadAndWait(controller, executor, QStringLiteral("Inbox"), QStringLiteral("42"), 0,
+                                     QStringLiteral("../evil.txt"));
 
     QCOMPARE(ok, true);
     QVERIFY(!QFile::exists(QDir::cleanPath(escapeTarget)));
@@ -443,13 +499,15 @@ void MailControllerTest::downloadAttachmentSanitizesPathTraversalInServerFilenam
     NetworkExecutor executor(3000);
     MailController controller(mailRepository, source, keywordRepository, pairingStore, folderRepository,
                                settingsStore, bootstrapClient, recipientChecker, executor);
+    ExecutorShutdownGuard shutdownGuard{ executor };
 
     const QString downloadDir = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
     QDir().mkpath(downloadDir);
     const QString escapeTarget = QDir::cleanPath(QDir(downloadDir).filePath(QStringLiteral("../../evil2.txt")));
     QFile::remove(escapeTarget);
 
-    const bool ok = controller.downloadAttachment(QStringLiteral("Inbox"), QStringLiteral("42"), 0, QString());
+    const bool ok = downloadAndWait(controller, executor, QStringLiteral("Inbox"), QStringLiteral("42"), 0,
+                                     QString());
 
     QCOMPARE(ok, true);
     QVERIFY(!QFile::exists(escapeTarget));
@@ -505,6 +563,7 @@ void MailControllerTest::findByMessageIdReturnsMapForCachedEmailAndEmptyMapWhenM
     NetworkExecutor executor(3000);
     MailController controller(mailRepository, source, keywordRepository, pairingStore, folderRepository,
                                settingsStore, bootstrapClient, recipientChecker, executor);
+    ExecutorShutdownGuard shutdownGuard{ executor };
 
     const QVariantMap found = controller.findByMessageId(QStringLiteral("m-1"));
     QCOMPARE(found.value(QStringLiteral("messageId")).toString(), QStringLiteral("m-1"));
@@ -562,6 +621,7 @@ void MailControllerTest::allKeywordSettingsReflectsInboxCacheAndSetKeywordVisibl
     NetworkExecutor executor(3000);
     MailController controller(mailRepository, source, keywordRepository, pairingStore, folderRepository,
                                settingsStore, bootstrapClient, recipientChecker, executor);
+    ExecutorShutdownGuard shutdownGuard{ executor };
 
     // "Work" was never toggled -- SettingsStore::keywordVisible() defaults
     // to true (see its own doc comment), so it should show up as visible.
@@ -626,14 +686,19 @@ void MailControllerTest::sendMailEmitsPickupFallbackRequiredWithTheServersAddres
     NetworkExecutor executor(3000);
     MailController controller(mailRepository, source, keywordRepository, pairingStore, folderRepository,
                                settingsStore, bootstrapClient, recipientChecker, executor);
+    ExecutorShutdownGuard shutdownGuard{ executor };
 
     QSignalSpy spy(&controller, &MailController::pickupFallbackRequired);
-    const bool sent = controller.sendMail(QStringLiteral("bob@example.com"), QString(), QString(),
-                                           QStringLiteral("Hi"), QStringLiteral("Body"), {},
-                                           /*sign=*/false, /*encrypt=*/true);
+    const quint64 sendToken = controller.sendMail(QStringLiteral("bob@example.com"), QString(), QString(),
+                                                   QStringLiteral("Hi"), QStringLiteral("Body"), {},
+                                                   /*sign=*/false, /*encrypt=*/true);
 
-    QCOMPARE(sent, false);
+    QVERIFY(sendToken != 0u);
+    QVERIFY(spy.wait(10000));
     QCOMPARE(spy.count(), 1);
+    // The refusal names the very send the caller was handed a token for --
+    // that identity is what lets one composer of several know it is theirs.
+    QCOMPARE(spy.at(0).at(0).toULongLong(), sendToken);
     QCOMPARE(spy.at(0).at(1).toStringList(), QStringList{ QStringLiteral("bob@example.com") });
     // The token names the one pending send this refusal belongs to. Never 0:
     // a default-constructed PendingSend must not be able to match it.
@@ -678,6 +743,7 @@ void MailControllerTest::confirmPickupFallbackSendResendsTheIdenticalBodyWithThe
     NetworkExecutor executor(3000);
     MailController controller(mailRepository, source, keywordRepository, pairingStore, folderRepository,
                                settingsStore, bootstrapClient, recipientChecker, executor);
+    ExecutorShutdownGuard shutdownGuard{ executor };
 
     // A REAL attachment, deleted between the refusal and the confirm. This is
     // the assertion the whole PendingSend cache exists to satisfy: with an
@@ -695,9 +761,11 @@ void MailControllerTest::confirmPickupFallbackSendResendsTheIdenticalBodyWithThe
     }
 
     QSignalSpy fallbackSpy(&controller, &MailController::pickupFallbackRequired);
-    QVERIFY(!controller.sendMail(QStringLiteral("bob@example.com"), QString(), QString(),
-                                  QStringLiteral("Hi"), QStringLiteral("Body"), { attachmentPath },
-                                  /*sign=*/false, /*encrypt=*/true));
+    QVERIFY(controller.sendMail(QStringLiteral("bob@example.com"), QString(), QString(), QStringLiteral("Hi"),
+                                 QStringLiteral("Body"), { attachmentPath },
+                                 /*sign=*/false, /*encrypt=*/true)
+            != 0u);
+    QVERIFY(fallbackSpy.wait(10000));
     QCOMPARE(fallbackSpy.count(), 1);
     const quint64 token = fallbackSpy.at(0).at(0).value<quint64>();
 
@@ -718,9 +786,12 @@ void MailControllerTest::confirmPickupFallbackSendResendsTheIdenticalBodyWithThe
     // what stops a dialog opened in another composer from resolving this one.
     // Checked before the real confirm on purpose -- `accepted` serves a single
     // connection, so if this reached the network the confirm below would fail.
-    QCOMPARE(controller.confirmPickupFallbackSend(token + 1), false);
+    QCOMPARE(controller.confirmPickupFallbackSend(token + 1), 0u);
 
-    QVERIFY(controller.confirmPickupFallbackSend(token));
+    QSignalSpy confirmSpy(&controller, &MailController::sendCompleted);
+    QCOMPARE(controller.confirmPickupFallbackSend(token), token);
+    QVERIFY(confirmSpy.wait(10000));
+    QCOMPARE(confirmSpy.at(0).at(1).toBool(), true);
 
     const QJsonObject first = refusal.receivedJsonBody();
     const QJsonObject second = accepted.receivedJsonBody();
@@ -745,7 +816,7 @@ void MailControllerTest::confirmPickupFallbackSendResendsTheIdenticalBodyWithThe
              originalBytes);
 
     // The opt-in is per-message: a second confirm must not re-send anything.
-    QCOMPARE(controller.confirmPickupFallbackSend(token), false);
+    QCOMPARE(controller.confirmPickupFallbackSend(token), 0u);
 }
 
 void MailControllerTest::confirmPickupFallbackSendWithoutAPendingSendDoesNothing()
@@ -781,10 +852,11 @@ void MailControllerTest::confirmPickupFallbackSendWithoutAPendingSendDoesNothing
     NetworkExecutor executor(3000);
     MailController controller(mailRepository, source, keywordRepository, pairingStore, folderRepository,
                                settingsStore, bootstrapClient, recipientChecker, executor);
+    ExecutorShutdownGuard shutdownGuard{ executor };
 
     // Any token at all, with nothing cached: a stray confirm must not mail.
-    QCOMPARE(controller.confirmPickupFallbackSend(1), false);
-    QCOMPARE(controller.confirmPickupFallbackSend(0), false);
+    QCOMPARE(controller.confirmPickupFallbackSend(1), 0u);
+    QCOMPARE(controller.confirmPickupFallbackSend(0), 0u);
 }
 
 void MailControllerTest::sendMailSurfacesAWarningOnAnOtherwiseSuccessfulSend()
@@ -831,13 +903,16 @@ void MailControllerTest::sendMailSurfacesAWarningOnAnOtherwiseSuccessfulSend()
     NetworkExecutor executor(3000);
     MailController controller(mailRepository, source, keywordRepository, pairingStore, folderRepository,
                                settingsStore, bootstrapClient, recipientChecker, executor);
+    ExecutorShutdownGuard shutdownGuard{ executor };
 
     QSignalSpy spy(&controller, &MailController::sendWarning);
-    const bool sent = controller.sendMail(QStringLiteral("bob@example.com"), QString(), QString(),
-                                           QStringLiteral("Hi"), QStringLiteral("Body"), {},
-                                           /*sign=*/false, /*encrypt=*/true);
+    QSignalSpy doneSpy(&controller, &MailController::sendCompleted);
+    QVERIFY(controller.sendMail(QStringLiteral("bob@example.com"), QString(), QString(), QStringLiteral("Hi"),
+                                 QStringLiteral("Body"), {}, /*sign=*/false, /*encrypt=*/true)
+            != 0u);
+    QVERIFY(doneSpy.wait(10000));
 
-    QCOMPARE(sent, true);
+    QCOMPARE(doneSpy.at(0).at(1).toBool(), true);
     QCOMPARE(spy.count(), 1);
     QVERIFY(!spy.at(0).at(0).toString().isEmpty());
 }
@@ -884,15 +959,18 @@ void MailControllerTest::sendMailClientSideNeededHandsOffAndOffersNoToggles()
     NetworkExecutor executor(3000);
     MailController controller(mailRepository, source, keywordRepository, pairingStore, folderRepository,
                                settingsStore, bootstrapClient, recipientChecker, executor);
+    ExecutorShutdownGuard shutdownGuard{ executor };
 
     QSignalSpy fallbackSpy(&controller, &MailController::pickupFallbackRequired);
     QSignalSpy composeStateSpy(&controller, &MailController::pgpComposeStateChanged);
 
-    const bool sent = controller.sendMail(QStringLiteral("bob@example.com"), QString(), QString(),
-                                           QStringLiteral("Hi"), QStringLiteral("Body"), {},
-                                           /*sign=*/false, /*encrypt=*/true);
+    QSignalSpy doneSpy(&controller, &MailController::sendCompleted);
+    QVERIFY(controller.sendMail(QStringLiteral("bob@example.com"), QString(), QString(), QStringLiteral("Hi"),
+                                 QStringLiteral("Body"), {}, /*sign=*/false, /*encrypt=*/true)
+            != 0u);
+    QVERIFY(doneSpy.wait(10000));
 
-    QCOMPARE(sent, false);
+    QCOMPARE(doneSpy.at(0).at(1).toBool(), false);
     // Never the plaintext-link dialog: this refusal is not confirmable.
     QCOMPARE(fallbackSpy.count(), 0);
     QVERIFY(composeStateSpy.count() >= 1);
@@ -902,7 +980,7 @@ void MailControllerTest::sendMailClientSideNeededHandsOffAndOffersNoToggles()
     QCOMPARE(controller.pgpCanSign(), false);
     QVERIFY(!controller.lastError().isEmpty());
     // The pending send was dropped, so a stray confirm cannot resurrect it.
-    QCOMPARE(controller.confirmPickupFallbackSend(1), false);
+    QCOMPARE(controller.confirmPickupFallbackSend(1), 0u);
 }
 
 void MailControllerTest::openWebmailDraftsRefusesAnInsecurePairingBeforeSavingAnything()
@@ -946,11 +1024,14 @@ void MailControllerTest::openWebmailDraftsRefusesAnInsecurePairingBeforeSavingAn
     NetworkExecutor executor(3000);
     MailController controller(mailRepository, source, keywordRepository, pairingStore, folderRepository,
                                settingsStore, bootstrapClient, recipientChecker, executor);
+    ExecutorShutdownGuard shutdownGuard{ executor };
 
-    const bool opened = controller.openWebmailDrafts(QStringLiteral("bob@example.com"), QString(), QString(),
-                                                       QStringLiteral("Hi"), QStringLiteral("Body"), {});
+    // 0 = refused before anything was dispatched, which is the whole point:
+    // the https check runs ahead of the draft POST.
+    const quint64 token = controller.openWebmailDrafts(QStringLiteral("bob@example.com"), QString(), QString(),
+                                                        QStringLiteral("Hi"), QStringLiteral("Body"), {});
 
-    QCOMPARE(opened, false);
+    QCOMPARE(token, 0u);
     QVERIFY(controller.lastError().contains(QStringLiteral("insecure connection")));
     // The actual invariant: no draft POST was made at all.
     QVERIFY(fake.receivedRequest().isEmpty());
@@ -995,8 +1076,16 @@ void MailControllerTest::refreshPgpComposeStateFailureHidesEveryControl()
     NetworkExecutor executor(3000);
     MailController controller(mailRepository, source, keywordRepository, pairingStore, folderRepository,
                                settingsStore, bootstrapClient, recipientChecker, executor);
+    ExecutorShutdownGuard shutdownGuard{ executor };
 
+    // The fetch is off-thread now, so this has to wait for the answer.
+    // Asserting straight after the call would assert the INITIAL state --
+    // which is also all-false, so the test would pass no matter what the
+    // completion handler did.
+    QSignalSpy stateSpy(&controller, &MailController::pgpComposeStateChanged);
     controller.refreshPgpComposeState();
+    QVERIFY(stateSpy.wait(10000));
+    executor.shutdown();
 
     QCOMPARE(controller.pgpCanEncrypt(), false);
     QCOMPARE(controller.pgpCanSign(), false);
@@ -1042,8 +1131,23 @@ void MailControllerTest::preflightRecipientsFailureClearsRatherThanReassures()
     NetworkExecutor executor(3000);
     MailController controller(mailRepository, source, keywordRepository, pairingStore, folderRepository,
                                settingsStore, bootstrapClient, recipientChecker, executor);
+    ExecutorShutdownGuard shutdownGuard{ executor };
 
+    // Populate the list for real first. Asserting "empty after a failure"
+    // starting from empty proves nothing -- it is the initial state, and was
+    // the weakness in this test even while the call was synchronous.
+    fake.setResponse(httpResponse(200, "OK", R"({"results":[{"address":"bob@example.com","hasKey":false}]})"));
+    QSignalSpy keylessSpy(&controller, &MailController::pgpKeylessRecipientsChanged);
     controller.preflightRecipients(QStringLiteral("bob@example.com"), QString(), QString());
+    QVERIFY(keylessSpy.wait(10000));
+    QCOMPARE(controller.pgpKeylessRecipients(), QStringList{ QStringLiteral("bob@example.com") });
+
+    // Now the failure. It must CLEAR that list rather than leave the previous
+    // answer standing in for one this call never got.
+    fake.setResponse(httpResponse(500, "Internal Server Error", "boom", "text/plain"));
+    controller.preflightRecipients(QStringLiteral("carol@example.com"), QString(), QString());
+    QVERIFY(keylessSpy.wait(10000));
+    executor.shutdown();
 
     QVERIFY(controller.pgpKeylessRecipients().isEmpty());
 }
@@ -1103,9 +1207,10 @@ void MailControllerTest::hostileLocationRefusesToOpenNonAllowlistedAttachmentTyp
     NetworkExecutor executor(3000);
     MailController controller(mailRepository, source, keywordRepository, pairingStore, folderRepository,
                                settingsStore, bootstrapClient, recipientChecker, executor);
+    ExecutorShutdownGuard shutdownGuard{ executor };
 
-    const bool ok = controller.downloadAttachment(QStringLiteral("Inbox"), QStringLiteral("42"), 0,
-                                                    QStringLiteral("Invoice.pdf.desktop"));
+    const bool ok = downloadAndWait(controller, executor, QStringLiteral("Inbox"), QStringLiteral("42"), 0,
+                                     QStringLiteral("Invoice.pdf.desktop"));
 
     QCOMPARE(ok, false);
     QVERIFY2(!controller.lastError().isEmpty(), "the refusal must be explained, not silent");
@@ -1163,9 +1268,10 @@ void MailControllerTest::hostileLocationForcesTheExtensionToMatchTheDeclaredType
     NetworkExecutor executor(3000);
     MailController controller(mailRepository, source, keywordRepository, pairingStore, folderRepository,
                                settingsStore, bootstrapClient, recipientChecker, executor);
+    ExecutorShutdownGuard shutdownGuard{ executor };
 
-    QVERIFY(controller.downloadAttachment(QStringLiteral("Inbox"), QStringLiteral("42"), 0,
-                                           QStringLiteral("Invoice.pdf.desktop")));
+    QVERIFY(downloadAndWait(controller, executor, QStringLiteral("Inbox"), QStringLiteral("42"), 0,
+                             QStringLiteral("Invoice.pdf.desktop")));
 
     const QDir attachmentDir(runtimeDir.filePath(QStringLiteral("kypost-attachments")));
     const QStringList written = attachmentDir.entryList(QDir::Files);
@@ -1226,6 +1332,7 @@ void MailControllerTest::downloadAttachmentStripsEmbeddedNulFromTheFilename()
     NetworkExecutor executor(3000);
     MailController controller(mailRepository, source, keywordRepository, pairingStore, folderRepository,
                                settingsStore, bootstrapClient, recipientChecker, executor);
+    ExecutorShutdownGuard shutdownGuard{ executor };
 
     const QString downloadDir = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
     QDir().mkpath(downloadDir);
@@ -1237,7 +1344,7 @@ void MailControllerTest::downloadAttachmentStripsEmbeddedNulFromTheFilename()
     hostile.append(QStringLiteral(".pdf"));
     QCOMPARE(hostile.size(), 20);
 
-    QVERIFY(controller.downloadAttachment(QStringLiteral("Inbox"), QStringLiteral("42"), 0, hostile));
+    QVERIFY(downloadAndWait(controller, executor, QStringLiteral("Inbox"), QStringLiteral("42"), 0, hostile));
 
     // The name open(2) would have truncated to must NOT be what landed.
     QVERIFY(!QFile::exists(truncatedTarget));
@@ -1304,6 +1411,8 @@ struct RefreshFixture
     NetworkExecutor executor{ 1500 };
     MailController controller{ mailRepository,  source,         keywordRepository, pairingStore, folderRepository,
                                settingsStore,   bootstrapClient, recipientChecker,  executor };
+    // Last member, so it is destroyed FIRST -- see the type's own comment.
+    ExecutorShutdownGuard shutdownGuard{ executor };
 };
 
 // Two messages, one per tab, in whatever mailbox was asked for.

@@ -32,11 +32,15 @@ class QUrl;
 // KeywordRepository (per-folder keyword tab derivation). Registered as the
 // "MailApp" QML singleton in main.cpp.
 //
-// THREADING, mid-migration: refresh()/selectFolder() run their request on the
-// NetworkExecutor thread and return immediately. Every OTHER network-reaching
-// method here still runs synchronously on the GUI thread, driving
-// HttpClient's nested event loop -- which is why m_inNetworkCall below still
-// exists. See docs/THREADING.md; this class is the bulk of what is left.
+// THREADING: every network-reaching method here dispatches to the
+// NetworkExecutor thread and returns immediately. None of them blocks the GUI
+// thread, and none of them can be re-entered, so this class no longer needs
+// ReentrancyGuard. The flags that remain (m_refreshInFlight,
+// m_preflightInFlight, m_pgpBootstrapInFlight) are coalescing, not guards --
+// they stop a second request piling up behind one already out.
+//
+// Methods that used to return a result now return either nothing or a token,
+// and report through a signal. See docs/THREADING.md.
 //
 // Task 39: allKeywordSettings()/setKeywordVisible() (Settings > Keywords
 // pane) are folded in here rather than a new KeywordSettingsController --
@@ -102,13 +106,29 @@ public slots:
     // sign/encrypt have no default -- Task 7 wires the real toggle states
     // through from Compose.qml; leaving them defaulted would let a call site
     // silently drift back to "never encrypt" instead of a compile error.
-    bool sendMail(const QString& to, const QString& cc, const QString& bcc, const QString& subject,
-                  const QString& body, const QStringList& attachmentFilePaths, bool sign, bool encrypt);
-    QVariantList listAttachments(const QString& mailbox, const QString& messageId); // [{index, name, mimeType, size}, ...]
+    //
+    // RETURNS A SEND TOKEN, not a result -- 0 if the send was refused before
+    // any request was built (not paired, unreadable or oversized
+    // attachment), otherwise an identifier for this one send. Every later
+    // signal about it carries the same token.
+    //
+    // That token is how a composer knows an answer is its own. Before, the
+    // test was "is my sendMail() call on the stack", which worked only
+    // because the request ran synchronously inside the invokable. Nothing has
+    // a call on the stack now, so ownership has to be a value the caller
+    // holds -- and it is the same token that already existed for the
+    // pickup-fallback round trip, so the two mechanisms the old comment here
+    // described separately are now one.
+    quint64 sendMail(const QString& to, const QString& cc, const QString& bcc, const QString& subject,
+                     const QString& body, const QStringList& attachmentFilePaths, bool sign, bool encrypt);
+    // Dispatches; the list arrives as attachmentsListed().
+    void listAttachments(const QString& mailbox, const QString& messageId);
     // Writes the downloaded bytes to QStandardPaths::DownloadLocation,
-    // deduping the filename against anything already there. Returns false +
-    // sets lastError on failure.
-    bool downloadAttachment(const QString& mailbox, const QString& messageId, int index,
+    // deduping the filename against anything already there -- or, under
+    // Hostile Location Protection, opens them from a tmpfs file instead.
+    // Dispatches; the outcome arrives as attachmentDownloaded(), with the
+    // reason for a failure in lastError.
+    void downloadAttachment(const QString& mailbox, const QString& messageId, int index,
                              const QString& suggestedName);
     QVariantList standardFolders() const; // [{wireName, displayName}, ...], enum order
     // Task 35: looks up a single cached Email by messageId (independent of
@@ -162,10 +182,12 @@ public slots:
 
     // Saves the current composition to the Drafts mailbox via
     // POST /api/mail/draft. Same arguments as sendMail() so Compose.qml can
-    // call either with the same expression.
-    Q_INVOKABLE bool saveDraft(const QString& to, const QString& cc, const QString& bcc,
-                                const QString& subject, const QString& body,
-                                const QStringList& attachmentFilePaths);
+    // call either with the same expression, and the same token contract: 0
+    // if refused up front, otherwise an identifier that draftSaveCompleted()
+    // carries back.
+    Q_INVOKABLE quint64 saveDraft(const QString& to, const QString& cc, const QString& bcc,
+                                   const QString& subject, const QString& body,
+                                   const QStringList& attachmentFilePaths);
 
     // Deletes every ephemeral attachment still on disk. Called on shutdown
     // so a clean quit leaves nothing behind, rather than waiting for timers
@@ -209,17 +231,23 @@ public slots:
     // unless it still matches the cached pending send, so a confirmation for
     // an older, already-resolved or already-replaced send cannot mail
     // anything. Also returns false when there is no pending send at all.
-    Q_INVOKABLE bool confirmPickupFallbackSend(quint64 token);
+    // Returns the token it was given (so the caller keeps waiting on the same
+    // one -- the confirmed re-send is the same logical send), or 0 when there
+    // is no matching pending send and nothing was dispatched.
+    Q_INVOKABLE quint64 confirmPickupFallbackSend(quint64 token);
     // Drops the cached pending send. Called when the user cancels the
     // pickup-fallback confirmation dialog rather than confirming it.
     Q_INVOKABLE void discardPendingSend();
-    // Saves the composition to Drafts, then opens webmail there in the
-    // user's system browser (never an embedded view). Returns false without
-    // opening anything if the draft did not save, or if the pairing's base
-    // URL is not https.
-    Q_INVOKABLE bool openWebmailDrafts(const QString& to, const QString& cc, const QString& bcc,
-                                        const QString& subject, const QString& body,
-                                        const QStringList& attachmentFilePaths);
+    // Saves the composition to Drafts, then opens webmail there in the user's
+    // system browser (never an embedded view) -- in that order, and only if
+    // the save actually landed: opening a browser onto a draft that is not
+    // there loses the user's message. Returns 0 without dispatching anything
+    // when unpaired or when the pairing's base URL is not https; otherwise a
+    // draftSaveCompleted() token, whose `ok` covers both the save and the
+    // browser launch.
+    Q_INVOKABLE quint64 openWebmailDrafts(const QString& to, const QString& cc, const QString& bcc,
+                                           const QString& subject, const QString& body,
+                                           const QStringList& attachmentFilePaths);
 
 signals:
     void currentFolderChanged();
@@ -248,28 +276,45 @@ signals:
     // actionCompleted there is nothing to disambiguate with: the folder
     // dialogs are modal and singular, so "which one was mine" cannot arise.
     void folderMutationCompleted(bool ok);
+    // Result of listAttachments(). Carries the mailbox/messageId it was asked
+    // for, for the same reason actionCompleted carries its ids: this is a
+    // singleton, more than one EmailDetail can be open, and each has to be
+    // able to tell whether the answer describes the message IT is showing.
+    // Empty on failure, with the reason in lastError.
+    void attachmentsListed(const QString& mailbox, const QString& messageId, const QVariantList& attachments);
+    // Result of downloadAttachment(). `ok` false leaves the reason in
+    // lastError. Note this reports that the bytes were SAVED (or opened
+    // ephemerally), not merely fetched.
+    void attachmentDownloaded(const QString& messageId, int index, bool ok);
     // Emitted when sendMail() is refused with 409 + keylessRecipients: the
     // server's own list of addresses with no usable PGP key, naming the
     // pending send confirmPickupFallbackSend() would re-send.
     //
-    // `token` identifies that one pending send and must be handed back to
-    // confirmPickupFallbackSend(). This class is a QML SINGLETON, so this
-    // signal reaches every live Compose instance -- two coexist easily (a
-    // pop-out compose window plus Ctrl+N in the main window). Two separate
-    // mechanisms keep that from collecting one message's consent in another
-    // message's window, because they answer different questions:
+    // `token` is the value sendMail() returned for the send being refused,
+    // and must be handed back to confirmPickupFallbackSend(). This class is a
+    // QML SINGLETON, so this signal reaches every live Compose instance --
+    // two coexist easily (a pop-out compose window plus Ctrl+N in the main
+    // window). The token answers both questions that keeps one message's
+    // consent from being collected in another message's window:
     //
-    //   * Ownership -- "is this signal mine?" Answered on the QML side by a
-    //     sendInFlight flag, which works because this signal is emitted
-    //     SYNCHRONOUSLY inside sendMail(), so the only instance with a
-    //     sendMail() call on its stack is the true owner. Do not make the
-    //     emit asynchronous (queued/deferred) without replacing that.
-    //   * Staleness/replay -- "is this confirmation still valid?" Answered by
-    //     the token, which the confirm path re-checks against the cached
-    //     pending send. Needed independently: the flag says nothing about a
-    //     confirmation that arrives after the pending send was replaced or
-    //     already resolved.
+    //   * Ownership -- "is this signal mine?" The composer compares against
+    //     the token sendMail() handed it. This used to be a sendInFlight flag
+    //     instead, which worked only because the emit was SYNCHRONOUS, inside
+    //     sendMail(), so the true owner was the one with that call on its
+    //     stack. The request runs on the executor thread now and nobody has a
+    //     call on the stack, so ownership had to become a carried value.
+    //   * Staleness/replay -- "is this confirmation still valid?" The confirm
+    //     path re-checks the token against the cached pending send, so a
+    //     confirmation for a send already replaced or resolved is refused.
     void pickupFallbackRequired(quint64 token, const QStringList& recipients);
+    // Terminal outcome of one sendMail()/confirmPickupFallbackSend(),
+    // identified by the token that call returned. `ok` is false for an
+    // outright failure AND for a pickup-fallback refusal -- the latter is
+    // preceded by pickupFallbackRequired, which is what the composer acts on;
+    // this one just says the attempt is over.
+    void sendCompleted(quint64 token, bool ok);
+    // Terminal outcome of one saveDraft()/openWebmailDrafts().
+    void draftSaveCompleted(quint64 token, bool ok);
     // Emitted on a 200 response carrying a non-empty warning: the message
     // WAS sent, with partial trouble (e.g. the Sent copy failed, or a pickup
     // link did not deliver to everyone). Never a failure signal.
@@ -319,20 +364,24 @@ private:
     bool requirePairing(QUrl& serverBaseUrl, RelayAuth& auth);
     // Shared by sendMail() and saveDraft() -- see the .cpp.
     bool readAttachments(const QStringList& paths, QVector<MailAttachmentUpload>& out);
+    // The half of downloadAttachment() that must stay on this thread.
+    bool storeDownloadedAttachment(const QString& suggestedName, const DownloadAttachmentResult& result);
+    void applyKeylessRecipients(const QStringList& keyless);
 
-    // Unguarded bodies behind the guarded public entry points of the same
-    // name. Internal callers (deleteFolder -> selectFolder -> refresh,
-    // openWebmailDrafts -> saveDraft) go through these so the outer call's
-    // ReentrancyGuard doesn't turn its own nested step into a no-op. See the
-    // comment above selectFolder() in the .cpp.
+    // These existed because the public entry points held a ReentrancyGuard
+    // and several of them legitimately call each other (deleteFolder ->
+    // selectFolder -> refresh, openWebmailDrafts -> saveDraft), so an inner
+    // step would have been suppressed by the outer call's own guard.
     //
-    // selectFolder/refresh no longer need the split for that reason -- they
-    // hold no guard now -- but they keep it because renameFolder() and
-    // deleteFolder() DO hold one while calling selectFolderInternal().
+    // No guards remain, so the split is now only about the extra arguments
+    // the internal callers need: saveDraftInternal takes the webmail URL to
+    // open afterwards, which the QML-facing saveDraft() must not expose.
     void selectFolderInternal(const QString& wireFolder);
     void refreshInternal(bool forceFullResync);
-    bool saveDraftInternal(const QString& to, const QString& cc, const QString& bcc, const QString& subject,
-                            const QString& body, const QStringList& attachmentFilePaths);
+    quint64 saveDraftInternal(const QString& to, const QString& cc, const QString& bcc, const QString& subject,
+                               const QString& body, const QStringList& attachmentFilePaths,
+                               const QUrl& thenOpenWebmail);
+    void finishSend(quint64 sendToken, const SendMailResult& result);
 
     // Hostile Location Protection's replacement for save-to-Downloads: a
     // tmpfs-backed temporary file, opened with the OS handler and removed
@@ -443,20 +492,10 @@ private:
     // session -- see refreshPgpComposeState(). A short-circuited pairing
     // lookup does NOT set it, so pairing later still gets a real answer.
     bool m_pgpComposeStateFetched = false;
-    // Guards preflightRecipients() against re-entering through the nested
-    // event loop its own HTTP call runs.
+    // Coalescing flags for the two PGP compose-state calls. Both used to be
+    // re-entrancy defences against the nested event loop; the requests are
+    // off-thread now, so they only stop a second call piling up behind one
+    // already out.
     bool m_preflightInFlight = false;
-    // Guards every OTHER network-calling method here against the same
-    // re-entrancy, via ReentrancyGuard (core/util/ReentrancyGuard.h).
-    // preflightRecipients keeps its own separate flag because it is called
-    // from within those methods' own flows and must not be blocked by them.
-    //
-    // HttpClient runs a nested QEventLoop, so QML keeps delivering clicks
-    // and timers keep firing while any of these are suspended mid-call --
-    // two of them interleaving means the outer one resumes reading member
-    // state the inner one replaced. sendMail's pendingSendToken exists
-    // because that already happened once, in a way that mailed a message to
-    // the wrong recipient list. This flag makes the whole class safe rather
-    // than that one method.
-    bool m_inNetworkCall = false;
+    bool m_pgpBootstrapInFlight = false;
 };

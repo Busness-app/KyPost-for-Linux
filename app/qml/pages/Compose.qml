@@ -56,21 +56,39 @@ Item {
     property var attachmentPaths: []
     property string validationError: ""
 
-    // True only for the duration of a MailApp.sendMail() /
-    // MailApp.confirmPickupFallbackSend() call made by THIS instance.
+    // The token MailApp.sendMail() returned for the send THIS instance
+    // started, or 0 when it has none outstanding.
     //
-    // MailApp is a QML singleton, so its pickupFallbackRequired/sendWarning
+    // MailApp is a QML singleton, so its pickupFallbackRequired/sendCompleted
     // signals reach every live Compose -- and two coexist easily (a pop-out
-    // compose window plus Ctrl+N in the main window). MailController emits
-    // pickupFallbackRequired synchronously, from inside sendMail(), so the
-    // only instance with that call on its stack is the true owner of the
-    // refusal; this flag is how the handler below asks "is this signal mine?".
+    // compose window plus Ctrl+N in the main window). Comparing this token is
+    // how each one asks "is this signal mine?".
     //
-    // The token carried alongside answers the different question "is this
-    // confirmation still valid?" -- see MailController's own comment. Both are
-    // needed: the flag cannot tell that a pending send has been replaced, and
-    // the token cannot stop the wrong window from opening a dialog.
-    property bool sendInFlight: false
+    // This used to be a `sendInFlight` bool, which worked only because
+    // MailController emitted pickupFallbackRequired synchronously from inside
+    // sendMail(): the true owner was the instance with that call on its
+    // stack. The request runs on a worker thread now and nobody has a call on
+    // the stack, so ownership had to become a value we hold. It is the same
+    // token that already answered "is this confirmation still valid?", so the
+    // two mechanisms collapsed into one rather than a second being invented.
+    property var mySendToken: 0
+    // Separately tracked because saveDraft and sendMail can both be
+    // outstanding and their tokens come from the same counter.
+    property var myDraftToken: 0
+
+    // Disables Send/Save while this instance has something outstanding.
+    // MailApp.isBusy is singleton-wide and would also disable this composer
+    // while an unrelated inbox refresh ran.
+    readonly property bool sendInFlight: root.mySendToken !== 0
+    readonly property bool draftInFlight: root.myDraftToken !== 0
+    // Which wording the draft acknowledgement uses. Set alongside the call
+    // rather than derived, because openWebmailDrafts and saveDraft report
+    // through the same signal.
+    property bool draftHandoffToWebmail: false
+    // True between the 409 refusal and the user answering the dialog. Keeps
+    // sendCompleted from releasing mySendToken while the confirmation still
+    // needs it -- see onSendCompleted below.
+    property bool awaitingPickupConfirmation: false
 
     // Recipient fields joined into one value purely so a single change handler
     // can debounce the PGP key preflight. Watching the three TokenFields'
@@ -164,10 +182,13 @@ Item {
         bodyEditor.requestSendableHtml(function(result) {
             root.validationError = ""
             // Deliberately stays on the compose page on failure: the message
-            // is still here, and navigating away would lose it.
-            if (MailApp.openWebmailDrafts(toField.joinedText, ccField.joinedText, bccField.joinedText,
-                                           subjectField.text, result.html, root.attachmentPaths))
-                toast.show(i18n("Saved to Drafts — continue in your browser"))
+            // is still here, and navigating away would lose it. Shares
+            // saveDraft's token and signal; draftHandoffToWebmail only picks
+            // the wording of the acknowledgement.
+            root.draftHandoffToWebmail = true
+            root.myDraftToken = MailApp.openWebmailDrafts(toField.joinedText, ccField.joinedText,
+                                                           bccField.joinedText, subjectField.text, result.html,
+                                                           root.attachmentPaths)
         })
     }
 
@@ -187,21 +208,14 @@ Item {
                 return
             }
             root.validationError = ""
-            // A false return is not necessarily a failure: a 409 asking for the
-            // one-time-link fallback also returns false, and arrives as
-            // MailApp.pickupFallbackRequired (see the Connections block below),
-            // which opens the confirmation instead of reporting an error.
-            //
-            // sendInFlight is set immediately around the call, in this one JS
-            // block, because pickupFallbackRequired arrives DURING it (see the
-            // property's own comment).
-            root.sendInFlight = true
-            const ok = MailApp.sendMail(toField.joinedText, ccField.joinedText, bccField.joinedText,
-                                         subjectField.text, result.html, root.attachmentPaths,
-                                         signToggle.checked, encryptToggle.checked)
-            root.sendInFlight = false
-            if (ok)
-                root.sendSucceeded()
+            // Returns a token, not a result. 0 means it was refused before any
+            // request was built (not paired, or an attachment that could not
+            // be read or is over the cap) -- MailApp.lastError says which.
+            // Anything else identifies this send, and every signal about it
+            // carries the same value back.
+            root.mySendToken = MailApp.sendMail(toField.joinedText, ccField.joinedText, bccField.joinedText,
+                                                 subjectField.text, result.html, root.attachmentPaths,
+                                                 signToggle.checked, encryptToggle.checked)
         })
     }
 
@@ -215,14 +229,11 @@ Item {
 
         bodyEditor.requestSendableHtml(function(result) {
             root.validationError = ""
-            if (MailApp.saveDraft(toField.joinedText, ccField.joinedText, bccField.joinedText,
-                                   subjectField.text, result.html, root.attachmentPaths)) {
-                // Acknowledge in place: this component already owns a Toast
-                // for its other inline feedback, and the composer stays open
-                // so there is no navigation change to signal a save happened.
-                toast.show(i18n("Draft saved"))
-                root.draftSaved()
-            }
+            // Acknowledged by onDraftSaveCompleted below, once the draft has
+            // actually reached the server.
+            root.myDraftToken = MailApp.saveDraft(toField.joinedText, ccField.joinedText, bccField.joinedText,
+                                                   subjectField.text, result.html, root.attachmentPaths)
+            root.draftHandoffToWebmail = false
         })
     }
 
@@ -486,7 +497,7 @@ Item {
                 spacing: 8
                 GhostButton {
                     text: i18n("Continue in webmail")
-                    enabled: !MailApp.isBusy
+                    enabled: !root.sendInFlight && !root.draftInFlight
                     onClicked: root.tryWebmailHandoff()
                 }
                 Item { Layout.fillWidth: true }
@@ -508,7 +519,12 @@ Item {
             spacing: 8
 
             Text {
-                visible: MailApp.isBusy
+                // This instance's own send, NOT MailApp.isBusy. That property
+                // is singleton-wide, and now that the inbox refresh is
+                // asynchronous too it goes true for reasons that have nothing
+                // to do with this composer -- which would both show "Sending…"
+                // over a message nobody sent and disable Send below.
+                visible: root.sendInFlight
                 text: i18n("Sending…")
                 color: Theme.ink
                 font.family: Theme.fontUi
@@ -517,12 +533,12 @@ Item {
             Item { Layout.fillWidth: true }
             GhostButton {
                 text: i18n("Save Draft")
-                enabled: !MailApp.isBusy
+                enabled: !root.sendInFlight && !root.draftInFlight
                 onClicked: root.trySaveDraft()
             }
             PrimaryButton {
                 text: i18n("Send")
-                enabled: !MailApp.isBusy
+                enabled: !root.sendInFlight && !root.draftInFlight
                 onClicked: root.trySend()
             }
         }
@@ -582,18 +598,22 @@ Item {
             // Re-sends the exact payload the server refused, with the opt-in
             // set. Nothing is rebuilt here on purpose -- MailController holds
             // the original request so the confirmed send is byte-identical.
-            // The token proves that request is still the one it refused.
-            //
-            // Bracketed with sendInFlight for the same reason trySend() is: a
-            // sendWarning from this confirmed re-send must be attributed to
-            // this instance.
-            root.sendInFlight = true
-            const ok = MailApp.confirmPickupFallbackSend(token)
-            root.sendInFlight = false
-            if (ok)
-                root.sendSucceeded()
+            // The token proves that request is still the one it refused, and
+            // the confirmed re-send keeps it -- it is the same logical send,
+            // so this instance stays the one waiting on it. A 0 back means
+            // the pending send was already replaced or resolved and nothing
+            // was dispatched.
+            root.awaitingPickupConfirmation = false
+            root.mySendToken = MailApp.confirmPickupFallbackSend(token)
         }
-        onCancelled: MailApp.discardPendingSend()
+        onCancelled: {
+            // Releases the token too. Without that this composer's Send would
+            // stay disabled for the rest of its life, because sendCompleted
+            // for the refusal deliberately left it set.
+            root.awaitingPickupConfirmation = false
+            root.mySendToken = 0
+            MailApp.discardPendingSend()
+        }
     }
 
     Connections {
@@ -608,9 +628,44 @@ Item {
         // a confirmation given in the wrong window would send the OTHER
         // window's message while destroying this one's unsent draft.
         function onPickupFallbackRequired(token, recipients) {
-            if (!root.sendInFlight)
+            if (token !== root.mySendToken)
                 return
+            root.awaitingPickupConfirmation = true
             pickupFallbackDialog.open(token, recipients)
+        }
+
+        // Terminal outcome of this instance's send.
+        //
+        // This fires for the pickup-fallback refusal too, with ok false, and
+        // immediately after pickupFallbackRequired. The token must NOT be
+        // released in that case: the dialog is still waiting on it, and a
+        // cleared token would make the user's confirmation arrive looking
+        // like somebody else's send. Hence the explicit flag rather than
+        // testing the popup's visibility, which depends on when Popup.open()
+        // takes effect.
+        function onSendCompleted(token, ok) {
+            if (token !== root.mySendToken)
+                return
+            if (!root.awaitingPickupConfirmation)
+                root.mySendToken = 0
+            if (ok)
+                root.sendSucceeded()
+        }
+
+        function onDraftSaveCompleted(token, ok) {
+            if (token !== root.myDraftToken)
+                return
+            root.myDraftToken = 0
+            if (!ok)
+                return // MailApp.lastError carries the reason
+            // Acknowledge in place: this component already owns a Toast for
+            // its other inline feedback, and the composer stays open so there
+            // is no navigation change to signal a save happened.
+            toast.show(root.draftHandoffToWebmail
+                ? i18n("Saved to Drafts — continue in your browser")
+                : i18n("Draft saved"))
+            if (!root.draftHandoffToWebmail)
+                root.draftSaved()
         }
 
         // No onSendWarning here on purpose. A warning only ever accompanies a

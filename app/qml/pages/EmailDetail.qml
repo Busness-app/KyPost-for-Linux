@@ -52,6 +52,17 @@ Item {
     // re-blocks images until asked again.
     property bool imagesLoaded: false
 
+    // Whether there is any message content for the image-blocking notices
+    // below to sit under.
+    //
+    // The `!!` is load-bearing, not decoration. `email` is {} until a message
+    // is loaded, so both member reads are undefined then, and JavaScript's
+    // `a || b` yields undefined rather than false -- which QML cannot assign
+    // to a bool, and logged "Unable to assign [undefined] to bool" twice on
+    // every startup. Hoisted to one property because the expression was
+    // duplicated across the two notices that share it.
+    readonly property bool hasRenderableBody: !!(root.email && (root.email.body || root.email.preview))
+
     onMessageIdChanged: reload()
     onFolderChanged: reload()
     Component.onCompleted: reload()
@@ -74,6 +85,32 @@ Item {
             // called it "junk", matching the button.
             root.actionCompleted(action === "spam" ? "junk" : action)
         }
+
+        // Both checks matter. mailbox/messageId keeps another EmailDetail's
+        // answer out of this one, and it also drops a reply for a message
+        // this instance has since navigated away from -- otherwise a slow
+        // list would repopulate the chips with the previous mail's
+        // attachments after the user had already moved on.
+        function onAttachmentsListed(mailbox, messageId, attachments) {
+            if (mailbox === root.folder && messageId === root.messageId)
+                root.attachments = attachments
+        }
+
+        function onAttachmentDownloaded(messageId, index, ok) {
+            if (messageId !== root.messageId)
+                return
+            // Under Hostile Location Protection the file is opened from a
+            // temporary location rather than saved, so say so -- claiming
+            // "Saved to Downloads" would be wrong, and claiming "never
+            // touched disk" would oversell a tmpfs file. See
+            // MailController::openAttachmentEphemerally.
+            root.attachmentStatus = ok
+                ? (AppLock.hostileLocationEnabled
+                    ? i18n("Opened temporarily — not saved")
+                    : i18n("Saved to Downloads"))
+                : MailApp.lastError
+            attachmentStatusTimer.restart()
+        }
     }
 
     // Clears the refused-link notice a few seconds after it appears.
@@ -94,9 +131,14 @@ Item {
             return
         }
         root.email = MailApp.findByMessageId(root.messageId)
-        root.attachments = (root.email && root.email.hasAttachments)
-            ? MailApp.listAttachments(root.folder, root.messageId)
-            : []
+        // Cleared, then refilled by onAttachmentsListed below. The list is
+        // fetched off-thread now, so it cannot be assigned here -- and
+        // leaving the previous message's attachments up while the new
+        // message's are in flight would offer downloads that belong to the
+        // mail the user just navigated away from.
+        root.attachments = []
+        if (root.email && root.email.hasAttachments)
+            MailApp.listAttachments(root.folder, root.messageId)
         webViewLoader.applyContent()
     }
 
@@ -400,7 +442,7 @@ Item {
                 // one more toolbar action instead of a separate banner.
                 icon: "image-x-generic"
                 tooltip: i18n("Show images")
-                visible: !root.imagesLoaded && (root.email.body || root.email.preview)
+                visible: !root.imagesLoaded && root.hasRenderableBody
                 onClicked: root.showImages()
             }
             IconButton {
@@ -424,7 +466,7 @@ Item {
 
         Text {
             Layout.fillWidth: true
-            visible: !root.imagesLoaded && (root.email.body || root.email.preview)
+            visible: !root.imagesLoaded && root.hasRenderableBody
             text: i18n("Images are hidden to protect your privacy.")
             color: Theme.ink
             font.family: Theme.fontUi
@@ -731,23 +773,13 @@ Item {
                         }
 
                         TapHandler {
-                            onTapped: {
-                                const ok = MailApp.downloadAttachment(
-                                    root.folder, root.messageId, modelData.index, modelData.name)
-                                // Under Hostile Location Protection the file
-                                // is opened from a temporary location rather
-                                // than saved, so say so -- claiming "Saved to
-                                // Downloads" would be wrong, and claiming
-                                // "never touched disk" would oversell a
-                                // tmpfs file. See
-                                // MailController::openAttachmentEphemerally.
-                                root.attachmentStatus = ok
-                                    ? (AppLock.hostileLocationEnabled
-                                        ? i18n("Opened temporarily — not saved")
-                                        : i18n("Saved to Downloads"))
-                                    : MailApp.lastError
-                                attachmentStatusTimer.restart()
-                            }
+                            // Fire and forget -- the outcome is reported by
+                            // root's onAttachmentDownloaded handler, which
+                            // has to live up there rather than here: the
+                            // status line outlives this chip, and the chip
+                            // does not survive a reload().
+                            onTapped: MailApp.downloadAttachment(
+                                root.folder, root.messageId, modelData.index, modelData.name)
                         }
                     }
                 }
