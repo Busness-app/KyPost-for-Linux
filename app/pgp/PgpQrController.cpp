@@ -3,9 +3,10 @@
 #include "contacts/ContactFieldMapping.h"
 #include "domain/PgpQrRepository.h"
 #include "net/NetworkError.h"
+#include "net/HttpClient.h"
+#include "net/NetworkExecutor.h"
 #include "net/PgpQrClient.h"
 #include "pgp/PgpQrTargetValidator.h"
-#include "util/ReentrancyGuard.h"
 
 #include <KLocalizedString>
 
@@ -20,10 +21,10 @@
 #include <QUrl>
 #include <QVariantList>
 
-PgpQrController::PgpQrController(PgpQrRepository& repository, PgpQrClient& client, QObject* parent)
+PgpQrController::PgpQrController(PgpQrRepository& repository, NetworkExecutor& executor, QObject* parent)
     : QObject(parent)
     , m_repository(repository)
-    , m_client(client)
+    , m_executor(executor)
 {
 }
 
@@ -80,14 +81,41 @@ void PgpQrController::setLastError(const QString& error)
 
 void PgpQrController::refreshMyQrCode()
 {
-    ReentrancyGuard guard(m_inNetworkCall);
-    if (!guard.entered())
+    // Coalescing, not a re-entrancy guard: with the blocking call off this
+    // thread there is no nested event loop to be re-entered through. What is
+    // left to prevent is PgpMyQrCode.qml's auto-refresh timer firing on top
+    // of a fetch that is already out, which would race to set myQrUrl.
+    if (m_inNetworkCall)
         return;
 
-    setBusy(true);
-    const PgpQrTokenOutcome outcome = m_repository.fetchMyToken();
-    setBusy(false);
+    // Resolved HERE. PairingStore caches and is mutated by the credential
+    // gate, so it stays confined to this thread; only the plain values below
+    // cross to the executor.
+    const std::optional<std::pair<QUrl, RelayAuth>> pairing = m_repository.resolvePairing();
+    if (!pairing.has_value()) {
+        setLastError(i18n("Not paired"));
+        return;
+    }
 
+    m_inNetworkCall = true;
+    setBusy(true);
+
+    const QUrl serverBaseUrl = pairing->first;
+    const RelayAuth auth = pairing->second;
+    m_executor.run(
+        this,
+        [serverBaseUrl, auth](HttpClient& http) {
+            return PgpQrRepository::fetchTokenWith(http, serverBaseUrl, auth);
+        },
+        [this](const PgpQrTokenOutcome& outcome) {
+            m_inNetworkCall = false;
+            setBusy(false);
+            applyTokenOutcome(outcome);
+        });
+}
+
+void PgpQrController::applyTokenOutcome(const PgpQrTokenOutcome& outcome)
+{
     switch (outcome.status) {
     case PgpQrTokenStatus::Success:
         setLastError(QString());
@@ -160,8 +188,9 @@ bool isPermittedQrEndpoint(const QUrl& url)
 
 void PgpQrController::scanQrPayload(const QString& decodedText)
 {
-    ReentrancyGuard guard(m_inNetworkCall);
-    if (!guard.entered())
+    // Coalescing: a camera can decode the same code many times a second, so
+    // without this every frame would start another fetch.
+    if (m_inNetworkCall)
         return;
 
     // No RelayAuth -- the token in the URL is the sole credential, and the
@@ -173,6 +202,7 @@ void PgpQrController::scanQrPayload(const QString& decodedText)
         return;
     }
 
+    m_inNetworkCall = true;
     setBusy(true);
     // VibeSec finding: a URL that legitimately passes isSafeQrTarget above
     // could still 302 the actual fetch to a link-local/metadata address --
@@ -185,9 +215,24 @@ void PgpQrController::scanQrPayload(const QString& decodedText)
     // 302 the fetch to any path on a loopback service -- which
     // isSafeQrTarget deliberately allows over plain http, so the certificate
     // pin never engaged either.
-    const PgpQrKeyResult result = m_client.fetchKey(qrUrl, isPermittedQrEndpoint);
-    setBusy(false);
+    //
+    // No pairing is involved at all, so unlike refreshMyQrCode() the whole
+    // request moves -- there is no store to keep on this thread.
+    m_executor.run(
+        this,
+        [qrUrl](HttpClient& http) {
+            PgpQrClient client(http);
+            return client.fetchKey(qrUrl, isPermittedQrEndpoint);
+        },
+        [this](const PgpQrKeyResult& result) {
+            m_inNetworkCall = false;
+            setBusy(false);
+            applyKeyResult(result);
+        });
+}
 
+void PgpQrController::applyKeyResult(const PgpQrKeyResult& result)
+{
     if (!result.error.has_value()) {
         setLastError(QString());
         m_scannedName = result.name;

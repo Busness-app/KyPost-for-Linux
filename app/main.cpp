@@ -585,8 +585,6 @@ int main(int argc, char* argv[])
     // 7. core/net clients -- thin wire-format wrappers around httpClient.
     RelayMailSource relayMailSource(httpClient);
     ContactSyncClient contactSyncClient(httpClient);
-    MfaResponseClient mfaResponseClient(httpClient);
-    DeregisterClient deregisterClient(httpClient);
     NativeRegistrationClient nativeRegistrationClient(httpClient);
     // extended-contact-fields Task 2: GET /api/groups, this repo's first
     // per-resource GET client -- see core/net/GroupsClient.h.
@@ -798,7 +796,7 @@ int main(int argc, char* argv[])
     // pgpQrClient (both constructed above). Persistence of a scanned key
     // onto a contact happens entirely in QML, gluing this singleton to
     // ContactsApp -- see PgpQrController.h's doc comment.
-    PgpQrController pgpQrController(pgpQrRepository, pgpQrClient);
+    PgpQrController pgpQrController(pgpQrRepository, networkExecutor);
     qmlRegisterSingletonInstance<PgpQrController>(
         "com.urlxl.mail", 1, 0, "PgpQr", &pgpQrController);
     // This repo's first creatable (non-singleton) QML-registered C++ type --
@@ -821,7 +819,7 @@ int main(int argc, char* argv[])
     // (Settings > Notifications) can read straight from it -- see
     // PairingController.h's doc comment on why those reuse pairingChanged()
     // rather than a new signal.
-    PairingController pairingController(deviceRegistrationService, pairingStore, settingsStore, deregisterClient,
+    PairingController pairingController(deviceRegistrationService, pairingStore, settingsStore,
                                         certificatePinSink, networkExecutor);
     qmlRegisterSingletonInstance<PairingController>(
         "com.urlxl.mail", 1, 0, "Pairing", &pairingController);
@@ -902,7 +900,7 @@ int main(int argc, char* argv[])
     // to route a native-pair link to.
     routeDeepLink(app.arguments(), pairingControllerForDeepLinks);
 
-    // Task 34: QML-facing bridge over mfaResponseClient/pairingStore (both
+    // Task 34: QML-facing bridge over the executor/pairingStore (both
     // constructed above).
     //
     // Constructed but deliberately NOT registered as a QML singleton. See

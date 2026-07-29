@@ -55,6 +55,13 @@ public:
     quint16 port() const { return m_server.serverPort(); }
     const QByteArray& receivedRequest() const { return m_received; }
 
+    // How many TCP connections were accepted. Added for the async
+    // controllers: "the second call while one was in flight was coalesced"
+    // cannot be asserted from receivedRequest() alone, which only
+    // accumulates bytes and would look identical whether one request or ten
+    // arrived.
+    int connectionCount() const { return m_connectionCount; }
+
     // Parses the JSON body out of the captured raw request.
     QJsonObject receivedJsonBody() const
     {
@@ -68,6 +75,7 @@ public:
 private:
     void onNewConnection()
     {
+        ++m_connectionCount;
         QTcpSocket* socket = m_server.nextPendingConnection();
         connect(socket, &QTcpSocket::readyRead, this, [this, socket]() {
             m_received += socket->readAll();
@@ -99,6 +107,7 @@ private:
     }
 
     QTcpServer m_server;
+    int m_connectionCount = 0;
     QByteArray m_response;
     QByteArray m_received;
 };

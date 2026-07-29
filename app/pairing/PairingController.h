@@ -10,7 +10,6 @@
 class QUrl;
 class PairingStore;
 class SettingsStore;
-class DeregisterClient;
 class CertificatePinSink;
 class NetworkExecutor;
 
@@ -122,8 +121,8 @@ public:
     Q_ENUM(State)
 
     PairingController(DeviceRegistrationService& service, PairingStore& pairingStore, SettingsStore& settingsStore,
-                       DeregisterClient& deregisterClient, CertificatePinSink& pinSink,
-                       NetworkExecutor& executor, QObject* parent = nullptr);
+                       CertificatePinSink& pinSink, NetworkExecutor& executor,
+                       QObject* parent = nullptr);
 
     bool isPaired() const;
     QString pairedServerHost() const;
@@ -250,7 +249,6 @@ private:
     DeviceRegistrationService& m_service;
     PairingStore& m_pairingStore;
     SettingsStore& m_settingsStore;
-    DeregisterClient& m_deregisterClient;
     // Only to drop the in-process certificate pin on unpair -- see
     // removePairing(). PairingController makes no requests of its own.
     CertificatePinSink& m_pinSink;

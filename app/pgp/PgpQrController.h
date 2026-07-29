@@ -1,13 +1,17 @@
 #pragma once
 
+#include "domain/PgpQrRepository.h"
 #include "models/Contact.h"
+#include "net/PgpQrClient.h"
 
 #include <QObject>
 #include <QString>
 #include <QVariantMap>
 
+class NetworkExecutor;
 class PgpQrRepository;
-class PgpQrClient;
+struct PgpQrKeyResult;
+struct PgpQrTokenOutcome;
 
 // QML-facing bridge over core/domain's PgpQrRepository (the "My QR Code"
 // token-fetch side, which needs this device's own pairing resolved) and
@@ -34,7 +38,11 @@ class PgpQrController : public QObject
     Q_PROPERTY(QString scannedPublicKey READ scannedPublicKey NOTIFY scanResultChanged)
 
 public:
-    PgpQrController(PgpQrRepository& repository, PgpQrClient& client, QObject* parent = nullptr);
+    // Takes the executor rather than a PgpQrClient: that client is a
+    // stateless wrapper over an HttpClient reference, and the HttpClient
+    // lives on the executor thread, so it is constructed per call over
+    // there. See docs/THREADING.md.
+    PgpQrController(PgpQrRepository& repository, NetworkExecutor& executor, QObject* parent = nullptr);
 
     bool isBusy() const;
     QString lastError() const;
@@ -94,9 +102,12 @@ signals:
 private:
     void setBusy(bool busy);
     void setLastError(const QString& error);
+    // The completion halves, running back on this object's own thread.
+    void applyTokenOutcome(const PgpQrTokenOutcome& outcome);
+    void applyKeyResult(const PgpQrKeyResult& result);
 
     PgpQrRepository& m_repository;
-    PgpQrClient& m_client;
+    NetworkExecutor& m_executor;
     bool m_isBusy = false;
     QString m_lastError;
     QString m_myQrUrl;
@@ -105,9 +116,9 @@ private:
     QString m_scannedFingerprint;
     QString m_scannedPublicKey;
     Contact m_scannedContactCard;
-    // Guards this controller's network-calling slots against re-entering
-    // through the nested QEventLoop HttpClient runs -- QML keeps delivering
-    // clicks while a blocking call is suspended. See
-    // core/util/ReentrancyGuard.h.
+    // In-flight flag, not a re-entrancy guard: with the blocking call moved
+    // off this thread there is no nested event loop to be re-entered
+    // through. It still coalesces -- PgpMyQrCode.qml auto-refreshes on a
+    // timer, and a camera decodes the same QR many times a second.
     bool m_inNetworkCall = false;
 };

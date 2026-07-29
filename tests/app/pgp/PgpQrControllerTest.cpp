@@ -4,12 +4,14 @@
 #include "domain/PairingStore.h"
 #include "domain/PgpQrRepository.h"
 #include "net/HttpClient.h"
+#include "net/NetworkExecutor.h"
 #include "net/PgpQrClient.h"
 #include "stores/SecureStoreFile.h"
 
 #include "../../core/net/FakeRelayServer.h"
 
 #include <QNetworkAccessManager>
+#include <QElapsedTimer>
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QTest>
@@ -31,6 +33,10 @@ private slots:
     void scanQrPayloadWithNoContactCardReturnsAllEmptyFields();
     void scanQrPayload404SetsFriendlyMessage();
     void clearScanResultResetsFields();
+
+    // Behaviour that only exists once the fetches are asynchronous.
+    void refreshMyQrCodeReturnsWithoutBlocking();
+    void repeatedScansWhileOneIsInFlightAreCoalesced();
     void scanRejectsDotSegmentPathsThatResolveOffTheKeyEndpoint();
 
 private:
@@ -61,9 +67,15 @@ void PgpQrControllerTest::refreshMyQrCodeWithoutPairingSetsNotPairedError()
     HttpClient http(manager);
     PgpQrClient client(http);
     PgpQrRepository repository(client, pairingStore);
-    PgpQrController controller(repository, client);
+    NetworkExecutor executor(3000);
+    PgpQrController controller(repository, executor);
 
     controller.refreshMyQrCode();
+
+    // The request is now dispatched off this thread; isBusy is set before
+    // the call returns and cleared by the completion handler, so it is the
+    // barrier for "the answer has landed".
+    QTRY_VERIFY_WITH_TIMEOUT(!controller.isBusy(), 5000);
 
     QCOMPARE(controller.lastError(), QStringLiteral("Not paired"));
     QCOMPARE(controller.myQrUrl(), QString());
@@ -85,10 +97,16 @@ void PgpQrControllerTest::refreshMyQrCodeSuccessPopulatesUrlAndExpiresAt()
     HttpClient http(manager);
     PgpQrClient client(http);
     PgpQrRepository repository(client, pairingStore);
-    PgpQrController controller(repository, client);
+    NetworkExecutor executor(3000);
+    PgpQrController controller(repository, executor);
 
     QSignalSpy dataSpy(&controller, &PgpQrController::myQrDataChanged);
     controller.refreshMyQrCode();
+
+    // The request is now dispatched off this thread; isBusy is set before
+    // the call returns and cleared by the completion handler, so it is the
+    // barrier for "the answer has landed".
+    QTRY_VERIFY_WITH_TIMEOUT(!controller.isBusy(), 5000);
 
     QCOMPARE(controller.lastError(), QString());
     QCOMPARE(controller.myQrUrl(), QStringLiteral("https://example.com/api/pgp/qr/key?t=tok-1"));
@@ -110,9 +128,15 @@ void PgpQrControllerTest::refreshMyQrCodeNoPgpIdentitySetsFriendlyMessage()
     HttpClient http(manager);
     PgpQrClient client(http);
     PgpQrRepository repository(client, pairingStore);
-    PgpQrController controller(repository, client);
+    NetworkExecutor executor(3000);
+    PgpQrController controller(repository, executor);
 
     controller.refreshMyQrCode();
+
+    // The request is now dispatched off this thread; isBusy is set before
+    // the call returns and cleared by the completion handler, so it is the
+    // barrier for "the answer has landed".
+    QTRY_VERIFY_WITH_TIMEOUT(!controller.isBusy(), 5000);
 
     QCOMPARE(controller.lastError(), QStringLiteral("You haven't set up PGP encryption yet"));
 }
@@ -133,12 +157,18 @@ void PgpQrControllerTest::myQrImageDataUrlIsEmptyBeforeRefreshAndPopulatedAfter(
     HttpClient http(manager);
     PgpQrClient client(http);
     PgpQrRepository repository(client, pairingStore);
-    PgpQrController controller(repository, client);
+    NetworkExecutor executor(3000);
+    PgpQrController controller(repository, executor);
 
     // Nothing fetched yet -- no URL to encode.
     QCOMPARE(controller.myQrImageDataUrl(), QString());
 
     controller.refreshMyQrCode();
+
+    // The request is now dispatched off this thread; isBusy is set before
+    // the call returns and cleared by the completion handler, so it is the
+    // barrier for "the answer has landed".
+    QTRY_VERIFY_WITH_TIMEOUT(!controller.isBusy(), 5000);
 
     const QString dataUrl = controller.myQrImageDataUrl();
     QVERIFY(dataUrl.startsWith(QStringLiteral("data:image/png;base64,")));
@@ -157,11 +187,17 @@ void PgpQrControllerTest::scanQrPayloadRejectsNonPgpQrUrl()
     HttpClient http(manager);
     PgpQrClient client(http);
     PgpQrRepository repository(client, pairingStore);
-    PgpQrController controller(repository, client);
+    NetworkExecutor executor(3000);
+    PgpQrController controller(repository, executor);
 
     // No FakeRelayServer at all -- an invalid payload must be rejected
     // before any network call is attempted.
     controller.scanQrPayload(QStringLiteral("https://example.com/totally/unrelated"));
+
+    // The request is now dispatched off this thread; isBusy is set before
+    // the call returns and cleared by the completion handler, so it is the
+    // barrier for "the answer has landed".
+    QTRY_VERIFY_WITH_TIMEOUT(!controller.isBusy(), 5000);
 
     QCOMPARE(controller.lastError(), QStringLiteral("That QR code isn't a PGP key-exchange code"));
     QCOMPARE(controller.scannedFingerprint(), QString());
@@ -178,12 +214,18 @@ void PgpQrControllerTest::scanQrPayloadRejectsNonHttpScheme()
     HttpClient http(manager);
     PgpQrClient client(http);
     PgpQrRepository repository(client, pairingStore);
-    PgpQrController controller(repository, client);
+    NetworkExecutor executor(3000);
+    PgpQrController controller(repository, executor);
 
     // A file:// QR payload must never reach HttpClient/QNetworkAccessManager
     // -- doing so would let a scanned QR code read local files back as if
     // they were key material.
     controller.scanQrPayload(QStringLiteral("file:///etc/passwd#/api/pgp/qr/key"));
+
+    // The request is now dispatched off this thread; isBusy is set before
+    // the call returns and cleared by the completion handler, so it is the
+    // barrier for "the answer has landed".
+    QTRY_VERIFY_WITH_TIMEOUT(!controller.isBusy(), 5000);
 
     QCOMPARE(controller.lastError(), QStringLiteral("That QR code isn't a PGP key-exchange code"));
     QCOMPARE(controller.scannedFingerprint(), QString());
@@ -200,12 +242,18 @@ void PgpQrControllerTest::scanQrPayloadRejectsLinkLocalMetadataHost()
     HttpClient http(manager);
     PgpQrClient client(http);
     PgpQrRepository repository(client, pairingStore);
-    PgpQrController controller(repository, client);
+    NetworkExecutor executor(3000);
+    PgpQrController controller(repository, executor);
 
     // 169.254.169.254 is the cloud-metadata address on AWS/Azure/DigitalOcean
     // -- must be rejected before any request is attempted, same as the
     // file:// case above.
     controller.scanQrPayload(QStringLiteral("http://169.254.169.254/api/pgp/qr/key"));
+
+    // The request is now dispatched off this thread; isBusy is set before
+    // the call returns and cleared by the completion handler, so it is the
+    // barrier for "the answer has landed".
+    QTRY_VERIFY_WITH_TIMEOUT(!controller.isBusy(), 5000);
 
     QCOMPARE(controller.lastError(), QStringLiteral("That QR code isn't a PGP key-exchange code"));
     QCOMPARE(controller.scannedFingerprint(), QString());
@@ -226,11 +274,17 @@ void PgpQrControllerTest::scanQrPayloadSuccessPopulatesScanResult()
     HttpClient http(manager);
     PgpQrClient client(http);
     PgpQrRepository repository(client, pairingStore);
-    PgpQrController controller(repository, client);
+    NetworkExecutor executor(3000);
+    PgpQrController controller(repository, executor);
 
     QSignalSpy scanSpy(&controller, &PgpQrController::scanResultChanged);
     const QString qrUrl = QStringLiteral("http://127.0.0.1:%1/api/pgp/qr/key?t=tok-1").arg(fake.port());
     controller.scanQrPayload(qrUrl);
+
+    // The request is now dispatched off this thread; isBusy is set before
+    // the call returns and cleared by the completion handler, so it is the
+    // barrier for "the answer has landed".
+    QTRY_VERIFY_WITH_TIMEOUT(!controller.isBusy(), 5000);
 
     QCOMPARE(controller.lastError(), QString());
     QCOMPARE(controller.scannedName(), QStringLiteral("Ada"));
@@ -267,10 +321,16 @@ void PgpQrControllerTest::scanQrPayloadSuccessPopulatesContactCardFields()
     HttpClient http(manager);
     PgpQrClient client(http);
     PgpQrRepository repository(client, pairingStore);
-    PgpQrController controller(repository, client);
+    NetworkExecutor executor(3000);
+    PgpQrController controller(repository, executor);
 
     const QString qrUrl = QStringLiteral("http://127.0.0.1:%1/api/pgp/qr/key?t=tok-1").arg(fake.port());
     controller.scanQrPayload(qrUrl);
+
+    // The request is now dispatched off this thread; isBusy is set before
+    // the call returns and cleared by the completion handler, so it is the
+    // barrier for "the answer has landed".
+    QTRY_VERIFY_WITH_TIMEOUT(!controller.isBusy(), 5000);
 
     const QVariantMap fields = controller.scannedContactCardFields();
     QCOMPARE(fields.value(QStringLiteral("org")).toString(), QStringLiteral("Analytical Engines Ltd"));
@@ -328,10 +388,16 @@ void PgpQrControllerTest::scanQrPayloadWithNoContactCardReturnsAllEmptyFields()
     HttpClient http(manager);
     PgpQrClient client(http);
     PgpQrRepository repository(client, pairingStore);
-    PgpQrController controller(repository, client);
+    NetworkExecutor executor(3000);
+    PgpQrController controller(repository, executor);
 
     const QString qrUrl = QStringLiteral("http://127.0.0.1:%1/api/pgp/qr/key?t=tok-1").arg(fake.port());
     controller.scanQrPayload(qrUrl);
+
+    // The request is now dispatched off this thread; isBusy is set before
+    // the call returns and cleared by the completion handler, so it is the
+    // barrier for "the answer has landed".
+    QTRY_VERIFY_WITH_TIMEOUT(!controller.isBusy(), 5000);
 
     const QVariantMap fields = controller.scannedContactCardFields();
     QCOMPARE(fields.value(QStringLiteral("org")).toString(), QString());
@@ -355,10 +421,16 @@ void PgpQrControllerTest::scanQrPayload404SetsFriendlyMessage()
     HttpClient http(manager);
     PgpQrClient client(http);
     PgpQrRepository repository(client, pairingStore);
-    PgpQrController controller(repository, client);
+    NetworkExecutor executor(3000);
+    PgpQrController controller(repository, executor);
 
     const QString qrUrl = QStringLiteral("http://127.0.0.1:%1/api/pgp/qr/key?t=tok-1").arg(fake.port());
     controller.scanQrPayload(qrUrl);
+
+    // The request is now dispatched off this thread; isBusy is set before
+    // the call returns and cleared by the completion handler, so it is the
+    // barrier for "the answer has landed".
+    QTRY_VERIFY_WITH_TIMEOUT(!controller.isBusy(), 5000);
 
     QCOMPARE(controller.lastError(), QStringLiteral("This person hasn't set up PGP encryption yet"));
 }
@@ -378,10 +450,16 @@ void PgpQrControllerTest::clearScanResultResetsFields()
     HttpClient http(manager);
     PgpQrClient client(http);
     PgpQrRepository repository(client, pairingStore);
-    PgpQrController controller(repository, client);
+    NetworkExecutor executor(3000);
+    PgpQrController controller(repository, executor);
 
     const QString qrUrl = QStringLiteral("http://127.0.0.1:%1/api/pgp/qr/key?t=tok-1").arg(fake.port());
     controller.scanQrPayload(qrUrl);
+
+    // The request is now dispatched off this thread; isBusy is set before
+    // the call returns and cleared by the completion handler, so it is the
+    // barrier for "the answer has landed".
+    QTRY_VERIFY_WITH_TIMEOUT(!controller.isBusy(), 5000);
     QVERIFY(!controller.scannedFingerprint().isEmpty());
 
     controller.clearScanResult();
@@ -412,15 +490,99 @@ void PgpQrControllerTest::scanRejectsDotSegmentPathsThatResolveOffTheKeyEndpoint
     HttpClient http(manager);
     PgpQrClient client(http);
     PgpQrRepository repository(client, pairingStore);
-    PgpQrController controller(repository, client);
+    NetworkExecutor executor(3000);
+    PgpQrController controller(repository, executor);
 
     controller.scanQrPayload(QStringLiteral("http://127.0.0.1:%1/api/pgp/qr/key/../../../../internal/admin")
                                   .arg(fake.port()));
+
+    // The request is now dispatched off this thread; isBusy is set before
+    // the call returns and cleared by the completion handler, so it is the
+    // barrier for "the answer has landed".
+    QTRY_VERIFY_WITH_TIMEOUT(!controller.isBusy(), 5000);
 
     // Refused before any request went out.
     QVERIFY(!controller.lastError().isEmpty());
     QVERIFY(fake.receivedRequest().isEmpty());
     QVERIFY(controller.scannedFingerprint().isEmpty());
+}
+
+// The point of the conversion: the QR fetch hands control straight back
+// instead of sitting inside HttpClient's nested event loop for the length of
+// a round trip. PgpMyQrCode.qml calls this from Component.onCompleted, so
+// under the old shape opening the screen froze the UI until the relay
+// answered.
+void PgpQrControllerTest::refreshMyQrCodeReturnsWithoutBlocking()
+{
+    // Accepts the connection and never answers, so the request runs until
+    // the executor's transfer timeout.
+    FakeRelayServer fake(QByteArray{});
+
+    QTemporaryDir secureDir;
+    QVERIFY(secureDir.isValid());
+    SecureStoreFile secureStore(secureDir.path());
+    PairingStore pairingStore(secureStore);
+    savePairing(pairingStore, fake.port());
+
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    PgpQrClient client(http);
+    PgpQrRepository repository(client, pairingStore);
+    NetworkExecutor executor(1500);
+    PgpQrController controller(repository, executor);
+
+    QElapsedTimer timer;
+    timer.start();
+    controller.refreshMyQrCode();
+    const qint64 elapsed = timer.elapsed();
+
+    QVERIFY2(elapsed < 200, qPrintable(QStringLiteral("refreshMyQrCode() blocked for %1 ms").arg(elapsed)));
+    QVERIFY(controller.isBusy());
+
+    QTRY_VERIFY_WITH_TIMEOUT(!controller.isBusy(), 10000);
+    QVERIFY(!controller.lastError().isEmpty());
+}
+
+// A camera decodes the same QR many times a second, so without coalescing
+// every frame would start another fetch of the same key.
+//
+// Asserted as "ten calls cost exactly what one call costs" rather than as an
+// absolute connection count: against a server that accepts and never
+// answers, a single request does not map to a single TCP connection --
+// Qt retries an idempotent GET after the transfer timeout, which was
+// measured here as 3 connections for 1 request. Comparing the two runs
+// asserts the property (the extra calls were dropped) without depending on
+// Qt's retry behaviour.
+void PgpQrControllerTest::repeatedScansWhileOneIsInFlightAreCoalesced()
+{
+    const auto connectionsForScanCount = [this](int scans) {
+        FakeRelayServer fake(QByteArray{});
+
+        QTemporaryDir secureDir;
+        [&] { QVERIFY(secureDir.isValid()); }();
+        SecureStoreFile secureStore(secureDir.path());
+        PairingStore pairingStore(secureStore);
+
+        QNetworkAccessManager manager;
+        HttpClient http(manager);
+        PgpQrClient client(http);
+        PgpQrRepository repository(client, pairingStore);
+        NetworkExecutor executor(1500);
+        PgpQrController controller(repository, executor);
+
+        const QString url = QStringLiteral("http://127.0.0.1:%1/api/pgp/qr/key?t=tok").arg(fake.port());
+        for (int i = 0; i < scans; ++i)
+            controller.scanQrPayload(url);
+
+        [&] { QVERIFY(controller.isBusy()); }();
+        [&] { QTRY_VERIFY_WITH_TIMEOUT(!controller.isBusy(), 10000); }();
+        return fake.connectionCount();
+    };
+
+    const int one = connectionsForScanCount(1);
+    const int ten = connectionsForScanCount(10);
+    QVERIFY(one > 0);
+    QCOMPARE(ten, one);
 }
 
 QTEST_GUILESS_MAIN(PgpQrControllerTest)

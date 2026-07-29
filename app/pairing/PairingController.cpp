@@ -171,14 +171,12 @@ std::optional<ParsedPairingLink> parseNativePairLink(const QUrl& url)
 } // namespace
 
 PairingController::PairingController(DeviceRegistrationService& service, PairingStore& pairingStore,
-                                       SettingsStore& settingsStore, DeregisterClient& deregisterClient,
-                                       CertificatePinSink& pinSink, NetworkExecutor& executor,
-                                       QObject* parent)
+                                       SettingsStore& settingsStore, CertificatePinSink& pinSink,
+                                       NetworkExecutor& executor, QObject* parent)
     : QObject(parent)
     , m_service(service)
     , m_pairingStore(pairingStore)
     , m_settingsStore(settingsStore)
-    , m_deregisterClient(deregisterClient)
     , m_pinSink(pinSink)
     , m_executor(executor)
 {

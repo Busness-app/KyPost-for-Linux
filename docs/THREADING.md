@@ -1,7 +1,7 @@
 # Getting Relay HTTP off the GUI thread
 
-Status: **in progress.** The infrastructure exists and one controller is
-converted. This file is the plan for the rest, and — more importantly — the
+Status: **Tier A complete.** All three SQL-free controllers are asynchronous;
+Tier B (mail/contacts) has not started. This file is the plan for the rest, and — more importantly — the
 record of the two constraints that decide its shape, because both are
 non-obvious and either one silently breaks a naive attempt.
 
@@ -109,6 +109,18 @@ for the fan-out, and for the unpinned path that shipped before it existed.
   clears local state synchronously and dispatches the best-effort deregister
   with `runDetached` — its result was already ignored, and unpairing must
   not depend on the relay being reachable.
+- **`PgpQrController`** — `refreshMyQrCode()` and `scanQrPayload()` are
+  asynchronous. `PgpQrRepository::fetchMyToken()` was split the same way
+  (`resolvePairing()` here, `fetchTokenWith()` there), with the synchronous
+  form kept as the composition. `scanQrPayload()` needed no split at all: it
+  uses no pairing, so the whole request moves.
+
+  No QML changed here either. The earlier note in this file claiming
+  otherwise was wrong: `myQrImageDataUrl()` and `scannedContactCardFields()`
+  do return values to QML, but they are pure local encode/reshape of state
+  already fetched, and both call sites already read them from a signal
+  handler (`onMyQrDataChanged`, `onKeyScanned`) rather than straight after
+  the network call.
 
 ### The conversion pattern
 
@@ -142,18 +154,27 @@ Three rules that make it work:
    wrappers over an `HttpClient&`, so this is free — and it avoids holding a
    reference to another thread's object.
 3. **Tests become `QTRY_*` on published state**, not assertions on a return
-   value that no longer exists.
+   value that no longer exists. A `busy`/`inFlight` property makes a uniform
+   barrier: set synchronously before the call returns, cleared by the
+   completion handler.
+4. **Assert coalescing as a comparison, not an absolute count.** Against a
+   server that accepts and never answers, one request is not one TCP
+   connection — Qt retries an idempotent GET after the transfer timeout
+   (measured: 3 connections for 1 request). "Ten calls cost what one call
+   costs" is the property; a hardcoded count is a flake.
 
 ## Remaining order
 
 1. ~~`PairingController`~~ — done.
-2. **`PgpQrController`** (2 methods, Tier A). `myQrImageDataUrl()` and
-   `scannedContactCardFields()` ARE read for their return values in QML
-   (`PgpMyQrCode.qml`, both roots), so unlike pairing this one does need
-   QML changes: the call sites become a trigger plus a property binding.
-3. **Retire the GUI-thread `HttpClient`** once Tier A is done and no Tier B
-   caller remains on it. Concretely: drop `guiThreadPinSink` from the
-   fan-out in `main()`, leaving the executor as the only target.
+2. ~~`PgpQrController`~~ — done. **Tier A is complete.**
+3. **Retire the GUI-thread `HttpClient`** — still BLOCKED, and not by Tier A.
+   Eight clients are still constructed on it in `main()`
+   (`RelayMailSource`, `ContactSyncClient`, `GroupsClient`, `FolderClient`,
+   `ContactPhotoClient`, `PgpBootstrapClient`, `PgpRecipientChecker`,
+   `PushNotificationClient`), all of them Tier B. So this cannot happen
+   before step 4, and the certificate-pin fan-out keeps both targets until
+   it does. When it can: drop `guiThreadPinSink` from the fan-out in
+   `main()`, leaving the executor as the only target.
 4. **Tier B**: move `Database` + DAOs to the executor thread, which requires
    extracting the composition root first. `MailController` and
    `ContactsController` follow, along with ~12 QML sites that currently
