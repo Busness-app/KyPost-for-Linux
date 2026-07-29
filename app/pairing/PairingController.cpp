@@ -4,10 +4,10 @@
 #include "domain/DevicePairing.h"
 #include "domain/PairingStore.h"
 #include "net/DeregisterClient.h"
+#include "net/NetworkExecutor.h"
 #include "net/CertificatePinSink.h"
 #include "net/HttpClient.h"
 #include "stores/SettingsStore.h"
-#include "util/ReentrancyGuard.h"
 
 #include <KLocalizedString>
 
@@ -172,13 +172,15 @@ std::optional<ParsedPairingLink> parseNativePairLink(const QUrl& url)
 
 PairingController::PairingController(DeviceRegistrationService& service, PairingStore& pairingStore,
                                        SettingsStore& settingsStore, DeregisterClient& deregisterClient,
-                                       CertificatePinSink& pinSink, QObject* parent)
+                                       CertificatePinSink& pinSink, NetworkExecutor& executor,
+                                       QObject* parent)
     : QObject(parent)
     , m_service(service)
     , m_pairingStore(pairingStore)
     , m_settingsStore(settingsStore)
     , m_deregisterClient(deregisterClient)
     , m_pinSink(pinSink)
+    , m_executor(executor)
 {
     // Unlike MailController/ContactsController (which deliberately start
     // empty until QML calls a load slot), the pairing badge/menu entries
@@ -324,8 +326,12 @@ bool PairingController::pairFromPastedLink(const QString& text)
 
 bool PairingController::confirmPendingPair()
 {
-    ReentrancyGuard guard(m_inNetworkCall);
-    if (!guard.entered())
+    // m_inNetworkCall is now an in-flight FLAG, not a re-entrancy guard.
+    // With the blocking call moved off this thread there is no nested event
+    // loop to be re-entered through; what is left to prevent is two
+    // overlapping registrations, which would race to set pairingState and
+    // could both mint (and burn) a server-side device secret.
+    if (m_inNetworkCall)
         return false;
 
     // Re-checked here, not just in pairFromDeepLink: this covers the lock
@@ -343,8 +349,12 @@ bool PairingController::confirmPendingPair()
 
     const PairingParams pending = *m_pendingPair;
     m_pendingPair.reset();
-    return pairFromParsedParams(pending.subscriberId, pending.serverBaseUrl, pending.pairingToken,
-                                 pending.registrationUrl);
+    pairFromParsedParams(pending.subscriberId, pending.serverBaseUrl, pending.pairingToken,
+                          pending.registrationUrl);
+    // True means "started", not "paired". The answer arrives on
+    // pairingState; no QML call site reads this return value (checked), and
+    // it is kept only so the slot signature stays source-compatible.
+    return true;
 }
 
 void PairingController::cancelPendingPair()
@@ -371,15 +381,26 @@ void PairingController::removePairing()
     if (m_appLocked)
         return;
 
-    ReentrancyGuard guard(m_inNetworkCall);
-    if (!guard.entered())
+    if (m_inNetworkCall)
         return;
 
+    // The deregister POST is best-effort and its result was already ignored,
+    // so it is dispatched and forgotten rather than waited for. Local state
+    // is cleared immediately and unconditionally below -- which is what the
+    // user asked for, and what must happen even if the relay is unreachable.
+    //
+    // Everything the request needs is flattened out of PairingStore FIRST:
+    // the store is cleared on the very next lines, and it is confined to
+    // this thread besides.
     const std::optional<DevicePairing> pairing = m_pairingStore.load();
     if (pairing.has_value() && !pairing->deviceId.isEmpty() && !pairing->deviceSecret.isEmpty()) {
-        // Best-effort: the result is intentionally ignored -- local state
-        // clears unconditionally below regardless of network outcome.
-        m_deregisterClient.deregister(QUrl(pairing->serverBaseUrl), pairing->deviceId, pairing->deviceSecret);
+        const QUrl serverBaseUrl(pairing->serverBaseUrl);
+        const QString deviceId = pairing->deviceId;
+        const QString deviceSecret = pairing->deviceSecret;
+        m_executor.runDetached([serverBaseUrl, deviceId, deviceSecret](HttpClient& http) {
+            DeregisterClient client(http);
+            client.deregister(serverBaseUrl, deviceId, deviceSecret);
+        });
     }
     if (!m_pairingStore.clear()) {
         // Local state still clears below, but say so: "unpaired" with the
@@ -437,7 +458,7 @@ void PairingController::setCertificateMismatch(bool mismatch)
     emit certificateMismatchChanged();
 }
 
-bool PairingController::pairFromParsedParams(const QString& sub, const QString& srv, const QString& pt,
+void PairingController::pairFromParsedParams(const QString& sub, const QString& srv, const QString& pt,
                                               const QString& reg)
 {
     setPairingState(State::Working);
@@ -460,8 +481,37 @@ bool PairingController::pairFromParsedParams(const QString& sub, const QString& 
     // user completes pairing; the existing endpointChanged ->
     // reregisterIfPaired wiring in main.cpp corrects a stale/empty token
     // once one becomes available.
-    const NativeRegistrationResult result = m_service.pair(params, m_deviceToken);
+    // Phase 1 on this thread: the guards, the sealing-key snapshot and the
+    // certificate-pin suspension all touch PairingStore or the pin fan-out,
+    // neither of which may leave this thread. Only the request itself moves.
+    DeviceRegistrationService::PairAttempt attempt = m_service.beginPair();
+    if (const std::optional<RegistrationOutcome> refused = attempt.refusedOutcome()) {
+        NativeRegistrationResult out;
+        out.outcome = *refused;
+        applyRegistrationResult(out);
+        return;
+    }
 
+    m_inNetworkCall = true;
+
+    // The attempt is moved into the completion handler so it survives the
+    // gap. If it were dropped here instead, its destructor would restore the
+    // pin while the registration was still in flight.
+    m_executor.run(
+        this,
+        [params, deviceToken = m_deviceToken](HttpClient& http) {
+            return DeviceRegistrationService::sendRegistration(http, params, deviceToken);
+        },
+        [this, params, attempt = std::move(attempt)](const NativeRegistrationResult& result) mutable {
+            m_inNetworkCall = false;
+            // Phase 3, back here: persists, installs the new pin, writes the
+            // delivery settings.
+            applyRegistrationResult(m_service.finishPair(std::move(attempt), params, result));
+        });
+}
+
+void PairingController::applyRegistrationResult(const NativeRegistrationResult& result)
+{
     switch (result.outcome) {
     case RegistrationOutcome::Success:
         refreshFromStore();
@@ -470,26 +520,20 @@ bool PairingController::pairFromParsedParams(const QString& sub, const QString& 
         // earlier mismatch is resolved by construction.
         setCertificateMismatch(false);
         setPairingState(State::Paired);
-        return true;
+        return;
     case RegistrationOutcome::Unauthorized:
         setPairingState(State::Failed,
                          i18n("This pairing link was rejected. Check the link and try again."));
-        return false;
+        return;
     case RegistrationOutcome::BackendMisconfigured:
         setPairingState(State::Failed, i18n("The server is not configured for pairing yet."));
-        return false;
+        return;
     case RegistrationOutcome::CredentialsLocked:
-        // Unreachable in practice on this path -- pairFromDeepLink() and
-        // confirmPendingPair() both refuse while locked, and a first pairing
-        // has no sealed secret to re-wrap -- but handled rather than lumped
-        // into Failure so the enum stays exhaustively switched and the
-        // wording matches the actual cause if it ever is reached.
         setPairingState(State::Failed, i18n("Unlock KyPost first, then try again."));
-        return false;
+        return;
     case RegistrationOutcome::Failure:
         setPairingState(State::Failed,
                          result.detail.isEmpty() ? i18n("Pairing failed, please try again.") : result.detail);
-        return false;
+        return;
     }
-    return false;
 }

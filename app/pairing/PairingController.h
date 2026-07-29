@@ -12,6 +12,7 @@ class PairingStore;
 class SettingsStore;
 class DeregisterClient;
 class CertificatePinSink;
+class NetworkExecutor;
 
 // QML-facing bridge (Task 34) over core/domain's DeviceRegistrationService/
 // PairingStore. Registered as the "Pairing" QML singleton in main.cpp.
@@ -122,7 +123,7 @@ public:
 
     PairingController(DeviceRegistrationService& service, PairingStore& pairingStore, SettingsStore& settingsStore,
                        DeregisterClient& deregisterClient, CertificatePinSink& pinSink,
-                       QObject* parent = nullptr);
+                       NetworkExecutor& executor, QObject* parent = nullptr);
 
     bool isPaired() const;
     QString pairedServerHost() const;
@@ -234,7 +235,11 @@ private:
     // deviceRegistrationService.pair(params, m_deviceToken), maps
     // RegistrationOutcome to pairingState/pairingError, calls
     // refreshFromStore() on success.
-    bool pairFromParsedParams(const QString& sub, const QString& srv, const QString& pt, const QString& reg);
+    // Returns nothing: the registration is dispatched and the answer arrives
+    // on pairingState. See applyRegistrationResult below.
+    void pairFromParsedParams(const QString& sub, const QString& srv, const QString& pt, const QString& reg);
+    // The completion half, running back on this object's own thread.
+    void applyRegistrationResult(const NativeRegistrationResult& result);
     // forceNotify: emit pairingStateChanged() even when (state, error) is
     // unchanged from the current values -- needed when some OTHER piece of
     // NOTIFY-bound state (e.g. m_pendingPair) changed too, since QML
@@ -249,6 +254,7 @@ private:
     // Only to drop the in-process certificate pin on unpair -- see
     // removePairing(). PairingController makes no requests of its own.
     CertificatePinSink& m_pinSink;
+    NetworkExecutor& m_executor;
     State m_state = State::Idle;
     QString m_pairingError;
     bool m_isPaired = false;

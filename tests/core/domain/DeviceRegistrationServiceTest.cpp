@@ -16,6 +16,8 @@
 #include <QTemporaryDir>
 #include <QTest>
 
+#include <utility>
+
 namespace {
 
 // A SecureStore that accepts reads but refuses every write -- what
@@ -62,6 +64,10 @@ private slots:
     void failedReregistrationKeepsTheCertificatePinEnforced();
     void unpersistableRegistrationKeepsTheCertificatePinEnforced();
     void deferredRegistrationKeepsTheCertificatePinEnforced();
+
+    // The async three-phase split.
+    void anAbandonedPairAttemptRestoresThePin();
+    void aPairAttemptRefusedByTheGuardsNeverClearsThePin();
 
 private:
     static PairingParams sampleParams(quint16 port);
@@ -555,6 +561,90 @@ void DeviceRegistrationServiceTest::reregisterIsDeferredWithoutContactingTheServ
     QCOMPARE(pairingStore.load()->deviceSecret, QStringLiteral("rotated-secret"));
     const std::optional<QString> rawAfter = secureStore.get(QStringLiteral("pairing.deviceSecret"));
     QVERIFY(!rawAfter.has_value() || rawAfter->isEmpty());
+}
+
+// The hazard the async split introduces.
+//
+// beginPair() suspends the certificate pin and finishPair() decides whether
+// to restore it or keep a new one. Between those two the request is out on
+// another thread, so the attempt can simply be dropped -- the executor shuts
+// down, the controller is torn down, the process is quitting. If that left
+// the pin cleared, an abandoned pairing would silently disable pinning for
+// the rest of the session: exactly the defect ScopedPinSuspension was added
+// to fix, reintroduced by making the gap asynchronous.
+void DeviceRegistrationServiceTest::anAbandonedPairAttemptRestoresThePin()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    SecureStoreFile secureStore(dir.path());
+    PairingStore pairingStore(secureStore);
+    SettingsStore settingsStore(dir.filePath(QStringLiteral("settings.ini")));
+
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    NativeRegistrationClient client(http);
+    HttpClientPinSink pinSink(http);
+    DeviceRegistrationService service(client, pairingStore, settingsStore, pinSink);
+
+    const QByteArray pin(32, 'A');
+    const QUrl origin(QStringLiteral("https://relay.example"));
+    pinSink.setPin(pin, origin);
+
+    {
+        DeviceRegistrationService::PairAttempt attempt = service.beginPair();
+        QVERIFY(!attempt.refusedOutcome().has_value());
+        // Suspended for the duration of the request, as the synchronous form
+        // does -- the old pin must not abort the handshake that establishes
+        // the new anchor.
+        QVERIFY(pinSink.pinState().spkiSha256.isEmpty());
+        // ...and then dropped without ever calling finishPair().
+    }
+
+    QCOMPARE(pinSink.pinState().spkiSha256, pin);
+    QCOMPARE(pinSink.pinState().origin, origin);
+
+    // Moving it must neither double-restore nor lose the restore: the
+    // attempt is handed to a completion handler by value.
+    {
+        DeviceRegistrationService::PairAttempt first = service.beginPair();
+        QVERIFY(pinSink.pinState().spkiSha256.isEmpty());
+        DeviceRegistrationService::PairAttempt second = std::move(first);
+        QVERIFY(pinSink.pinState().spkiSha256.isEmpty());
+    }
+    QCOMPARE(pinSink.pinState().spkiSha256, pin);
+}
+
+// The guards refuse before the pin is touched at all, so a deferred attempt
+// leaves enforcement exactly as it found it.
+void DeviceRegistrationServiceTest::aPairAttemptRefusedByTheGuardsNeverClearsThePin()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    SecureStoreFile secureStore(dir.path());
+    PairingStore pairingStore(secureStore);
+    SettingsStore settingsStore(dir.filePath(QStringLiteral("settings.ini")));
+
+    DevicePairing existing;
+    existing.subscriberId = QStringLiteral("sub-1");
+    existing.serverBaseUrl = QStringLiteral("https://relay.example");
+    existing.deviceId = QStringLiteral("dev");
+    existing.deviceSecret = QStringLiteral("secret");
+    QVERIFY(pairingStore.save(existing));
+    QVERIFY(pairingStore.sealDeviceSecret(QStringLiteral("428391")));
+    pairingStore.lockDeviceSecret(); // gate on, no session key -> must defer
+
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    NativeRegistrationClient client(http);
+    HttpClientPinSink pinSink(http);
+    DeviceRegistrationService service(client, pairingStore, settingsStore, pinSink);
+
+    const QByteArray pin(32, 'B');
+    pinSink.setPin(pin, QUrl(existing.serverBaseUrl));
+
+    DeviceRegistrationService::PairAttempt attempt = service.beginPair();
+    QCOMPARE(attempt.refusedOutcome().value(), RegistrationOutcome::CredentialsLocked);
+    QCOMPARE(pinSink.pinState().spkiSha256, pin);
 }
 
 QTEST_GUILESS_MAIN(DeviceRegistrationServiceTest)

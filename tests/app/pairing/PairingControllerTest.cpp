@@ -5,6 +5,7 @@
 #include "domain/PairingStore.h"
 #include "net/DeregisterClient.h"
 #include "net/CertificatePinSink.h"
+#include "net/NetworkExecutor.h"
 #include "net/HttpClient.h"
 #include "net/NativeRegistrationClient.h"
 #include "stores/SecureStoreFile.h"
@@ -15,6 +16,7 @@
 #include <QJsonObject>
 #include <QMap>
 #include <QNetworkAccessManager>
+#include <QElapsedTimer>
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QTest>
@@ -44,6 +46,10 @@ private slots:
     void removePairingSkipsNetworkCallWhenNoDeviceSecretStored();
     void removePairingDeregistersServerSideWhenDeviceSecretPresent();
     void resetReturnsToIdleAfterFailure();
+
+    // Behaviour that only exists once the registration is asynchronous.
+    void confirmPendingPairReturnsWithoutBlocking();
+    void aSecondConfirmWhileOneIsInFlightIsIgnored();
     void pairFromDeepLinkRefusedWhileAppLocked();
     void confirmPendingPairRefusedWhenAppLocksAfterConfirmStateEntered();
     void pairFromDeepLinkWorksAgainAfterUnlock();
@@ -90,10 +96,11 @@ void PairingControllerTest::pairFromDeepLinkEntersConfirmStateWithoutNetworkCall
     HttpClient http(manager);
     NativeRegistrationClient client(http);
     HttpClientPinSink pinSink(http);
+    NetworkExecutor executor(3000);
     DeviceRegistrationService service(client, pairingStore, settingsStore, pinSink);
     DeregisterClient deregisterClient(http);
 
-    PairingController controller(service, pairingStore, settingsStore, deregisterClient, pinSink);
+    PairingController controller(service, pairingStore, settingsStore, deregisterClient, pinSink, executor);
 
     QMap<QString, QString> params;
     params[QStringLiteral("sub")] = QStringLiteral("sub-confirm");
@@ -124,10 +131,11 @@ void PairingControllerTest::confirmPendingPairWithNoPendingRequestFails()
     HttpClient http(manager);
     NativeRegistrationClient client(http);
     HttpClientPinSink pinSink(http);
+    NetworkExecutor executor(3000);
     DeviceRegistrationService service(client, pairingStore, settingsStore, pinSink);
     DeregisterClient deregisterClient(http);
 
-    PairingController controller(service, pairingStore, settingsStore, deregisterClient, pinSink);
+    PairingController controller(service, pairingStore, settingsStore, deregisterClient, pinSink, executor);
 
     QVERIFY(!controller.confirmPendingPair());
     QCOMPARE(controller.pairingState(), QStringLiteral("failed"));
@@ -150,10 +158,11 @@ void PairingControllerTest::cancelPendingPairDiscardsRequestWithNoNetworkCall()
     HttpClient http(manager);
     NativeRegistrationClient client(http);
     HttpClientPinSink pinSink(http);
+    NetworkExecutor executor(3000);
     DeviceRegistrationService service(client, pairingStore, settingsStore, pinSink);
     DeregisterClient deregisterClient(http);
 
-    PairingController controller(service, pairingStore, settingsStore, deregisterClient, pinSink);
+    PairingController controller(service, pairingStore, settingsStore, deregisterClient, pinSink, executor);
 
     QMap<QString, QString> params;
     params[QStringLiteral("sub")] = QStringLiteral("sub-cancel");
@@ -196,10 +205,11 @@ void PairingControllerTest::pairFromDeepLinkHappyPathPairsAndPersists()
     HttpClient http(manager);
     NativeRegistrationClient client(http);
     HttpClientPinSink pinSink(http);
+    NetworkExecutor executor(3000);
     DeviceRegistrationService service(client, pairingStore, settingsStore, pinSink);
     DeregisterClient deregisterClient(http);
 
-    PairingController controller(service, pairingStore, settingsStore, deregisterClient, pinSink);
+    PairingController controller(service, pairingStore, settingsStore, deregisterClient, pinSink, executor);
     QVERIFY(!controller.isPaired());
     QCOMPARE(controller.pairingState(), QStringLiteral("idle"));
 
@@ -224,9 +234,12 @@ void PairingControllerTest::pairFromDeepLinkHappyPathPairsAndPersists()
     QCOMPARE(controller.pendingPairOrigin(), QStringLiteral("http://127.0.0.1:%1").arg(fake.port()));
     QVERIFY(fake.receivedRequest().isEmpty());
 
+    // Returns "started", not "paired": the registration is now dispatched
+    // off this thread and the answer arrives on pairingState.
     QVERIFY(controller.confirmPendingPair());
+    QCOMPARE(controller.pairingState(), QStringLiteral("working"));
 
-    QCOMPARE(controller.pairingState(), QStringLiteral("paired"));
+    QTRY_COMPARE_WITH_TIMEOUT(controller.pairingState(), QStringLiteral("paired"), 5000);
     QVERIFY(controller.pairingError().isEmpty());
     QVERIFY(controller.isPaired());
     QCOMPARE(controller.deviceId(), QStringLiteral("dev-1"));
@@ -288,10 +301,11 @@ void PairingControllerTest::pairFromDeepLinkSendsDeviceTokenWhenSet()
     HttpClient http(manager);
     NativeRegistrationClient client(http);
     HttpClientPinSink pinSink(http);
+    NetworkExecutor executor(3000);
     DeviceRegistrationService service(client, pairingStore, settingsStore, pinSink);
     DeregisterClient deregisterClient(http);
 
-    PairingController controller(service, pairingStore, settingsStore, deregisterClient, pinSink);
+    PairingController controller(service, pairingStore, settingsStore, deregisterClient, pinSink, executor);
     controller.setDeviceToken(QStringLiteral("some-real-endpoint"));
 
     const QString serverBaseUrl = QStringLiteral("http://127.0.0.1:%1").arg(fake.port());
@@ -306,7 +320,7 @@ void PairingControllerTest::pairFromDeepLinkSendsDeviceTokenWhenSet()
     QVERIFY(controller.pairFromDeepLink(buildLink(params)));
     QCOMPARE(controller.pairingState(), QStringLiteral("confirm"));
     QVERIFY(controller.confirmPendingPair());
-    QCOMPARE(controller.pairingState(), QStringLiteral("paired"));
+    QTRY_COMPARE_WITH_TIMEOUT(controller.pairingState(), QStringLiteral("paired"), 5000);
 
     const QJsonObject sent = fake.receivedJsonBody();
     QCOMPARE(sent.value(QStringLiteral("deviceToken")).toString(), QStringLiteral("some-real-endpoint"));
@@ -333,10 +347,11 @@ void PairingControllerTest::pairFromDeepLinkDerivesRegistrationUrlFromSrvWhenReg
     HttpClient http(manager);
     NativeRegistrationClient client(http);
     HttpClientPinSink pinSink(http);
+    NetworkExecutor executor(3000);
     DeviceRegistrationService service(client, pairingStore, settingsStore, pinSink);
     DeregisterClient deregisterClient(http);
 
-    PairingController controller(service, pairingStore, settingsStore, deregisterClient, pinSink);
+    PairingController controller(service, pairingStore, settingsStore, deregisterClient, pinSink, executor);
 
     // Trailing slash on srv exercises the strip-trailing-slash rule too.
     const QString serverBaseUrl = QStringLiteral("http://127.0.0.1:%1/").arg(fake.port());
@@ -350,6 +365,7 @@ void PairingControllerTest::pairFromDeepLinkDerivesRegistrationUrlFromSrvWhenReg
     QVERIFY(controller.pairFromDeepLink(buildLink(params)));
     QCOMPARE(controller.pairingState(), QStringLiteral("confirm"));
     QVERIFY(controller.confirmPendingPair());
+    QTRY_COMPARE_WITH_TIMEOUT(controller.pairingState(), QStringLiteral("paired"), 5000);
 
     const std::optional<DevicePairing> loaded = pairingStore.load();
     QVERIFY(loaded.has_value());
@@ -390,10 +406,11 @@ void PairingControllerTest::pairFromDeepLinkMissingRequiredParam()
     HttpClient http(manager);
     NativeRegistrationClient client(http);
     HttpClientPinSink pinSink(http);
+    NetworkExecutor executor(3000);
     DeviceRegistrationService service(client, pairingStore, settingsStore, pinSink);
     DeregisterClient deregisterClient(http);
 
-    PairingController controller(service, pairingStore, settingsStore, deregisterClient, pinSink);
+    PairingController controller(service, pairingStore, settingsStore, deregisterClient, pinSink, executor);
 
     QMap<QString, QString> params;
     params[QStringLiteral("sub")] = QStringLiteral("sub-x");
@@ -432,10 +449,11 @@ void PairingControllerTest::pairFromDeepLinkRejectsNonNativePairHost()
     HttpClient http(manager);
     NativeRegistrationClient client(http);
     HttpClientPinSink pinSink(http);
+    NetworkExecutor executor(3000);
     DeviceRegistrationService service(client, pairingStore, settingsStore, pinSink);
     DeregisterClient deregisterClient(http);
 
-    PairingController controller(service, pairingStore, settingsStore, deregisterClient, pinSink);
+    PairingController controller(service, pairingStore, settingsStore, deregisterClient, pinSink, executor);
 
     QUrl link;
     link.setScheme(QStringLiteral("kypost"));
@@ -472,10 +490,11 @@ void PairingControllerTest::pairFromDeepLinkRejectsPlaintextHttpServerUrl()
     HttpClient http(manager);
     NativeRegistrationClient client(http);
     HttpClientPinSink pinSink(http);
+    NetworkExecutor executor(3000);
     DeviceRegistrationService service(client, pairingStore, settingsStore, pinSink);
     DeregisterClient deregisterClient(http);
 
-    PairingController controller(service, pairingStore, settingsStore, deregisterClient, pinSink);
+    PairingController controller(service, pairingStore, settingsStore, deregisterClient, pinSink, executor);
 
     QMap<QString, QString> params;
     params[QStringLiteral("sub")] = QStringLiteral("sub-http");
@@ -515,10 +534,11 @@ void PairingControllerTest::pairFromDeepLinkAllowsPlaintextHttpForLoopbackServer
     HttpClient http(manager);
     NativeRegistrationClient client(http);
     HttpClientPinSink pinSink(http);
+    NetworkExecutor executor(3000);
     DeviceRegistrationService service(client, pairingStore, settingsStore, pinSink);
     DeregisterClient deregisterClient(http);
 
-    PairingController controller(service, pairingStore, settingsStore, deregisterClient, pinSink);
+    PairingController controller(service, pairingStore, settingsStore, deregisterClient, pinSink, executor);
 
     QMap<QString, QString> params;
     params[QStringLiteral("sub")] = QStringLiteral("sub-loop");
@@ -528,7 +548,7 @@ void PairingControllerTest::pairFromDeepLinkAllowsPlaintextHttpForLoopbackServer
     QVERIFY(controller.pairFromDeepLink(buildLink(params)));
     QCOMPARE(controller.pairingState(), QStringLiteral("confirm"));
     QVERIFY(controller.confirmPendingPair());
-    QCOMPARE(controller.pairingState(), QStringLiteral("paired"));
+    QTRY_COMPARE_WITH_TIMEOUT(controller.pairingState(), QStringLiteral("paired"), 5000);
 }
 
 void PairingControllerTest::pairFromDeepLinkRejectsRegOnDifferentOriginThanSrv()
@@ -553,10 +573,11 @@ void PairingControllerTest::pairFromDeepLinkRejectsRegOnDifferentOriginThanSrv()
     HttpClient http(manager);
     NativeRegistrationClient client(http);
     HttpClientPinSink pinSink(http);
+    NetworkExecutor executor(3000);
     DeviceRegistrationService service(client, pairingStore, settingsStore, pinSink);
     DeregisterClient deregisterClient(http);
 
-    PairingController controller(service, pairingStore, settingsStore, deregisterClient, pinSink);
+    PairingController controller(service, pairingStore, settingsStore, deregisterClient, pinSink, executor);
 
     QMap<QString, QString> params;
     params[QStringLiteral("sub")] = QStringLiteral("sub-crossorigin");
@@ -598,10 +619,11 @@ void PairingControllerTest::pairFromDeepLinkNotifiesFreshPendingPairEvenWhenStat
     HttpClient http(manager);
     NativeRegistrationClient client(http);
     HttpClientPinSink pinSink(http);
+    NetworkExecutor executor(3000);
     DeviceRegistrationService service(client, pairingStore, settingsStore, pinSink);
     DeregisterClient deregisterClient(http);
 
-    PairingController controller(service, pairingStore, settingsStore, deregisterClient, pinSink);
+    PairingController controller(service, pairingStore, settingsStore, deregisterClient, pinSink, executor);
 
     QMap<QString, QString> firstParams;
     firstParams[QStringLiteral("sub")] = QStringLiteral("sub-first");
@@ -647,10 +669,11 @@ void PairingControllerTest::pairFromPastedLinkRejectsNonLinkTextWithNoNetworkCal
     HttpClient http(manager);
     NativeRegistrationClient client(http);
     HttpClientPinSink pinSink(http);
+    NetworkExecutor executor(3000);
     DeviceRegistrationService service(client, pairingStore, settingsStore, pinSink);
     DeregisterClient deregisterClient(http);
 
-    PairingController controller(service, pairingStore, settingsStore, deregisterClient, pinSink);
+    PairingController controller(service, pairingStore, settingsStore, deregisterClient, pinSink, executor);
 
     QVERIFY(!controller.pairFromPastedLink(QStringLiteral("this is not a pairing link")));
     QCOMPARE(controller.pairingState(), QStringLiteral("failed"));
@@ -682,13 +705,14 @@ void PairingControllerTest::refreshFromStoreReflectsPreSeededPairingStoreAndRemo
     HttpClient http(manager);
     NativeRegistrationClient client(http);
     HttpClientPinSink pinSink(http);
+    NetworkExecutor executor(3000);
     DeviceRegistrationService service(client, pairingStore, settingsStore, pinSink);
     DeregisterClient deregisterClient(http);
 
     // Construction alone must reflect the pre-seeded pairing -- see
     // PairingController's constructor comment; no explicit refreshFromStore()
     // call needed here.
-    PairingController controller(service, pairingStore, settingsStore, deregisterClient, pinSink);
+    PairingController controller(service, pairingStore, settingsStore, deregisterClient, pinSink, executor);
 
     QVERIFY(controller.isPaired());
     QCOMPARE(controller.deviceId(), QStringLiteral("dev-seed"));
@@ -741,10 +765,11 @@ void PairingControllerTest::removePairingSkipsNetworkCallWhenNoDeviceSecretStore
     HttpClient http(manager);
     NativeRegistrationClient client(http);
     HttpClientPinSink pinSink(http);
+    NetworkExecutor executor(3000);
     DeviceRegistrationService service(client, pairingStore, settingsStore, pinSink);
     DeregisterClient deregisterClient(http);
 
-    PairingController controller(service, pairingStore, settingsStore, deregisterClient, pinSink);
+    PairingController controller(service, pairingStore, settingsStore, deregisterClient, pinSink, executor);
     QVERIFY(controller.isPaired());
 
     controller.removePairing();
@@ -781,23 +806,27 @@ void PairingControllerTest::removePairingDeregistersServerSideWhenDeviceSecretPr
     HttpClient http(manager);
     NativeRegistrationClient client(http);
     HttpClientPinSink pinSink(http);
+    NetworkExecutor executor(3000);
     DeviceRegistrationService service(client, pairingStore, settingsStore, pinSink);
     DeregisterClient deregisterClient(http);
 
-    PairingController controller(service, pairingStore, settingsStore, deregisterClient, pinSink);
+    PairingController controller(service, pairingStore, settingsStore, deregisterClient, pinSink, executor);
     QVERIFY(controller.isPaired());
 
     controller.removePairing();
 
+    // Local state clears SYNCHRONOUSLY -- that is what the user asked for
+    // and it must not depend on the relay being reachable.
+    QVERIFY(!controller.isPaired());
+    QVERIFY(!pairingStore.load().has_value());
+
+    // The deregister POST is dispatched and forgotten; its result was
+    // already ignored, so waiting for it was never the point.
+    QTRY_VERIFY_WITH_TIMEOUT(!fake.receivedRequest().isEmpty(), 5000);
     const QByteArray request = fake.receivedRequest();
     QVERIFY(request.contains("POST /api/notifications/native/deregister HTTP/1.1"));
     QVERIFY(request.contains("X-Kypost-Device-Id: dev-full"));
     QVERIFY(request.contains("X-Kypost-Device-Secret: secret-full"));
-
-    // Local state clears regardless of the (here, successful) network
-    // outcome -- see removePairing()'s doc comment.
-    QVERIFY(!controller.isPaired());
-    QVERIFY(!pairingStore.load().has_value());
 }
 
 void PairingControllerTest::resetReturnsToIdleAfterFailure()
@@ -815,10 +844,11 @@ void PairingControllerTest::resetReturnsToIdleAfterFailure()
     HttpClient http(manager);
     NativeRegistrationClient client(http);
     HttpClientPinSink pinSink(http);
+    NetworkExecutor executor(3000);
     DeviceRegistrationService service(client, pairingStore, settingsStore, pinSink);
     DeregisterClient deregisterClient(http);
 
-    PairingController controller(service, pairingStore, settingsStore, deregisterClient, pinSink);
+    PairingController controller(service, pairingStore, settingsStore, deregisterClient, pinSink, executor);
 
     QVERIFY(!controller.pairFromPastedLink(QStringLiteral("not a link")));
     QCOMPARE(controller.pairingState(), QStringLiteral("failed"));
@@ -845,9 +875,10 @@ void PairingControllerTest::resetReturnsToIdleAfterFailure()
     HttpClient http(manager);                                                                \
     NativeRegistrationClient regClient(http);                                                \
     HttpClientPinSink pinSink(http);                                                          \
+    NetworkExecutor executor(3000);                                                           \
     DeviceRegistrationService service(regClient, pairingStore, settingsStore, pinSink);       \
     DeregisterClient deregisterClient(http);                                                 \
-    PairingController controller(service, pairingStore, settingsStore, deregisterClient, pinSink);     \
+    PairingController controller(service, pairingStore, settingsStore, deregisterClient, pinSink, executor);     \
     QMap<QString, QString> params;                                                           \
     params[QStringLiteral("sub")] = QStringLiteral("sub-lock");                               \
     params[QStringLiteral("srv")] = QStringLiteral("http://127.0.0.1:%1").arg(fake.port());   \
@@ -949,10 +980,11 @@ void PairingControllerTest::registrationUrlWithAForeignPathIsRejected()
     HttpClient http(manager);
     NativeRegistrationClient client(http);
     HttpClientPinSink pinSink(http);
+    NetworkExecutor executor(3000);
     DeviceRegistrationService service(client, pairingStore, settingsStore, pinSink);
     DeregisterClient deregisterClient(http);
 
-    PairingController controller(service, pairingStore, settingsStore, deregisterClient, pinSink);
+    PairingController controller(service, pairingStore, settingsStore, deregisterClient, pinSink, executor);
 
     const QString srv = QStringLiteral("http://127.0.0.1:%1").arg(fake.port());
     const auto link = [&srv](const QString& reg) {
@@ -993,10 +1025,11 @@ void PairingControllerTest::punycodeHostsAreShownInAsciiFormNotDecoded()
     HttpClient http(manager);
     NativeRegistrationClient client(http);
     HttpClientPinSink pinSink(http);
+    NetworkExecutor executor(3000);
     DeviceRegistrationService service(client, pairingStore, settingsStore, pinSink);
     DeregisterClient deregisterClient(http);
 
-    PairingController controller(service, pairingStore, settingsStore, deregisterClient, pinSink);
+    PairingController controller(service, pairingStore, settingsStore, deregisterClient, pinSink, executor);
 
     const QString hostile = QStringLiteral("https://mail.xn--urll-76d.com");
     QVERIFY(controller.pairFromDeepLink(
@@ -1035,10 +1068,11 @@ void PairingControllerTest::removePairingIsRefusedWhileLocked()
     HttpClient http(manager);
     NativeRegistrationClient client(http);
     HttpClientPinSink pinSink(http);
+    NetworkExecutor executor(3000);
     DeviceRegistrationService service(client, pairingStore, settingsStore, pinSink);
     DeregisterClient deregisterClient(http);
 
-    PairingController controller(service, pairingStore, settingsStore, deregisterClient, pinSink);
+    PairingController controller(service, pairingStore, settingsStore, deregisterClient, pinSink, executor);
 
     controller.setAppLocked(true);
     controller.removePairing();
@@ -1051,6 +1085,95 @@ void PairingControllerTest::removePairingIsRefusedWhileLocked()
     controller.setAppLocked(false);
     controller.removePairing();
     QVERIFY(!pairingStore.isPaired());
+}
+
+// The whole point of the conversion: confirming a pairing hands control
+// straight back instead of sitting inside HttpClient's nested event loop for
+// the length of a round trip -- during which QML input was still being
+// delivered into a half-finished pairing.
+void PairingControllerTest::confirmPendingPairReturnsWithoutBlocking()
+{
+    // A server that accepts the connection and never answers, so the
+    // request runs until the executor's transfer timeout. Written out
+    // rather than using PAIRING_TEST_FIXTURE(), which bakes in a 200 OK.
+    FakeRelayServer fake(QByteArray{});
+    QTemporaryDir secureDir;
+    QVERIFY(secureDir.isValid());
+    SecureStoreFile secureStore(secureDir.path());
+    PairingStore pairingStore(secureStore);
+    QTemporaryDir settingsDir;
+    QVERIFY(settingsDir.isValid());
+    SettingsStore settingsStore(settingsDir.filePath(QStringLiteral("settings.ini")));
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    NativeRegistrationClient regClient(http);
+    HttpClientPinSink pinSink(http);
+    NetworkExecutor executor(1500);
+    DeviceRegistrationService service(regClient, pairingStore, settingsStore, pinSink);
+    DeregisterClient deregisterClient(http);
+    PairingController controller(service, pairingStore, settingsStore, deregisterClient, pinSink, executor);
+    QMap<QString, QString> params;
+    params[QStringLiteral("sub")] = QStringLiteral("sub-async");
+    params[QStringLiteral("srv")] = QStringLiteral("http://127.0.0.1:%1").arg(fake.port());
+    params[QStringLiteral("pt")] = QStringLiteral("pair-tok-async");
+
+    QVERIFY(controller.pairFromDeepLink(buildLink(params)));
+    QCOMPARE(controller.pairingState(), QStringLiteral("confirm"));
+
+    QElapsedTimer timer;
+    timer.start();
+    QVERIFY(controller.confirmPendingPair());
+    const qint64 elapsed = timer.elapsed();
+
+    QVERIFY2(elapsed < 200,
+             qPrintable(QStringLiteral("confirmPendingPair() blocked for %1 ms").arg(elapsed)));
+    QCOMPARE(controller.pairingState(), QStringLiteral("working"));
+
+    // And it resolves rather than being lost.
+    QTRY_COMPARE_WITH_TIMEOUT(controller.pairingState(), QStringLiteral("failed"), 10000);
+}
+
+// Replaces what ReentrancyGuard did here, for a different reason: there is
+// no nested event loop left to be re-entered through, so this is coalescing.
+// It still matters -- two overlapping registrations would race to set
+// pairingState, and each one the server accepts mints a device secret and
+// retires the previous one.
+void PairingControllerTest::aSecondConfirmWhileOneIsInFlightIsIgnored()
+{
+    // A server that accepts the connection and never answers, so the
+    // request runs until the executor's transfer timeout. Written out
+    // rather than using PAIRING_TEST_FIXTURE(), which bakes in a 200 OK.
+    FakeRelayServer fake(QByteArray{});
+    QTemporaryDir secureDir;
+    QVERIFY(secureDir.isValid());
+    SecureStoreFile secureStore(secureDir.path());
+    PairingStore pairingStore(secureStore);
+    QTemporaryDir settingsDir;
+    QVERIFY(settingsDir.isValid());
+    SettingsStore settingsStore(settingsDir.filePath(QStringLiteral("settings.ini")));
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    NativeRegistrationClient regClient(http);
+    HttpClientPinSink pinSink(http);
+    NetworkExecutor executor(1500);
+    DeviceRegistrationService service(regClient, pairingStore, settingsStore, pinSink);
+    DeregisterClient deregisterClient(http);
+    PairingController controller(service, pairingStore, settingsStore, deregisterClient, pinSink, executor);
+    QMap<QString, QString> params;
+    params[QStringLiteral("sub")] = QStringLiteral("sub-async");
+    params[QStringLiteral("srv")] = QStringLiteral("http://127.0.0.1:%1").arg(fake.port());
+    params[QStringLiteral("pt")] = QStringLiteral("pair-tok-async");
+
+    QVERIFY(controller.pairFromDeepLink(buildLink(params)));
+    QVERIFY(controller.confirmPendingPair());
+    QCOMPARE(controller.pairingState(), QStringLiteral("working"));
+
+    // Second confirm while the first is still out: refused, and it does not
+    // knock the state machine back from under the first one's completion.
+    QVERIFY(!controller.confirmPendingPair());
+    QCOMPARE(controller.pairingState(), QStringLiteral("working"));
+
+    QTRY_COMPARE_WITH_TIMEOUT(controller.pairingState(), QStringLiteral("failed"), 10000);
 }
 
 QTEST_GUILESS_MAIN(PairingControllerTest)

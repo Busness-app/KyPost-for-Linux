@@ -5,6 +5,8 @@
 #include <QThread>
 
 #include <functional>
+#include <memory>
+#include <type_traits>
 #include <utility>
 
 class HttpClient;
@@ -107,26 +109,28 @@ public:
     template<typename Work, typename Handler>
     void run(QObject* receiver, Work work, Handler onDone)
     {
-        postToExecutor([this, receiver, work = std::move(work), onDone = std::move(onDone)]() mutable {
+        postToExecutor(makeCopyable([this, receiver, work = std::move(work),
+                                      onDone = std::move(onDone)]() mutable {
             if (!isAcceptingWork())
                 return;
             auto result = work(httpClientOnExecutorThread());
             QMetaObject::invokeMethod(
                 receiver,
-                [onDone = std::move(onDone), result = std::move(result)]() mutable { onDone(std::move(result)); },
+                makeCopyable(
+                    [onDone = std::move(onDone), result = std::move(result)]() mutable { onDone(std::move(result)); }),
                 Qt::QueuedConnection);
-        });
+        }));
     }
 
     // Runs `work` on the executor thread with nothing to deliver back.
     template<typename Work>
     void runDetached(Work work)
     {
-        postToExecutor([this, work = std::move(work)]() mutable {
+        postToExecutor(makeCopyable([this, work = std::move(work)]() mutable {
             if (!isAcceptingWork())
                 return;
             work(httpClientOnExecutorThread());
-        });
+        }));
     }
 
     // Applies a configuration change to the HttpClient ON the executor
@@ -144,6 +148,26 @@ public:
     void shutdown();
 
 private:
+    // Wraps a possibly MOVE-ONLY callable in a copyable one.
+    //
+    // Both hops here go through std::function -- ours, and Qt's own
+    // QMetaObject::invokeMethod -- and std::function requires its target to
+    // be copy-constructible. That is not an academic constraint: a handler
+    // legitimately owns move-only state, and the first real caller to do so
+    // was PairingController, whose completion handler carries a
+    // DeviceRegistrationService::PairAttempt (move-only precisely because
+    // copying it would double-restore the certificate pin).
+    //
+    // std::move_only_function would be the direct answer, but it is C++23
+    // and this project is on C++20. A shared_ptr indirection costs one
+    // allocation per dispatch, against a network round trip.
+    template<typename F>
+    static std::function<void()> makeCopyable(F&& callable)
+    {
+        auto shared = std::make_shared<std::decay_t<F>>(std::forward<F>(callable));
+        return [shared]() { (*shared)(); };
+    }
+
     void postToExecutor(std::function<void()> task);
     HttpClient& httpClientOnExecutorThread();
     // Checked by every task before it does anything. Cleared by shutdown()

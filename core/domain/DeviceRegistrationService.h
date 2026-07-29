@@ -1,6 +1,8 @@
 #pragma once
 
+#include "net/HttpClient.h"
 #include "net/NativeRegistrationClient.h"
+#include "security/CredentialCipher.h"
 
 #include <QString>
 #include <optional>
@@ -40,6 +42,66 @@ public:
     NativeRegistrationResult pair(const PairingParams& params, const QString& deviceToken);
 
     std::optional<NativeRegistrationResult> reregisterIfPaired(const QString& deviceToken);
+
+    // ---- three-phase form, for callers that must not block ---------------
+    //
+    // pair() above touches four things: PairingStore, SettingsStore, the
+    // certificate pin, and the network. Only the LAST of those may leave the
+    // calling thread -- PairingStore caches and is mutated by the credential
+    // gate, SettingsStore is a QSettings file, and the pin fan-out reaches an
+    // HttpClient that asserts its own thread affinity. So this is not "run
+    // pair() over there"; it is a split with the store work pinned to the
+    // caller's thread and only the HTTP request moved.
+    //
+    // That split is what the docs/THREADING.md tier list under-described:
+    // the constraint is not only QSqlDatabase, it is any thread-confined
+    // store in the chain, and PairingStore is one.
+
+    // Phase 1, on the calling thread. Runs the pre-flight guards, snapshots
+    // the sealing key, and suspends the certificate pin for the registration.
+    //
+    // Move-only, and it RESTORES the pin on destruction. That matters more
+    // here than in the synchronous form: an attempt abandoned because the
+    // executor shut down, or because the controller gave up, must not leave
+    // pinning disabled for the rest of the process -- which is the exact
+    // defect the ScopedPinSuspension guard was introduced to fix.
+    class PairAttempt
+    {
+    public:
+        ~PairAttempt();
+        PairAttempt(PairAttempt&&) noexcept;
+        PairAttempt& operator=(PairAttempt&&) noexcept;
+        PairAttempt(const PairAttempt&) = delete;
+        PairAttempt& operator=(const PairAttempt&) = delete;
+
+        // Set when the guards refused before any network contact -- today
+        // only RegistrationOutcome::CredentialsLocked. finish() must not be
+        // called; report this outcome instead.
+        std::optional<RegistrationOutcome> refusedOutcome() const { return m_refusedOutcome; }
+
+    private:
+        friend class DeviceRegistrationService;
+        PairAttempt() = default;
+
+        CertificatePinSink* m_pinSink = nullptr;
+        HttpClient::CertificatePinState m_savedPin;
+        CredentialCipher::SessionKey m_sealingKey;
+        std::optional<RegistrationOutcome> m_refusedOutcome;
+        bool m_restorePin = false;
+    };
+
+    PairAttempt beginPair();
+
+    // Phase 2. The only part that may run on another thread: it touches
+    // nothing but the HttpClient it is handed. Static for that reason --
+    // there is no `this` to accidentally reach through.
+    static NativeRegistrationResult sendRegistration(HttpClient& httpClient, const PairingParams& params,
+                                                      const QString& deviceToken);
+
+    // Phase 3, back on the calling thread. Persists, installs the new pin,
+    // writes the delivery settings, and consumes the attempt.
+    NativeRegistrationResult finishPair(PairAttempt attempt, const PairingParams& params,
+                                         const NativeRegistrationResult& result);
 
 private:
     NativeRegistrationClient& m_client;

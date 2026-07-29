@@ -26,11 +26,29 @@ Each is correct. None of them is the fix, and the list grows every time
 someone adds a network call. The fix is to run the loop on a thread with no
 QML on it.
 
-## Constraint 1 — `QSqlDatabase` is bound to the thread that opened it
+## Constraint 1 — thread-confined stores, of which SQL is only the loudest
 
-This is what splits the work into two tiers, and it is not negotiable: a
-`QSqlDatabase` connection may only be used from the thread that created it,
-and `main()` opens ours on the GUI thread.
+The rule is: **any store in the call chain that is confined to a thread
+pins that part of the chain to that thread.** Only the HTTP request may
+move.
+
+`QSqlDatabase` is the loudest case — a connection may only be used from the
+thread that created it, and `main()` opens ours on the GUI thread. But it is
+not the only one, and framing this as "the SQL tier vs the rest" was wrong:
+`PairingStore` caches and is mutated by the credential gate, `SettingsStore`
+is a `QSettings` file, and the certificate-pin fan-out reaches an
+`HttpClient` that now asserts its own thread affinity. All three appear in
+the *Tier A* chains.
+
+That is why converting `PairingController` was not "run `pair()` over there".
+`DeviceRegistrationService::pair()` had to be split into three phases —
+`beginPair()` (guards, sealing-key snapshot, pin suspension) on the calling
+thread, `sendRegistration()` on the executor, `finishPair()` (persist, pin,
+settings) back on the calling thread — with the synchronous `pair()` kept as
+the composition of the three so its 13 existing tests still pin the policy.
+
+The tiers below still hold, but they are about *how much* has to be split,
+not whether.
 
 Measured, not assumed (`grep` for DAO/`QSqlQuery` use in each call chain):
 
@@ -79,6 +97,18 @@ for the fan-out, and for the unpinned path that shipped before it existed.
 - **`MfaController`** — the reference conversion. Chosen as the pilot
   because it is SQL-free, has tests, and is not registered with QML, so
   getting it wrong could not break a screen.
+- **`DeviceRegistrationService`** — split into `beginPair()` /
+  `sendRegistration()` / `finishPair()`, with `pair()` kept as their
+  composition. `PairAttempt` is move-only and restores the certificate pin
+  on destruction, so an attempt abandoned mid-flight (executor shut down,
+  controller torn down) cannot leave pinning disabled — the async form of
+  the guarantee `ScopedPinSuspension` gave within one stack frame.
+- **`PairingController`** — `confirmPendingPair()` and `removePairing()` are
+  asynchronous. No QML changed: every call site was already fire-and-forget
+  driven by `pairingState` (checked before starting). `removePairing()`
+  clears local state synchronously and dispatches the best-effort deregister
+  with `runDetached` — its result was already ignored, and unpairing must
+  not depend on the relay being reachable.
 
 ### The conversion pattern
 
@@ -116,10 +146,11 @@ Three rules that make it work:
 
 ## Remaining order
 
-1. **`PairingController`** (2 methods, Tier A). Needs care: `pairFromDeepLink`
-   and `removePairing` touch `PairingStore` *and* the pin. Move pin
-   installation to `NetworkExecutor::configure()` in the same change.
-2. **`PgpQrController`** (2 methods, Tier A).
+1. ~~`PairingController`~~ — done.
+2. **`PgpQrController`** (2 methods, Tier A). `myQrImageDataUrl()` and
+   `scannedContactCardFields()` ARE read for their return values in QML
+   (`PgpMyQrCode.qml`, both roots), so unlike pairing this one does need
+   QML changes: the call sites become a trigger plus a property binding.
 3. **Retire the GUI-thread `HttpClient`** once Tier A is done and no Tier B
    caller remains on it. Concretely: drop `guiThreadPinSink` from the
    fan-out in `main()`, leaving the executor as the only target.

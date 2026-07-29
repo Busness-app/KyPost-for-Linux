@@ -822,7 +822,7 @@ int main(int argc, char* argv[])
     // PairingController.h's doc comment on why those reuse pairingChanged()
     // rather than a new signal.
     PairingController pairingController(deviceRegistrationService, pairingStore, settingsStore, deregisterClient,
-                                        certificatePinSink);
+                                        certificatePinSink, networkExecutor);
     qmlRegisterSingletonInstance<PairingController>(
         "com.urlxl.mail", 1, 0, "Pairing", &pairingController);
 
