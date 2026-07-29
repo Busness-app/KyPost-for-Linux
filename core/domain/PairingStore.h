@@ -87,6 +87,25 @@ public:
     // pairing would be unrecoverable on next launch.
     bool unsealDeviceSecretPermanently(const QString& pin);
 
+    // Re-wraps the sealed blob from `oldPin` to `newPin` WITHOUT the
+    // plaintext ever reaching the store.
+    //
+    // This exists because the obvious composition -- unsealDeviceSecretPermanently(old)
+    // then sealDeviceSecret(new) -- is what AppLockManager::setPin() used to
+    // do, and it writes the relay device secret to the keychain in the clear
+    // and then deletes it again. Between those two calls sit two PBKDF2
+    // derivations at 150k iterations each, which on a slow machine is a real
+    // window, not a theoretical one. A crash, an OOM kill or a power loss in
+    // there leaves the secret plaintext on disk with
+    // applock.credentialPinGateEnabled still reading "1" -- so the UI goes
+    // on reporting "Require unlock to receive push and MFA: On" over a
+    // credential that is no longer protected at all.
+    //
+    // One open, one seal, one write. Returns false without changing anything
+    // if `oldPin` does not open the blob or the crypto fails; the caller must
+    // treat that as "the PIN was not changed".
+    bool resealDeviceSecret(const QString& oldPin, const QString& newPin);
+
     // True when a sealed blob exists, whether or not it has been opened
     // this session.
     bool deviceSecretSealed() const;
@@ -128,4 +147,17 @@ private:
     // is the larger secret, since it also authorizes disabling the lock
     // outright. Cleared everywhere m_unsealedDeviceSecret is.
     CredentialCipher::SessionKey m_sessionKey;
+    // load()'s result, so the eight blocking keychain reads it performs are
+    // not repeated on every isPaired()/requirePairing() call. Dropped by
+    // invalidateCache() from every mutating path. mutable because load() is
+    // const and callers rely on that.
+    mutable std::optional<DevicePairing> m_cache;
+    // Scope guard used by every path that changes what load() would return.
+    // Defined in the .cpp; see there for why it clears at both ends.
+    struct CacheInvalidation;
+    // Incremented by every lockDeviceSecret()/clear(). Read by save() to
+    // tell "nothing happened while I was blocked" from "the app locked
+    // mid-write", which are indistinguishable from the key value alone --
+    // see save()'s implementation for the bug that made this necessary.
+    quint64 m_lockEpoch = 0;
 };

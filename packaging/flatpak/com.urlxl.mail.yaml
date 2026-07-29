@@ -138,6 +138,33 @@ finish-args:
   # for the raw interface here would be dead permission surface.
 
 modules:
+  # Argon2id, the key-derivation function behind the credential seal
+  # (core/security/CredentialCipher.h). Built from the reference
+  # implementation because org.kde.Platform does not ship libargon2 --
+  # libcrypto is there (Qt links it for TLS) but OpenSSL exposes no Argon2
+  # through EVP in the version the runtime carries.
+  #
+  # Upstream's Makefile has no configure step and defaults to PREFIX=/usr
+  # with a Debian multiarch libdir. PREFIX/LIBRARY_REL are passed to BOTH
+  # make and make install, not just install: libargon2.pc is generated
+  # during the build phase by sed-substituting those variables into a
+  # template, so building with the defaults and only overriding at install
+  # time yields a .pc that says prefix=/usr and
+  # libdir=/usr/lib/x86_64-linux-gnu -- verified. pkg_check_modules would
+  # then find that file and point the link at a path holding nothing.
+  - name: libargon2
+    buildsystem: simple
+    build-commands:
+      - make PREFIX=/app LIBRARY_REL=lib -j $FLATPAK_BUILDER_N_JOBS
+      - make install PREFIX=/app LIBRARY_REL=lib
+    cleanup:
+      - /bin
+      - /lib/libargon2.a
+    sources:
+      - type: archive
+        url: https://github.com/P-H-C/phc-winner-argon2/archive/refs/tags/20190702.tar.gz
+        sha256: daf972a89577f8772602bf2eb38b6a3dd3d922bf5724d45e7f9589b5e830442c
+
   - name: qtkeychain
     buildsystem: cmake-ninja
     config-opts:

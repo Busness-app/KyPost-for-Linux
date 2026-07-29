@@ -56,6 +56,11 @@ bool AppLockManager::credentialsUnavailable() const
     return m_credentialsUnavailable;
 }
 
+bool AppLockManager::storeUnavailable() const
+{
+    return !m_store.storeReadable();
+}
+
 int AppLockManager::minimumPinLength() const
 {
     return PinPolicy::kMinimumLength;
@@ -109,6 +114,30 @@ bool AppLockManager::recordFailedAttempt(qint64 nowEpochMs)
     return true;
 }
 
+bool AppLockManager::mustRefuseGuess()
+{
+    // A store that could not record the last failure cannot rate-limit this
+    // one either. Refuse for the rest of the process rather than serve an
+    // unmetered oracle; relaunching is the recovery.
+    if (m_attemptRecordingBroken)
+        return true;
+
+    // Refuse outright while a backoff is in force -- otherwise the delay is
+    // decorative and an attacker can keep guessing at full speed.
+    if (LockoutPolicy::isLockedOut(m_store.lockoutUntilEpochMs(), QDateTime::currentMSecsSinceEpoch()))
+        return true;
+
+    // Session floor, independent of the wall clock the persisted deadline
+    // uses: an attacker holding the machine can move the system clock
+    // forward to skip every backoff, but cannot move this counter.
+    if (LockoutPolicy::shouldWipe(m_sessionFailedAttempts)) {
+        emit wipeRequested();
+        return true;
+    }
+
+    return false;
+}
+
 bool AppLockManager::tryUnlock(const QString& pin)
 {
     if (!m_store.lockEnabled()) {
@@ -121,26 +150,10 @@ bool AppLockManager::tryUnlock(const QString& pin)
         return true;
     }
 
-    // A store that could not record the last failure cannot rate-limit this
-    // one either. Refuse for the rest of the process rather than serve an
-    // unmetered oracle; relaunching is the recovery.
-    if (m_attemptRecordingBroken)
+    if (mustRefuseGuess())
         return false;
 
-    // Refuse outright while a backoff is in force -- otherwise the delay is
-    // decorative and an attacker can keep guessing at full speed.
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
-    if (LockoutPolicy::isLockedOut(m_store.lockoutUntilEpochMs(), now))
-        return false;
-
-    // Session floor, independent of the wall clock the persisted deadline
-    // uses: an attacker holding the machine can move the system clock
-    // forward to skip every backoff, but cannot move this counter.
-    if (LockoutPolicy::shouldWipe(m_sessionFailedAttempts)) {
-        emit wipeRequested();
-        return false;
-    }
-
     if (m_store.verifyPin(pin)) {
         // Both checked, for the same reason recordFailedAttempt() checks
         // them: a reset that silently fails leaves the persisted counter
@@ -192,13 +205,14 @@ bool AppLockManager::verifyPinRateLimited(const QString& pin)
     // toward the ten-failure wipe. That is exactly the "unlimited guessing
     // oracle behind a UI that still claims to be rate-limited" this class
     // already refuses to serve on the unlock path.
-    if (m_attemptRecordingBroken)
+    //
+    // Shared with tryUnlock() rather than restated: when these were two
+    // copies, this one was missing the session floor, so a clock moved
+    // forward turned the Settings prompts back into that same oracle.
+    if (mustRefuseGuess())
         return false;
 
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
-    if (LockoutPolicy::isLockedOut(m_store.lockoutUntilEpochMs(), now))
-        return false;
-
     if (m_store.verifyPin(pin)) {
         if (!m_store.setFailedAttemptCount(0) || !m_store.setLockoutUntilEpochMs(0))
             m_attemptRecordingBroken = true;
@@ -230,25 +244,25 @@ bool AppLockManager::setPin(const QString& currentPin, const QString& newPin)
     // Changing the PIN while the secret is sealed under the OLD one would
     // strand it, exactly like disableLock() below. Re-wrap first, and only
     // install the new PIN if that worked.
+    //
+    // reseal(), NOT unsealPermanently() + seal(). Those two compose
+    // correctly on paper and were what this did, and between them the relay
+    // device secret sat in the keychain in the clear -- for the length of
+    // two 150k-iteration PBKDF2 derivations -- while
+    // applock.credentialPinGateEnabled still read "1". A crash, an OOM kill
+    // or a power loss in that window left it plaintext on disk permanently,
+    // under a UI that went on reporting the protection as On. See
+    // CredentialSealer::reseal.
     const bool gateEnabled = m_store.lockEnabled() && m_store.credentialPinGateEnabled();
-    if (gateEnabled && !m_sealer.unsealPermanently(currentPin))
+    if (gateEnabled && !m_sealer.reseal(currentPin, newPin))
         return false;
 
     if (!m_store.setPin(newPin)) {
-        // Put the secret back the way it was, so a failed PIN change does
-        // not silently leave the credential gate off in fact while the
-        // stored flag still claims it is on.
+        // The secret is now under newPin but the PIN record still says
+        // currentPin. Put the secret back so the two agree again; a failed
+        // PIN change must change nothing.
         if (gateEnabled)
-            m_sealer.seal(currentPin);
-        return false;
-    }
-
-    if (gateEnabled && !m_sealer.seal(newPin)) {
-        // The PIN changed but the secret could not be re-wrapped. Report the
-        // gate as off rather than lying about it; the user can re-enable it.
-        m_store.setCredentialPinGateEnabled(false);
-        emit lockStateChanged();
-        emit lockoutChanged();
+            m_sealer.reseal(newPin, currentPin);
         return false;
     }
 

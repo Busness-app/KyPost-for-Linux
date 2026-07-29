@@ -9,11 +9,30 @@ class SecureStore;
 // PIN policy and lockout state for "Require Unlock to Open".
 //
 // Takes a SecureStore, NOT SettingsStore, and that choice is the feature.
-// SettingsStore is a plain INI file: anyone with OS-level access to the
-// account's files -- the exact access level this lock exists to survive --
-// could flip `lockEnabled=false` in a text editor and relaunch. SecureStore
-// (Secret Service in production) puts these fields behind the same
-// access-control tier as the pairing credential itself.
+// SettingsStore is a plain INI file: anyone with write access to the
+// account's files could flip `lockEnabled=false` in a text editor and
+// relaunch. SecureStore (Secret Service in production) puts these fields
+// behind the same access-control tier as the pairing credential itself.
+//
+// WHAT THIS DOES AND DOES NOT PROTECT. The earlier wording here claimed
+// SettingsStore was unsuitable because file access is "the exact access
+// level this lock exists to survive". It is not, and the difference matters
+// enough to state: kypost.db is an UNENCRYPTED SQLite file holding cached
+// mail bodies and full contact records. Anyone who can read the account's
+// files can read all of it with sqlite3(1) without going near this class.
+//
+// So this lock guards the running application -- the window, the
+// notifications, the pairing credential, and (with the credential gate on)
+// the device secret, which really is encrypted at rest. It is not at-rest
+// protection for mail content. The mode that provides that is Hostile
+// Location Protection, which keeps the database in memory and writes none of
+// it; Settings says so in those words rather than letting the PIN prompt
+// imply more than it delivers.
+//
+// The full fix is to key SQLCipher from the PIN-derived session key this
+// class's sibling already computes (core/security/CredentialCipher.h's
+// SessionKey). That is a schema-and-migration project, not a patch, and
+// until it lands the honest statement above is what ships.
 //
 // Note that `hostileLocationProtectionEnabled` deliberately does NOT live
 // here: it is UI-gated behind an already-enabled, SecureStore-protected PIN,
@@ -23,7 +42,16 @@ class AppLockStore
 public:
     explicit AppLockStore(SecureStore& secureStore);
 
+    // Fails CLOSED: an unreadable secret store reports the lock as ON.
+    // See the .cpp, and SecureStore::ReadStatus for why get() could not
+    // express this.
     bool lockEnabled() const;
+
+    // False when the secret store cannot be consulted at all -- no Secret
+    // Service provider running, a locked wallet, no D-Bus session. Exposed
+    // so the UI can explain why an unlock screen is refusing every PIN,
+    // rather than leaving the user to conclude they have forgotten it.
+    bool storeReadable() const;
 
     // Enables the lock and stores a fresh salt + PBKDF2 hash of `pin`. The
     // raw PIN is never persisted. Returns false if the store write fails.

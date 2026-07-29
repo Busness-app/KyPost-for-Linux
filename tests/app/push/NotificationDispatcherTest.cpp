@@ -27,6 +27,8 @@ private slots:
     void sanitizeForNotificationEscapesHtmlMarkup();
     void sanitizeForNotificationEscapesImgTag();
     void sanitizeForNotificationLeavesPlainTextUnchanged();
+    void titleIsNotHtmlEscaped();
+    void titleControlCharactersAreStripped();
 
     // Review-finding regression.
     void hiddenContentRevealsNeitherSenderNorSubject();
@@ -179,9 +181,33 @@ void NotificationDispatcherTest::visibleContentIsTheSanitizedPickResult()
     payload.emailSubject = QStringLiteral("Lunch?");
 
     QCOMPARE(NotificationDispatcher::displayTitle(payload, /*contentHidden=*/false),
-             NotificationDispatcher::sanitizeForNotification(NotificationDispatcher::pickTitle(payload)));
+             NotificationDispatcher::sanitizeTitleForNotification(NotificationDispatcher::pickTitle(payload)));
     QCOMPARE(NotificationDispatcher::displayText(payload, /*contentHidden=*/false),
              QStringLiteral("Lunch?"));
+}
+
+void NotificationDispatcherTest::titleIsNotHtmlEscaped()
+{
+    // The summary is specified as plain text and the "body-markup"
+    // capability governs the body only, so escaping the title protected
+    // nothing and mangled ordinary senders: "Smith & Jones" was shown to
+    // every user as "Smith &amp; Jones".
+    PushNotification payload;
+    payload.senderName = QStringLiteral("Smith & Jones");
+    QCOMPARE(NotificationDispatcher::displayTitle(payload, /*contentHidden=*/false),
+             QStringLiteral("Smith & Jones"));
+}
+
+void NotificationDispatcherTest::titleControlCharactersAreStripped()
+{
+    // What the summary genuinely needs: it is one line by specification, so
+    // a sender name carrying a newline can otherwise push attacker text
+    // into the region the user reads as the message body.
+    PushNotification payload;
+    payload.senderName = QStringLiteral("Bank\n\nYour account is locked, click here");
+    const QString title = NotificationDispatcher::displayTitle(payload, /*contentHidden=*/false);
+    QVERIFY(!title.contains(QLatin1Char('\n')));
+    QCOMPARE(title, QStringLiteral("Bank Your account is locked, click here"));
 }
 
 QTEST_GUILESS_MAIN(NotificationDispatcherTest)

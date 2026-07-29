@@ -32,6 +32,8 @@ add_library(kypostcore STATIC
   domain/ContactSyncRepository.h
   domain/GroupsRepository.cpp
   domain/GroupsRepository.h
+  domain/LocalDataWipe.cpp
+  domain/LocalDataWipe.h
   domain/PgpQrRepository.cpp
   domain/PgpQrRepository.h
   domain/ContactPhotoRepository.cpp
@@ -160,13 +162,27 @@ target_include_directories(kypostcore PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/genera
 # mentions an OpenSSL type, so consumers don't inherit the include path.
 find_package(OpenSSL REQUIRED)
 
+# Argon2id for the credential seal's key derivation.
+#
+# The PIN is a six-digit number and, with the credential gate on, it is the
+# key-encryption key for the relay device secret -- so anyone holding a copy
+# of the keychain entry attacks it offline, where the runtime backoff and
+# wipe-after-ten policy do not exist. PBKDF2-HMAC-SHA256 at 150k iterations
+# is ~1.5e11 HMACs for the whole 10^6 keyspace, which one consumer GPU
+# recovers in hours: PBKDF2 is trivially parallel and needs no memory.
+# Argon2id at 64 MiB per guess is memory-hard, which is what actually costs a
+# GPU attacker, and libargon2 is packaged on every target distro and in
+# org.kde.Platform. See core/security/CredentialCipher.h.
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(ARGON2 REQUIRED IMPORTED_TARGET libargon2)
+
 target_link_libraries(kypostcore PUBLIC
   Qt6::Core
   Qt6::Network
   Qt6::Sql
 )
 
-target_link_libraries(kypostcore PRIVATE OpenSSL::Crypto)
+target_link_libraries(kypostcore PRIVATE OpenSSL::Crypto PkgConfig::ARGON2)
 
 # Surfaces the root project(VERSION) to C++. PUBLIC so test binaries that
 # link kypostcore see the same value the library was built with.

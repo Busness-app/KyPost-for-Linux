@@ -12,11 +12,15 @@ MfaResponseClient::MfaResponseClient(HttpClient& httpClient)
 }
 
 MfaResponseResult MfaResponseClient::respond(const QUrl& serverBaseUrl, const QString& challengeId,
-                                              const QString& deviceId, const QString& deviceSecret, bool approve) const
+                                              const QString& deviceId, const QString& deviceSecret, bool approve,
+                                              const QString& matchDigits) const
 {
     QJsonObject body;
     body[QStringLiteral("challengeId")] = challengeId;
     body[QStringLiteral("approve")] = approve;
+    // Never on a deny: the safe answer must not depend on reading a number off
+    // another screen, and the server ignores the field there anyway.
+    body[QStringLiteral("matchDigits")] = approve ? matchDigits : QString();
 
     const RelayAuth auth{ deviceId, deviceSecret };
     const HttpClient::HttpResult result = m_httpClient.post(
@@ -27,7 +31,7 @@ MfaResponseResult MfaResponseClient::respond(const QUrl& serverBaseUrl, const QS
     if (result.error.has_value()) {
         switch (*result.error) {
         case NetworkError::Unauthorized:
-            out.outcome = MfaResponseOutcome::Rejected;
+            out.outcome = MfaResponseOutcome::Unauthorized;
             return out;
         case NetworkError::Conflict: {
             // 409 — challenge already resolved. status is optional here per

@@ -22,6 +22,7 @@ private slots:
     void respondNotPairedShortCircuitsWithNoNetworkCall();
     void respondSuccessSendsStoredCredentialsAndSetsDone();
     void respondRejectedWithStatusDistinguishesAlreadyResolved();
+    void respondUnauthorizedTellsTheUserToUnlockOrRepair();
     void respondFailureSetsDetailMessage();
     void resetReturnsToIdle();
 
@@ -83,7 +84,7 @@ void MfaControllerTest::respondSuccessSendsStoredCredentialsAndSetsDone()
     MfaController controller(client, pairingStore);
     QSignalSpy stateSpy(&controller, &MfaController::respondStateChanged);
 
-    controller.respond(QStringLiteral("chal-42"), true);
+    controller.respond(QStringLiteral("chal-42"), true, QStringLiteral("47"));
 
     QCOMPARE(controller.respondState(), QStringLiteral("done"));
     QCOMPARE(controller.resultMessage(), QStringLiteral("Approved"));
@@ -99,6 +100,8 @@ void MfaControllerTest::respondSuccessSendsStoredCredentialsAndSetsDone()
     QVERIFY(!sent.contains(QStringLiteral("subscriberHash")));
     QVERIFY(!sent.contains(QStringLiteral("deviceId")));
     QCOMPARE(sent.value(QStringLiteral("approve")).toBool(), true);
+    // Threaded through to the wire: the server refuses an approval without it.
+    QCOMPARE(sent.value(QStringLiteral("matchDigits")).toString(), QStringLiteral("47"));
 }
 
 void MfaControllerTest::respondRejectedWithStatusDistinguishesAlreadyResolved()
@@ -121,6 +124,38 @@ void MfaControllerTest::respondRejectedWithStatusDistinguishesAlreadyResolved()
     QCOMPARE(controller.respondState(), QStringLiteral("failed"));
     QVERIFY(controller.resultMessage().contains(QStringLiteral("already resolved")));
     QVERIFY(controller.resultMessage().contains(QStringLiteral("denied")));
+}
+
+// A 401 must not be reported as "already handled or denied".
+//
+// That message was not just imprecise, it was wrong in the single most
+// common case: with the credential PIN gate on and the app locked,
+// PairingStore::load() returns an empty deviceSecret by design, so the
+// request is guaranteed to 401. The user was told their approval had
+// already been dealt with -- so they would not retry -- when in fact
+// nothing had been sent and unlocking would have fixed it.
+void MfaControllerTest::respondUnauthorizedTellsTheUserToUnlockOrRepair()
+{
+    FakeRelayServer fake(httpResponse(401, "Unauthorized", "Unauthorized\n"));
+
+    QTemporaryDir secureDir;
+    QVERIFY(secureDir.isValid());
+    SecureStoreFile secureStore(secureDir.path());
+    PairingStore pairingStore(secureStore);
+    savePairing(pairingStore, fake.port());
+
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    MfaResponseClient client(http);
+
+    MfaController controller(client, pairingStore);
+    controller.respond(QStringLiteral("chal-1"), true, QStringLiteral("47"));
+
+    QCOMPARE(controller.respondState(), QStringLiteral("failed"));
+    // The actionable half.
+    QVERIFY(controller.resultMessage().contains(QStringLiteral("Unlock")));
+    // And explicitly NOT the old, false wording.
+    QVERIFY(!controller.resultMessage().contains(QStringLiteral("already")));
 }
 
 void MfaControllerTest::respondFailureSetsDetailMessage()

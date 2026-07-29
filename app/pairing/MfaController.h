@@ -50,7 +50,10 @@ public slots:
     // distinguishing "already resolved" when the server's status field
     // carried that information, else a generic denial message; Failure ->
     // "failed" with the detail.
-    void respond(const QString& challengeId, bool approve);
+    // matchDigits is the number-match value the user picked; the server
+    // requires it to approve and ignores it to deny. See MfaResponseClient.h —
+    // an approve that sends none is refused with a 400.
+    void respond(const QString& challengeId, bool approve, const QString& matchDigits = QString());
     void reset(); // back to "idle", for a retry
 
 signals:

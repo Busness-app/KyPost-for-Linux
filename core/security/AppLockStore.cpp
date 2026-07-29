@@ -41,7 +41,29 @@ AppLockStore::AppLockStore(SecureStore& secureStore)
 
 bool AppLockStore::lockEnabled() const
 {
-    return m_secureStore.get(kLockEnabled).value_or(QString()) == QStringLiteral("1");
+    const SecureStore::ReadResult enabled = m_secureStore.read(kLockEnabled);
+    // Fail CLOSED. This used to be a get().value_or(QString()) == "1", which
+    // reads an unreachable keyring as "no lock configured" -- so stopping
+    // gnome-keyring, or renaming ~/.local/share/keyrings, removed the PIN
+    // screen, the lock overlay and the credential gate outright.
+    // AppLockManager's constructor seeds m_locked from this, so the process
+    // simply started unlocked.
+    //
+    // Reporting the lock as ON when the store cannot be read costs a user
+    // with a genuinely broken keyring an unlock screen they cannot satisfy
+    // -- recoverable, and AppLockManager::storeUnavailable() exists so the
+    // UI can say why. Reporting it OFF costs them the lock.
+    if (enabled.failed())
+        return true;
+    return enabled.value == QStringLiteral("1");
+}
+
+bool AppLockStore::storeReadable() const
+{
+    // One probe against a key that is always present once a lock exists and
+    // is cheap to read. Absent is a fine answer here -- it means the store
+    // answered -- so only Failed reports unreadable.
+    return !m_secureStore.read(kLockEnabled).failed();
 }
 
 bool AppLockStore::setPin(const QString& pin)
@@ -161,7 +183,13 @@ bool AppLockStore::setLockoutUntilEpochMs(qint64 epochMs)
 
 bool AppLockStore::credentialPinGateEnabled() const
 {
-    return m_secureStore.get(kCredentialGate).value_or(QString()) == QStringLiteral("1");
+    const SecureStore::ReadResult gate = m_secureStore.read(kCredentialGate);
+    // Fail closed, same reasoning as lockEnabled(): an unreadable store
+    // reporting "gate off" is what lets a caller take the plaintext branch
+    // in PairingStore::storeDeviceSecret().
+    if (gate.failed())
+        return true;
+    return gate.value == QStringLiteral("1");
 }
 
 bool AppLockStore::setCredentialPinGateEnabled(bool enabled)

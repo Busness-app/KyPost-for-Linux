@@ -17,6 +17,11 @@ bool PairingStoreCredentialSealer::unsealPermanently(const QString& pin)
     return m_pairingStore.unsealDeviceSecretPermanently(pin);
 }
 
+bool PairingStoreCredentialSealer::reseal(const QString& oldPin, const QString& newPin)
+{
+    return m_pairingStore.resealDeviceSecret(oldPin, newPin);
+}
+
 bool PairingStoreCredentialSealer::unsealForSession(const QString& pin)
 {
     return m_pairingStore.unsealDeviceSecret(pin);

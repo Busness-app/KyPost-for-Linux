@@ -15,14 +15,16 @@ class MfaResponseClientTest : public QObject
 private slots:
     void successParsesStatusAndBuildsEndpointFromServerBaseUrl();
     void conflictFrom409IsRejected();
-    void unauthorizedFrom401IsRejected();
+    void unauthorizedFrom401IsReportedAsUnauthorized();
     void sentRequestCarriesDeviceHeadersAndSlimBody();
+    void approveCarriesMatchDigits();
 };
 
 // Regression coverage for the Go-verified shape: internal/api/
 // push_mfa_handlers.go's handlePushRespond authenticates via
 // X-Kypost-Device-Id/X-Kypost-Device-Secret headers, with only
-// {challengeId, approve} in the body -- no credentials ride in the JSON.
+// {challengeId, approve, matchDigits} in the body -- no credentials ride in
+// the JSON.
 
 void MfaResponseClientTest::successParsesStatusAndBuildsEndpointFromServerBaseUrl()
 {
@@ -62,7 +64,13 @@ void MfaResponseClientTest::conflictFrom409IsRejected()
     QCOMPARE(*result.status, QStringLiteral("approved"));
 }
 
-void MfaResponseClientTest::unauthorizedFrom401IsRejected()
+// 401/403 must NOT be folded into Rejected. Rejected means "the challenge
+// was already resolved"; a 401 means "this device's credentials were
+// refused", which with the credential PIN gate engaged is simply what a
+// locked app gets -- load() hands out an empty deviceSecret by design. The
+// user was told their approval had already been handled, when nothing had
+// been sent and unlocking would have fixed it.
+void MfaResponseClientTest::unauthorizedFrom401IsReportedAsUnauthorized()
 {
     FakeRelayServer fake(httpResponse(401, "Unauthorized", "Unauthorized\n"));
     QNetworkAccessManager manager;
@@ -73,7 +81,10 @@ void MfaResponseClientTest::unauthorizedFrom401IsRejected()
     const MfaResponseResult result = client.respond(serverBaseUrl, QStringLiteral("chal-1"), QStringLiteral("device-1"),
                                                       QStringLiteral("secret-1"), false);
 
-    QCOMPARE(result.outcome, MfaResponseOutcome::Rejected);
+    QCOMPARE(result.outcome, MfaResponseOutcome::Unauthorized);
+    // No status: the server sends none on this path, and inventing one
+    // would let the caller print "already resolved (...)" again.
+    QVERIFY(!result.status.has_value());
 }
 
 void MfaResponseClientTest::sentRequestCarriesDeviceHeadersAndSlimBody()
@@ -102,8 +113,30 @@ void MfaResponseClientTest::sentRequestCarriesDeviceHeadersAndSlimBody()
     QVERIFY(!sent.contains(QStringLiteral("approved")));
     QCOMPARE(sent.value(QStringLiteral("approve")).toBool(), false);
 
-    // Exactly these two fields — no leftover credential fields.
-    QCOMPARE(sent.size(), 2);
+    // A deny carries the key but never a value -- the safe answer must not
+    // depend on reading a number, and the server ignores it here.
+    QCOMPARE(sent.value(QStringLiteral("matchDigits")).toString(), QString());
+
+    // Exactly these three fields — no leftover credential fields.
+    QCOMPARE(sent.size(), 3);
+}
+
+void MfaResponseClientTest::approveCarriesMatchDigits()
+{
+    // The server verifies this itself (mfa.Store::ResolvePushWithMatch) and
+    // answers 400 to an approval that omits it, so it has to be on the wire.
+    FakeRelayServer fake(httpResponse(200, "OK", R"({"ok":true,"status":"approved"})"));
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    MfaResponseClient client(http);
+
+    const QUrl serverBaseUrl(QStringLiteral("http://127.0.0.1:%1").arg(fake.port()));
+    client.respond(serverBaseUrl, QStringLiteral("chal-42"), QStringLiteral("device-42"), QStringLiteral("secret-42"),
+                    true, QStringLiteral("47"));
+
+    const QJsonObject sent = fake.receivedJsonBody();
+    QCOMPARE(sent.value(QStringLiteral("approve")).toBool(), true);
+    QCOMPARE(sent.value(QStringLiteral("matchDigits")).toString(), QStringLiteral("47"));
 }
 
 QTEST_GUILESS_MAIN(MfaResponseClientTest)

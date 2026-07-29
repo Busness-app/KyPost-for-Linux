@@ -235,6 +235,12 @@ void HttpClientTest::getDoesNotFollowRedirectWhenValidatorRejectsTarget()
     // final server's body.
     QVERIFY(result.error.has_value());
     QVERIFY(result.body != finalBody);
+    // ...and it is named for what happened. Aborting mid-redirect leaves
+    // the 3xx as the reply's status, which the status-code mapping turns
+    // into a generic Server error -- so "the relay tried to send the device
+    // secret to another host" and "the relay returned a 500" used to be the
+    // same value to every caller and every log line.
+    QCOMPARE(*result.error, NetworkError::RedirectRefused);
 }
 
 void HttpClientTest::crossOriginRedirectIsRefusedByDefault()
@@ -263,6 +269,8 @@ void HttpClientTest::crossOriginRedirectIsRefusedByDefault()
     // Refused, and the secret never reached the other origin.
     QVERIFY(result.body != finalBody);
     QVERIFY(!finalServer.receivedRequest().contains("top-secret"));
+    QVERIFY(result.error.has_value());
+    QCOMPARE(*result.error, NetworkError::RedirectRefused);
 }
 
 QTEST_GUILESS_MAIN(HttpClientTest)

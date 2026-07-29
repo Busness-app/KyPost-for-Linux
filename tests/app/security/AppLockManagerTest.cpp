@@ -23,12 +23,20 @@ public:
     bool sealShouldFail = false;
     bool unsealShouldFail = false;
 
+    bool resealShouldFail = false;
+
     int sealCalls = 0;
     int unsealPermanentlyCalls = 0;
     int unsealForSessionCalls = 0;
+    int resealCalls = 0;
     int relockCalls = 0;
     QString lastPin;
     bool sealed = false;
+    // The PIN the secret is currently wrapped under, and whether the
+    // plaintext was ever written out. A PIN change must move the first
+    // without ever setting the second.
+    QString sealedUnderPin;
+    bool plaintextEverExposed = false;
 
     bool seal(const QString& pin) override
     {
@@ -37,6 +45,7 @@ public:
         if (sealShouldFail)
             return false;
         sealed = true;
+        sealedUnderPin = pin;
         return true;
     }
 
@@ -47,6 +56,23 @@ public:
         if (unsealShouldFail)
             return false;
         sealed = false;
+        sealedUnderPin.clear();
+        // This is the operation that puts the plaintext on disk. Recorded,
+        // because a PIN change must not reach it.
+        plaintextEverExposed = true;
+        return true;
+    }
+
+    bool reseal(const QString& oldPin, const QString& newPin) override
+    {
+        ++resealCalls;
+        lastPin = newPin;
+        if (resealShouldFail)
+            return false;
+        if (sealed && sealedUnderPin != oldPin)
+            return false; // wrong old PIN cannot open the blob
+        sealed = true;
+        sealedUnderPin = newPin;
         return true;
     }
 
@@ -93,6 +119,19 @@ private:
     QHash<QString, QString> m_values;
 };
 
+// A SecureStore that cannot be consulted at all -- no Secret Service
+// provider running, a locked wallet, no D-Bus session. Distinct from
+// FlakySecureStore above, which answers reads and only refuses writes.
+class UnreachableSecureStore : public SecureStore
+{
+public:
+    ReadResult read(const QString&) const override { return ReadResult{ ReadStatus::Failed, QString() }; }
+    bool set(const QString&, const QString&) override { return false; }
+    std::optional<QString> get(const QString&) const override { return std::nullopt; }
+    bool remove(const QString&) override { return false; }
+    bool contains(const QString&) const override { return false; }
+};
+
 // PINs used throughout. Both satisfy PinPolicy (>= 6 chars, not all the same
 // character, not a consecutive run) -- the old fixtures used "111111" and
 // "123456", which the policy now correctly refuses.
@@ -128,6 +167,9 @@ private slots:
     void failsClosedWhenAttemptCountCannotBePersisted();
     void sessionCounterCapsGuessingWhenClockIsMovedForward();
     void staleAttemptCounterCannotTriggerAWipeAfterASuccessfulUnlock();
+    void settingsPromptsHonourTheSessionFloorToo();
+    void anUnreachableSecretStoreLeavesTheAppLocked();
+    void aFailedPinRecordWriteMovesTheSecretBack();
 };
 
 void AppLockManagerTest::startsUnlockedWhenLockDisabled()
@@ -456,18 +498,58 @@ void AppLockManagerTest::changingPinRewrapsSecretUnderNewPin()
     sealer.sealCalls = 0;
 
     QVERIFY(manager.setPin(kGoodPin, kOtherPin));
-    // Unwrapped from the old PIN, re-wrapped under the new one.
-    QCOMPARE(sealer.unsealPermanentlyCalls, 1);
-    QCOMPARE(sealer.sealCalls, 1);
+    // Moved from the old PIN to the new one as ONE operation.
+    QCOMPARE(sealer.resealCalls, 1);
     QCOMPARE(sealer.lastPin, kOtherPin);
     QVERIFY(sealer.isSealed());
+    QCOMPARE(sealer.sealedUnderPin, kOtherPin);
     QVERIFY(store.verifyPin(kOtherPin));
+
+    // The point of the whole change: the plaintext never went to disk.
+    // unsealPermanently() is the call that writes it there, and a PIN
+    // change has no business touching it. Doing so left the secret in the
+    // clear in the keychain for the length of two 150k-iteration PBKDF2
+    // derivations, with applock.credentialPinGateEnabled still reading "1"
+    // -- so an interruption in that window made the exposure permanent
+    // while the UI went on reporting the protection as On.
+    QCOMPARE(sealer.unsealPermanentlyCalls, 0);
+    QVERIFY(!sealer.plaintextEverExposed);
 
     // And if the re-wrap fails, the PIN change is refused rather than
     // silently leaving the gate claiming a seal that isn't there.
-    sealer.unsealShouldFail = true;
+    sealer.resealShouldFail = true;
     QVERIFY(!manager.setPin(kOtherPin, kGoodPin));
     QVERIFY(store.verifyPin(kOtherPin));
+    QCOMPARE(sealer.sealedUnderPin, kOtherPin);
+    QVERIFY(!sealer.plaintextEverExposed);
+}
+
+// The rollback half: the re-wrap succeeded but the PIN record could not be
+// written. The secret is now under the NEW pin while the stored hash still
+// says the old one -- so it must be moved back, or the next unlock opens
+// nothing.
+void AppLockManagerTest::aFailedPinRecordWriteMovesTheSecretBack()
+{
+    FlakySecureStore secureStore;
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    AppLockStore store(secureStore);
+    SettingsStore settingsStore(dir.filePath(QStringLiteral("settings.ini")));
+    FakeSealer sealer;
+    AppLockManager manager(store, settingsStore, sealer);
+
+    QVERIFY(manager.setPin(QString(), kGoodPin));
+    QVERIFY(manager.setCredentialPinGateEnabled(true, kGoodPin));
+    QCOMPARE(sealer.sealedUnderPin, kGoodPin);
+
+    secureStore.writesFail = true;
+    QVERIFY(!manager.setPin(kGoodPin, kOtherPin));
+    secureStore.writesFail = false;
+
+    // Back where it started, and still never written out in the clear.
+    QCOMPARE(sealer.sealedUnderPin, kGoodPin);
+    QVERIFY(!sealer.plaintextEverExposed);
+    QVERIFY(store.verifyPin(kGoodPin));
 }
 
 // A correct PIN that cannot open the sealed secret still unlocks the UI, but
@@ -610,6 +692,125 @@ void AppLockManagerTest::staleAttemptCounterCannotTriggerAWipeAfterASuccessfulUn
     secureStore.writesFail = false;
     QVERIFY(!manager.tryUnlock(kWrongPin));
     QCOMPARE(wipeSpy.count(), 0);
+}
+
+// The session floor must apply to the Settings prompts, not just the unlock
+// screen.
+//
+// verifyPinRateLimited() -- which guards change-PIN, disable-lock, the
+// credential-gate toggle and Hostile Location Protection -- carried two of
+// tryUnlock()'s three guards and not the third. The missing one is the only
+// guard an attacker holding the machine cannot defeat: the persisted backoff
+// is wall-clock based and evaporates when the system clock moves forward,
+// and the persisted counter lives in a store that can silently lose writes.
+// The session counter survives both.
+//
+// So with the clock rolled and the counter cleared, the change-PIN dialog
+// went right on verifying guesses at full speed while the unlock screen
+// beside it was correctly refusing -- the same "unlimited guessing oracle
+// behind a UI that claims to be rate-limited" this class already refuses to
+// serve one method up.
+void AppLockManagerTest::settingsPromptsHonourTheSessionFloorToo()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    SecureStoreFile secureStore(dir.path());
+    AppLockStore store(secureStore);
+    SettingsStore settingsStore(dir.filePath(QStringLiteral("settings.ini")));
+    NullCredentialSealer sealer;
+    QVERIFY(store.setPin(kGoodPin));
+
+    AppLockManager manager(store, settingsStore, sealer);
+
+    // Burn the session floor on the unlock screen, clearing the backoff
+    // between guesses the way a forward clock jump does.
+    for (int i = 0; i < LockoutPolicy::kWipeThreshold; ++i) {
+        manager.tryUnlock(kWrongPin);
+        store.setLockoutUntilEpochMs(0);
+    }
+
+    // Now erase every trace the Settings path used to rely on: the deadline
+    // (clock jump) and the persisted counter (a store that accepts writes
+    // and loses them). Only the in-process floor is left.
+    QVERIFY(store.setLockoutUntilEpochMs(0));
+    QVERIFY(store.setFailedAttemptCount(0));
+
+    QSignalSpy wipeSpy(&manager, &AppLockManager::wipeRequested);
+
+    // The CORRECT PIN, deliberately: once the floor is reached a wipe is
+    // pending, and the point of the floor is that this process stops
+    // answering PIN questions at all. tryUnlock() already refuses here --
+    // its floor check runs before verifyPin(). The Settings prompts did not,
+    // so `disableLock(correctPin)` succeeded, turned the lock off, cleared
+    // the counters and cancelled the pending wipe. Anyone who had learned
+    // the PIN -- or an owner being made to hand it over -- could walk the
+    // ten-failure protection back to nothing through a different dialog.
+    //
+    // The deadline is re-cleared before each call so the wall-clock backoff
+    // cannot be what does the refusing: this asserts the floor specifically.
+    QVERIFY(store.setLockoutUntilEpochMs(0));
+    QVERIFY(!manager.disableLock(kGoodPin));
+    QVERIFY(store.lockEnabled());
+
+    QVERIFY(store.setLockoutUntilEpochMs(0));
+    QVERIFY(!manager.setPin(kGoodPin, kOtherPin));
+    QVERIFY(store.verifyPin(kGoodPin)); // unchanged
+
+    QVERIFY(store.setLockoutUntilEpochMs(0));
+    QVERIFY(!manager.setCredentialPinGateEnabled(true, kGoodPin));
+    QVERIFY(!store.credentialPinGateEnabled());
+
+    QVERIFY(store.setLockoutUntilEpochMs(0));
+    QVERIFY(!manager.setHostileLocationEnabled(true, kGoodPin));
+    QVERIFY(!settingsStore.hostileLocationProtectionEnabled());
+
+    // Each refusal re-signals the pending wipe rather than swallowing it.
+    QCOMPARE(wipeSpy.count(), 4);
+}
+
+// An unreachable secret store must not disable the app lock.
+//
+// lockEnabled() read its flag through SecureStore::get(), whose
+// std::optional cannot distinguish "the store says there is no such key"
+// from "the store could not be consulted". So an unreachable keyring read
+// as "no PIN configured": AppLockManager's constructor seeded m_locked from
+// it and the process started UNLOCKED, with no PIN screen, no lock overlay
+// and no credential gate. Stopping gnome-keyring, or renaming
+// ~/.local/share/keyrings, was the entire bypass -- both are things an
+// ordinary user account can do to itself, which is exactly the access level
+// this lock exists to survive.
+//
+// main.cpp knew and logged a qCritical about it. A log line is not a
+// control.
+void AppLockManagerTest::anUnreachableSecretStoreLeavesTheAppLocked()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    UnreachableSecureStore secureStore;
+    AppLockStore store(secureStore);
+    SettingsStore settingsStore(dir.filePath(QStringLiteral("settings.ini")));
+    NullCredentialSealer sealer;
+
+    // Fails closed at the store...
+    QVERIFY(store.lockEnabled());
+    QVERIFY(!store.storeReadable());
+    // ...including the credential gate, whose "off" answer is what sends
+    // PairingStore::storeDeviceSecret() down the plaintext branch.
+    QVERIFY(store.credentialPinGateEnabled());
+
+    // ...and therefore at the manager, which seeds m_locked from it.
+    AppLockManager manager(store, settingsStore, sealer);
+    QVERIFY(manager.lockEnabled());
+    QVERIFY(manager.locked());
+    // Surfaced, so the overlay can explain why no PIN will work rather than
+    // implying the user has forgotten theirs.
+    QVERIFY(manager.storeUnavailable());
+
+    // And no PIN opens it, because the stored hash is in the same
+    // unreachable store. Refusing is correct; pretending there is no lock
+    // is not.
+    QVERIFY(!manager.tryUnlock(kGoodPin));
+    QVERIFY(manager.locked());
 }
 
 QTEST_GUILESS_MAIN(AppLockManagerTest)

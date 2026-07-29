@@ -34,7 +34,15 @@ kypost_add_test(PushNotificationTest core/models/PushNotificationTest.cpp)
 # core/security: PIN policy, lockout backoff, and the PIN-derived AEAD that
 # backs the credential gate. All three are pure/store-only, no GUI.
 kypost_add_test(LockoutPolicyTest core/security/LockoutPolicyTest.cpp)
+# Links libcrypto directly (kypostcore keeps it PRIVATE): the KDF-migration
+# test has to hand-build a pre-Argon2id blob in the old PBKDF2 + AES-GCM
+# layout, because that is the only way to prove an existing user's sealed
+# credential still opens after the format change. find_package is repeated
+# here because imported targets are directory-scoped and core/'s call does
+# not reach this list.
+find_package(OpenSSL REQUIRED)
 kypost_add_test(CredentialCipherTest core/security/CredentialCipherTest.cpp)
+target_link_libraries(CredentialCipherTest PRIVATE OpenSSL::Crypto)
 kypost_add_test(AppLockStoreTest core/security/AppLockStoreTest.cpp)
 # PinPolicy: what counts as an acceptable PIN. Enforced in C++ because
 # the PIN is the key-encryption key for the relay device secret whenever
@@ -61,6 +69,9 @@ kypost_add_test(DeviceRegistrationServiceTest core/domain/DeviceRegistrationServ
 kypost_add_test(MailRepositoryTest core/domain/MailRepositoryTest.cpp)
 kypost_add_test(FolderRepositoryTest core/domain/FolderRepositoryTest.cpp)
 kypost_add_test(PairingStoreSealTest core/domain/PairingStoreSealTest.cpp)
+# The two data-destruction paths, which lived as untestable lambdas inside
+# main() until they were extracted into core/domain/LocalDataWipe.
+kypost_add_test(LocalDataWipeTest core/domain/LocalDataWipeTest.cpp)
 kypost_add_test(PgpMessageStateTest core/domain/PgpMessageStateTest.cpp)
 kypost_add_test(PgpComposeStateTest core/domain/PgpComposeStateTest.cpp)
 kypost_add_test(KeywordRepositoryTest core/domain/KeywordRepositoryTest.cpp)

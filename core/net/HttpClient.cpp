@@ -59,6 +59,17 @@ QByteArray HttpClient::certificatePin() const
     return m_certificatePin;
 }
 
+HttpClient::CertificatePinState HttpClient::certificatePinState() const
+{
+    return CertificatePinState{ m_certificatePin, m_pinnedOrigin };
+}
+
+void HttpClient::restoreCertificatePin(const CertificatePinState& state)
+{
+    m_certificatePin = state.spkiSha256;
+    m_pinnedOrigin = state.origin;
+}
+
 void HttpClient::clearCertificatePin()
 {
     m_certificatePin.clear();
@@ -89,7 +100,7 @@ HttpClient::HttpResult HttpClient::get(const QUrl& url, const QList<QPair<QStrin
 {
     const QUrl requestUrl = urlWithQuery(url, query);
     if (!requestUrl.isValid())
-        return HttpResult{ NetworkError::InvalidUrl, 0, {}, QStringLiteral("Invalid URL") };
+        return HttpResult{ NetworkError::InvalidUrl, 0, {}, QStringLiteral("Invalid URL"), {}, {} };
 
     QNetworkRequest request(requestUrl);
     applyDefaultHeaders(request, headers);
@@ -113,7 +124,7 @@ HttpClient::HttpResult HttpClient::post(const QUrl& url, const QList<QPair<QStri
 {
     const QUrl requestUrl = urlWithQuery(url, query);
     if (!requestUrl.isValid())
-        return HttpResult{ NetworkError::InvalidUrl, 0, {}, QStringLiteral("Invalid URL") };
+        return HttpResult{ NetworkError::InvalidUrl, 0, {}, QStringLiteral("Invalid URL"), {}, {} };
 
     QNetworkRequest request(requestUrl);
     request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
@@ -130,7 +141,7 @@ HttpClient::HttpResult HttpClient::put(const QUrl& url, const QList<QPair<QStrin
 {
     const QUrl requestUrl = urlWithQuery(url, query);
     if (!requestUrl.isValid())
-        return HttpResult{ NetworkError::InvalidUrl, 0, {}, QStringLiteral("Invalid URL") };
+        return HttpResult{ NetworkError::InvalidUrl, 0, {}, QStringLiteral("Invalid URL"), {}, {} };
 
     QNetworkRequest request(requestUrl);
     request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
@@ -147,7 +158,7 @@ HttpClient::HttpResult HttpClient::del(const QUrl& url, const QList<QPair<QStrin
 {
     const QUrl requestUrl = urlWithQuery(url, query);
     if (!requestUrl.isValid())
-        return HttpResult{ NetworkError::InvalidUrl, 0, {}, QStringLiteral("Invalid URL") };
+        return HttpResult{ NetworkError::InvalidUrl, 0, {}, QStringLiteral("Invalid URL"), {}, {} };
 
     QNetworkRequest request(requestUrl);
     applyDefaultHeaders(request, headers);
@@ -225,19 +236,34 @@ HttpClient::HttpResult HttpClient::waitForReply(QNetworkReply* reply, const Redi
     // redirectAllowed() leaves the reply completing with the redirect
     // response itself (e.g. the 302), which is exactly what "don't follow
     // this" should look like to the caller.
+    bool redirectRefused = false;
     if (redirectValidator) {
-        QObject::connect(reply, &QNetworkReply::redirected, reply, [reply, redirectValidator](const QUrl& target) {
-            if (redirectValidator(target))
-                reply->redirectAllowed();
-            else
-                // Simply not calling redirectAllowed() leaves Qt waiting
-                // indefinitely for a decision under UserVerifiedRedirectPolicy
-                // (unlike ManualRedirectPolicy, this isn't "give up and
-                // return the 3xx response" -- it just never finishes) --
-                // abort() is what actually completes the reply once the
-                // target is rejected.
-                reply->abort();
-        });
+        QObject::connect(reply, &QNetworkReply::redirected, reply,
+                          [reply, redirectValidator, &redirectRefused](const QUrl& target) {
+                              if (redirectValidator(target)) {
+                                  reply->redirectAllowed();
+                                  return;
+                              }
+                              // Recorded, not just aborted. Aborting leaves
+                              // the 3xx as the reply's status, which the
+                              // status-code mapping below turns into a
+                              // generic Server error -- so this, the one
+                              // condition on this path that means "somebody
+                              // tried to send the device secret somewhere
+                              // else", read identically to a 500.
+                              redirectRefused = true;
+                              qWarning("HttpClient: refused a redirect to %s -- outside the origin the "
+                                       "caller named; the credential was not sent",
+                                       qUtf8Printable(target.toString(QUrl::RemoveUserInfo | QUrl::RemoveQuery
+                                                                      | QUrl::RemovePath)));
+                              // Simply not calling redirectAllowed() leaves Qt waiting
+                              // indefinitely for a decision under UserVerifiedRedirectPolicy
+                              // (unlike ManualRedirectPolicy, this isn't "give up and
+                              // return the 3xx response" -- it just never finishes) --
+                              // abort() is what actually completes the reply once the
+                              // target is rejected.
+                              reply->abort();
+                          });
     }
     loop.exec();
 
@@ -282,6 +308,12 @@ HttpClient::HttpResult HttpClient::waitForReply(QNetworkReply* reply, const Redi
         // pairing and needs a persistent explanation with a way out.
         if (m_certificateMismatchHandler)
             m_certificateMismatchHandler();
+    } else if (redirectRefused) {
+        // Ranked above the status code for the same reason the pin mismatch
+        // is: the 3xx the reply is carrying describes what the server WANTED
+        // to happen, not what did, and "we refused to follow that" is the
+        // fact the caller needs.
+        result.error = NetworkError::RedirectRefused;
     } else if (result.statusCode != 0) {
         // Got an HTTP response — map by status code even if QNetworkReply
         // also flagged an error of its own (e.g. 404 sets ContentNotFoundError).

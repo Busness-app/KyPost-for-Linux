@@ -223,7 +223,7 @@ ContactSyncOutcome ContactSyncRepository::sync()
 {
     const std::optional<DevicePairing> pairing = m_pairingStore.load();
     if (!pairing.has_value())
-        return { ContactSyncStatus::NotPaired, {}, QStringLiteral("Not paired") };
+        return { ContactSyncStatus::NotPaired, {}, QStringLiteral("Not paired"), {} };
 
     const RelayAuth auth{ pairing->deviceId, pairing->deviceSecret };
     const QUrl serverUrl(pairing->serverBaseUrl);
@@ -246,7 +246,7 @@ ContactSyncOutcome ContactSyncRepository::sync()
     // An unpushed queue must survive to the next sync() call -- pending is
     // deliberately left untouched here.
     if (result.error.has_value())
-        return { statusFromNetworkError(*result.error), {}, result.detail };
+        return { statusFromNetworkError(*result.error), {}, result.detail, {} };
 
     if (result.tooOld) {
         // setContactBaseCursor(QString()) directly rather than
@@ -261,7 +261,8 @@ ContactSyncOutcome ContactSyncRepository::sync()
             m_pendingDao.deleteById(record.id);
         return { ContactSyncStatus::Success,
                  ContactSyncSummary{ static_cast<int>(pending.size()), 0, 0 },
-                 QString() };
+                 QString(),
+                 {} };
     }
 
     QVector<Contact> pendingCreates;

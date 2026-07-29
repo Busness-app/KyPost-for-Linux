@@ -18,6 +18,13 @@ class SecureStoreKeychain : public SecureStore
 public:
     explicit SecureStoreKeychain(const QString& service);
 
+    // The three-state read. QKeychain reports EntryNotFound as its own error
+    // code, distinct from "no Secret Service provider is reachable" / "the
+    // wallet is locked" / "D-Bus is not running", so this backend is the one
+    // that can actually answer the question -- and is exactly the backend
+    // where the answer matters, because it is what ships.
+    ReadResult read(const QString& key) const override;
+
     bool set(const QString& key, const QString& value) override;
     std::optional<QString> get(const QString& key) const override;
     bool remove(const QString& key) override;

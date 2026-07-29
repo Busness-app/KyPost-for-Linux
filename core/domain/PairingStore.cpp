@@ -26,6 +26,30 @@ QString valueOrEmpty(const std::optional<QString>& value)
 
 }
 
+// Drops load()'s cache on entry AND on exit of a mutating method.
+//
+// Both ends, not just one. In production every SecureStore write is a
+// QKeychain job on a nested QEventLoop, so QML input keeps being delivered
+// while a mutator is mid-flight -- which means some other code path can call
+// load() from inside it and repopulate the cache from half-written state.
+// Invalidating only on entry would leave that stale value in place for the
+// rest of the session; only on exit would serve it during the call.
+struct PairingStore::CacheInvalidation
+{
+    explicit CacheInvalidation(const PairingStore& store)
+        : m_store(store)
+    {
+        m_store.m_cache.reset();
+    }
+    ~CacheInvalidation() { m_store.m_cache.reset(); }
+
+    CacheInvalidation(const CacheInvalidation&) = delete;
+    CacheInvalidation& operator=(const CacheInvalidation&) = delete;
+
+private:
+    const PairingStore& m_store;
+};
+
 PairingStore::PairingStore(SecureStore& secureStore)
     : m_secureStore(secureStore)
 {
@@ -33,6 +57,25 @@ PairingStore::PairingStore(SecureStore& secureStore)
 
 std::optional<DevicePairing> PairingStore::load() const
 {
+    // Served from the cache when one is current.
+    //
+    // Every field below is a separate SecureStore::get(), and in production
+    // that is a QKeychain job on a nested QEventLoop and a D-Bus round trip
+    // to the Secret Service -- eight of them per call. isPaired() is
+    // load().has_value(), so answering a yes/no cost eight; MailController
+    // calls requirePairing() (hence load()) on every mail operation; and
+    // MfaController::respond() made nine blocking IPC calls before a single
+    // byte went on the wire. On a session where kwalletd is slow or
+    // prompting, opening one email visibly froze the UI.
+    //
+    // Each of those nested loops is also a re-entrancy window (see
+    // core/util/ReentrancyGuard.h), so this cuts the interleaving surface as
+    // well as the latency. Invalidated by every mutation below -- save(),
+    // clear(), and the seal/unseal/lock transitions that change what
+    // deviceSecret resolves to.
+    if (m_cache.has_value())
+        return m_cache;
+
     const std::optional<QString> subscriberId = m_secureStore.get(QLatin1String(kSubscriberIdKey));
     if (!subscriberId.has_value())
         return std::nullopt;
@@ -52,6 +95,7 @@ std::optional<DevicePairing> PairingStore::load() const
     if (pairing.deviceSecret.isEmpty() && !m_unsealedDeviceSecret.isEmpty())
         pairing.deviceSecret = m_unsealedDeviceSecret;
     pairing.certificateSpkiSha256 = valueOrEmpty(m_secureStore.get(QLatin1String(kCertificatePinKey)));
+    m_cache = pairing;
     return pairing;
 }
 
@@ -72,12 +116,19 @@ bool PairingStore::credentialGateEnabled() const
     // off" would write plaintext next to a blob that does exist.
     if (deviceSecretSealed())
         return true;
-    return m_secureStore.get(QLatin1String(AppLockStore::kCredentialGateKey)).value_or(QString())
-        == QStringLiteral("1");
+    const SecureStore::ReadResult gate = m_secureStore.read(QLatin1String(AppLockStore::kCredentialGateKey));
+    // A store that could not be consulted must not report "gate off" --
+    // that is the answer that sends storeDeviceSecret() down the plaintext
+    // branch, which is precisely the outcome this function's own comment
+    // above says both failure directions must avoid.
+    if (gate.failed())
+        return true;
+    return gate.value == QStringLiteral("1");
 }
 
 bool PairingStore::storeDeviceSecret(const QString& secret)
 {
+    const CacheInvalidation invalidate(*this);
     if (!credentialGateEnabled()) {
         // Gate off: plaintext in the system keychain is the normal, intended
         // resting state, same as it has always been.
@@ -113,6 +164,7 @@ bool PairingStore::save(const DevicePairing& pairing)
 
 bool PairingStore::save(const DevicePairing& pairing, const CredentialCipher::SessionKey& sealingKey)
 {
+    const CacheInvalidation invalidate(*this);
     // The key is passed in, not read live, so that a lock arriving DURING a
     // blocking registration cannot invalidate a check that already passed.
     // HttpClient runs a nested QEventLoop, so minimising the window mid-call
@@ -120,18 +172,37 @@ bool PairingStore::save(const DevicePairing& pairing, const CredentialCipher::Se
     // its own guard and pair() responded by clearing the entire pairing --
     // subscriber id, device id, sealed blob and TOFU pin -- after the server
     // had already minted and retired the secret.
+    const quint64 epochBefore = m_lockEpoch;
     const CredentialCipher::SessionKey previousKey = m_sessionKey;
     m_sessionKey = sealingKey;
     const bool ok = saveUnderCurrentKey(pairing);
-    // Restore rather than keep: if the app locked during the call it must
-    // stay locked, and the caller's snapshot was only ever a licence to
-    // finish this one write.
-    m_sessionKey = previousKey;
+
+    // What happens next depends on whether the app locked while the writes
+    // above were blocked, and that is NOT answerable from the key alone.
+    //
+    // This used to unconditionally restore `previousKey`, with a comment
+    // saying "if the app locked during the call it must stay locked" -- and
+    // it did the exact opposite. saveUnderCurrentKey() performs nine
+    // keychain writes, each on a nested QEventLoop, so a window minimise
+    // during it reaches lockDeviceSecret(), which sets m_sessionKey = {}.
+    // Restoring the pre-call key then put a live PBKDF2 key back after the
+    // lock had deliberately destroyed it, leaving a locked app holding the
+    // means to decrypt its own sealed blob -- precisely what
+    // lockDeviceSecret()'s own comment says re-locking exists to end.
+    //
+    // The epoch answers the real question. Unchanged: nothing locked, the
+    // caller's snapshot was a licence for this one write and the previous
+    // key resumes. Changed: a lock landed mid-write and wins outright.
+    if (m_lockEpoch == epochBefore)
+        m_sessionKey = previousKey;
+    else
+        m_sessionKey = {};
     return ok;
 }
 
 bool PairingStore::saveUnderCurrentKey(const DevicePairing& pairing)
 {
+    const CacheInvalidation invalidate(*this);
     // Checked before ANY key is written: a caller that reaches here with the
     // gate on and no session key has already rotated the credential
     // server-side, and there is nothing useful left to do but report it.
@@ -152,6 +223,7 @@ bool PairingStore::saveUnderCurrentKey(const DevicePairing& pairing)
 
 bool PairingStore::clear()
 {
+    const CacheInvalidation invalidate(*this);
     // Every result checked and aggregated. The caller that matters is the
     // wipe-after-repeated-PIN-failure path, where a silently-failed removal
     // (a locked wallet, no Secret Service running) means the device secret
@@ -175,6 +247,9 @@ bool PairingStore::clear()
     ok = m_secureStore.set(QLatin1String(AppLockStore::kCredentialGateKey), QStringLiteral("0")) && ok;
     m_unsealedDeviceSecret.clear();
     m_sessionKey = {};
+    // Same reason as lockDeviceSecret(): an unpair racing a blocked save()
+    // must not have its key resurrected on that save()'s way out.
+    ++m_lockEpoch;
     return ok;
 }
 
@@ -185,6 +260,7 @@ bool PairingStore::isPaired() const
 
 bool PairingStore::sealDeviceSecret(const QString& pin)
 {
+    const CacheInvalidation invalidate(*this);
     // Already sealed: nothing to encrypt, but still adopt the blob as this
     // session's key material. Otherwise turning the gate on would leave the
     // session unable to re-seal a rotated secret (canResealDeviceSecret()
@@ -215,6 +291,7 @@ bool PairingStore::sealDeviceSecret(const QString& pin)
 
 bool PairingStore::unsealDeviceSecret(const QString& pin)
 {
+    const CacheInvalidation invalidate(*this);
     const std::optional<QString> sealed = m_secureStore.get(QLatin1String(kSealedDeviceSecretKey));
     if (!sealed.has_value() || sealed->isEmpty())
         return false;
@@ -233,13 +310,50 @@ bool PairingStore::unsealDeviceSecret(const QString& pin)
     return true;
 }
 
+bool PairingStore::resealDeviceSecret(const QString& oldPin, const QString& newPin)
+{
+    const CacheInvalidation invalidate(*this);
+    const std::optional<QString> sealed = m_secureStore.get(QLatin1String(kSealedDeviceSecretKey));
+    if (!sealed.has_value() || sealed->isEmpty())
+        return false;
+
+    // Open under the old PIN, in memory.
+    const std::optional<std::pair<QByteArray, CredentialCipher::SessionKey>> opened =
+        CredentialCipher::openWithKey(oldPin, *sealed);
+    if (!opened.has_value())
+        return false;
+
+    // Re-wrap under the new one, still in memory. seal() (not sealWithKey())
+    // because a new PIN means a new key, which means a fresh salt.
+    const std::optional<QString> resealed = CredentialCipher::seal(newPin, opened->first);
+    if (!resealed.has_value())
+        return false;
+
+    // The single write. Until this line lands, the old blob is intact and
+    // the old PIN still opens it; after it, the new one does. There is no
+    // instant at which the secret exists on disk unprotected, and no instant
+    // at which it exists on disk under no key at all.
+    if (!m_secureStore.set(QLatin1String(kSealedDeviceSecretKey), *resealed))
+        return false;
+
+    // Adopt the new key/plaintext for the rest of this session, so a secret
+    // the relay rotates later can still be re-sealed without another PIN
+    // prompt -- same reason sealDeviceSecret() ends with an unseal.
+    return unsealDeviceSecret(newPin);
+}
+
 void PairingStore::lockDeviceSecret()
 {
+    const CacheInvalidation invalidate(*this);
     m_unsealedDeviceSecret.clear();
     // Dropped with the plaintext, not kept: a locked app that still held the
     // key could re-seal, which means it could also decrypt, which is exactly
     // what re-locking is supposed to end.
     m_sessionKey = {};
+    // Recorded, so a save() that is currently blocked inside a nested event
+    // loop can see on the way out that this happened and must not put the
+    // key back. See save().
+    ++m_lockEpoch;
 }
 
 bool PairingStore::canResealDeviceSecret() const
@@ -253,6 +367,7 @@ bool PairingStore::canResealDeviceSecret() const
 
 bool PairingStore::unsealDeviceSecretPermanently(const QString& pin)
 {
+    const CacheInvalidation invalidate(*this);
     const std::optional<QString> sealed = m_secureStore.get(QLatin1String(kSealedDeviceSecretKey));
     if (!sealed.has_value() || sealed->isEmpty()) {
         // Nothing sealed: already in the desired state.
@@ -269,6 +384,10 @@ bool PairingStore::unsealDeviceSecretPermanently(const QString& pin)
         return false;
     m_unsealedDeviceSecret.clear();
     m_sessionKey = {};
+    // Every deliberate destruction of the session key bumps the epoch, so a
+    // save() blocked in a nested event loop can never resurrect one. See
+    // save().
+    ++m_lockEpoch;
     return m_secureStore.remove(QLatin1String(kSealedDeviceSecretKey));
 }
 

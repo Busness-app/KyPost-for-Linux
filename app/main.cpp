@@ -27,6 +27,7 @@
 #include "domain/ContactSyncRepository.h"
 #include "domain/DeviceRegistrationService.h"
 #include "domain/GroupsRepository.h"
+#include "domain/LocalDataWipe.h"
 #include "domain/KeywordRepository.h"
 #include "domain/FolderRepository.h"
 #include "security/AppLockStore.h"
@@ -482,16 +483,15 @@ int main(int argc, char* argv[])
         qCritical("main: the system secret store is not writable -- pairing and the app lock "
                   "cannot persist. Start a keyring service (gnome-keyring or kwallet) and "
                   "relaunch KyPost.");
-        // ponytail: AppLockStore::lockEnabled() reads the flag through
-        // SecureStore::get(), which collapses "the store said no" and "the
-        // store did not answer" into the same std::nullopt -- so an
-        // unreachable keyring reads as "no PIN configured" and the lock
-        // silently does not engage. Failing closed here needs SecureStore to
-        // report read failures separately (a ReadStatus{Found,Absent,Failed}
-        // on the interface, threaded through SecureStoreFile and
-        // SecureStoreKeychain); until then this warning is the only signal.
-        // Bounded risk: the same actor can read kypost.db directly, and with
-        // the store unreachable there is no relay credential to expose either.
+        // This warning is no longer the only thing standing between an
+        // unreachable keyring and a silently-disabled app lock.
+        // SecureStore::read() now reports Failed separately from Absent
+        // (see core/stores/SecureStore.h), SecureStoreKeychain maps
+        // QKeychain's EntryNotFound to Absent and every other error to
+        // Failed, and AppLockStore::lockEnabled()/credentialPinGateEnabled()
+        // both fail CLOSED on Failed. A user who stops their keyring now
+        // gets a lock screen they cannot pass -- with AppLock.storeUnavailable
+        // true so the overlay explains why -- rather than a wide-open app.
     }
 
     // The embedded ntfy subscriber tier was removed on 2026-07-26
@@ -656,47 +656,41 @@ int main(int argc, char* argv[])
     // and it is deliberately everything an attacker could otherwise read:
     // cached mail/contacts, the pairing credential, and the lock itself
     // (leaving a PIN behind would be a hint about the wiped account).
+    // The wipe itself lives in core/domain/LocalDataWipe, not in the lambda
+    // below. It used to be written out inline here, which is why it went
+    // untested for its whole life -- main() is one unbroken chain of stack
+    // locals with no seam a test can reach, and the bug that hid there for
+    // months was real: the pre-rename database was invisible to this handler
+    // AND to the Hostile Location Protection one, so both reported success
+    // while a full plaintext copy of the same mail and contacts stayed on
+    // disk. This handler is now the journal reporting only.
+    LocalDataWipe localDataWipe(database, pairingStore, appLockStore, settingsStore, dataDir, newDbPath,
+                                 legacyDbPaths);
+
     QObject::connect(&appLockManager, &AppLockManager::wipeRequested, &appLockManager,
-                      [&database, &pairingStore, &appLockStore, &settingsStore, dataDir, legacyDbPaths]() {
+                      [&localDataWipe]() {
                           qWarning("App lock: wipe threshold reached, erasing local data");
-                          // Every step's result is checked. These calls all
-                          // return bool and all of them can genuinely fail --
+                          // Each failure is named individually in the
+                          // journal. All of these genuinely fail --
                           // SecureStore writes fail on any machine with no
                           // reachable Secret Service (see the canary at the
-                          // top of main()), and a failed removal here means
-                          // the device secret and cached mail survive a wipe
-                          // the app has already decided to perform. Silently
+                          // top of main()) -- and a failed removal means the
+                          // device secret and cached mail survive a wipe the
+                          // app has already decided to perform. Silently
                           // relaunching into a state that merely LOOKS wiped
-                          // is the worst available outcome, so each failure
-                          // is named individually in the journal.
-                          const bool tablesWiped = database.wipeAllTables();
-                          // The pre-rename database is a separate FILE, so
-                          // wipeAllTables() -- which scrubs the open
-                          // connection -- cannot reach it. It was invisible
-                          // to this handler entirely, which meant "wiped"
-                          // was reported while a full plaintext copy of the
-                          // same mail and contacts stayed on disk.
-                          bool legacyWiped = true;
-                          for (const QString& legacyDbPath : legacyDbPaths) {
-                              if (QFile::exists(legacyDbPath))
-                                  legacyWiped = SecurityWipe::removeDatabaseFiles(legacyDbPath) && legacyWiped;
-                          }
-                          const bool photosCleared =
-                              SecurityWipe::clearCacheDirectory(dataDir + QStringLiteral("/contact-photos"));
-                          const bool pairingCleared = pairingStore.clear();
-                          const bool lockCleared = appLockStore.clear();
-                          if (!tablesWiped)
+                          // is the worst available outcome.
+                          const LocalDataWipeResult wiped = localDataWipe.wipeEverything();
+                          if (!wiped.tablesWiped)
                               qCritical("App lock: WIPE INCOMPLETE -- cached mail and contacts could not be erased");
-                          if (!photosCleared)
+                          if (!wiped.photoCacheCleared)
                               qCritical("App lock: WIPE INCOMPLETE -- the contact-photo cache could not be erased");
-                          if (!pairingCleared)
+                          if (!wiped.pairingCleared)
                               qCritical("App lock: WIPE INCOMPLETE -- the pairing credential could not be removed "
                                         "from the secret store; this device may still be able to reach the relay");
-                          if (!lockCleared)
+                          if (!wiped.lockCleared)
                               qCritical("App lock: WIPE INCOMPLETE -- the stored PIN material could not be removed");
-                          if (!legacyWiped)
+                          if (!wiped.legacyDatabasesRemoved)
                               qCritical("App lock: WIPE INCOMPLETE -- a pre-rename database could not be erased");
-                          settingsStore.setDeliveryMode(QString());
                           // Relaunch regardless of the above: leaving a
                           // running window holding the pre-wipe view of the
                           // world in front of whoever just failed ten PIN
@@ -717,23 +711,21 @@ int main(int argc, char* argv[])
     // persisted; this erases on-disk data when switching the mode ON, then
     // relaunches so the next process picks the right database.
     QObject::connect(&appLockManager, &AppLockManager::relaunchRequired, &appLockManager,
-                      [&database, newDbPath, dataDir, legacyDbPaths](bool wipeDisk) {
+                      [&localDataWipe](bool wipeDisk) {
                           if (wipeDisk) {
-                              // Empty the tables first: the connection is
-                              // still open, so the file cannot be removed
-                              // reliably yet, and this guarantees the content
-                              // is gone even if the unlink below loses a race
-                              // with a straggling writer.
-                              database.wipeAllTables();
-                              SecurityWipe::removeDatabaseFiles(newDbPath);
-                              // Turning Hostile Location Protection ON must
-                              // also take the pre-rename copy: it holds the
-                              // same mail and contacts, and leaving it behind
-                              // makes "held in memory only" false from the
-                              // first launch onwards.
-                              for (const QString& legacyDbPath : legacyDbPaths)
-                                  SecurityWipe::removeDatabaseFiles(legacyDbPath);
-                              SecurityWipe::clearCacheDirectory(dataDir + QStringLiteral("/contact-photos"));
+                              // Shares LocalDataWipe with the ten-failure
+                              // path, which is the point: when these were
+                              // two hand-written blocks they disagreed about
+                              // what "everything" meant, and the pre-rename
+                              // database was missing from both. Unlike that
+                              // path this one also unlinks the live database
+                              // file -- the next launch opens ":memory:", so
+                              // nothing may remain on disk.
+                              const LocalDataWipeResult wiped = localDataWipe.wipeOnDiskDataOnly();
+                              if (!wiped.complete()) {
+                                  qCritical("Hostile Location Protection: could not erase all on-disk data; "
+                                            "this device may still hold cached mail after the relaunch");
+                              }
                           }
                           AppRelauncher::requestRelaunch();
                       });
@@ -867,9 +859,22 @@ int main(int argc, char* argv[])
 
     // Task 34: QML-facing bridge over mfaResponseClient/pairingStore (both
     // constructed above).
+    //
+    // Constructed but deliberately NOT registered as a QML singleton. See
+    // MfaController.h's STATUS note: no QML consumes it, and none can --
+    // kypost-server filters unifiedpush devices out of every MFA challenge,
+    // so a Linux device is never notified of one. The class is kept because
+    // that filter is explicitly temporary and this is the half that already
+    // works.
+    //
+    // Registering it anyway made a subsystem with no user reachable from
+    // every QML file in the app, where respond() reads the pairing and fires
+    // an authenticated POST. Dead code is tolerable; dead code wired to the
+    // engine as `Mfa` is attack surface with nothing on the other end.
+    // Re-add the qmlRegisterSingletonInstance line in the same commit that
+    // adds the approval screen, once the backend change lands.
     MfaController mfaController(mfaResponseClient, pairingStore);
-    qmlRegisterSingletonInstance<MfaController>(
-        "com.urlxl.mail", 1, 0, "Mfa", &mfaController);
+    Q_UNUSED(mfaController);
 
     QQmlApplicationEngine engine;
 

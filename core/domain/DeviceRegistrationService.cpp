@@ -6,6 +6,7 @@
 #include "security/CredentialCipher.h"
 #include "stores/SettingsStore.h"
 
+#include <QLoggingCategory>
 #include <QUrl>
 
 namespace {
@@ -24,6 +25,50 @@ QString derivePullEndpoint(const QUrl& serverBaseUrl)
     pull.setPath(QStringLiteral("/api/notifications/native/pull"));
     return pull.toString();
 }
+
+// Clears the certificate pin for the duration of a registration and puts it
+// back on destruction unless the registration actually established a new
+// one.
+//
+// Scope-based, and deliberately not a save/restore pair of statements:
+// pair() has five separate exit paths (the deferred-credentials guard, a
+// non-Success outcome, a failed persist, and two success tails) and the
+// previous code restored on none of them. A guard cannot be forgotten by the
+// next person to add a sixth.
+class ScopedPinSuspension
+{
+public:
+    explicit ScopedPinSuspension(HttpClient& httpClient)
+        : m_httpClient(httpClient)
+        , m_saved(httpClient.certificatePinState())
+    {
+        // The registration is what establishes a new trust anchor, so the
+        // old pin must not be allowed to abort it -- that is what made the
+        // certificate-mismatch banner's own "unpair and pair again" advice
+        // impossible to follow without restarting the process.
+        m_httpClient.clearCertificatePin();
+    }
+
+    ~ScopedPinSuspension()
+    {
+        if (m_restore)
+            m_httpClient.restoreCertificatePin(m_saved);
+    }
+
+    ScopedPinSuspension(const ScopedPinSuspension&) = delete;
+    ScopedPinSuspension& operator=(const ScopedPinSuspension&) = delete;
+
+    // Called only once a NEW pin has been installed. From that point the
+    // saved one is stale and must not come back.
+    void keepNewPin() { m_restore = false; }
+
+    const HttpClient::CertificatePinState& saved() const { return m_saved; }
+
+private:
+    HttpClient& m_httpClient;
+    HttpClient::CertificatePinState m_saved;
+    bool m_restore = true;
+};
 
 } // namespace
 
@@ -64,11 +109,7 @@ NativeRegistrationResult DeviceRegistrationService::pair(const PairingParams& pa
     // guard and this function used to respond by clearing the whole pairing.
     const CredentialCipher::SessionKey sealingKey = m_pairingStore.sealingKeySnapshot();
 
-    // The registration is what establishes a new trust anchor, so the old
-    // pin must not be allowed to abort it -- that is what made the
-    // certificate-mismatch banner's own "unpair and pair again" advice
-    // impossible to follow without restarting the process.
-    m_httpClient.clearCertificatePin();
+    ScopedPinSuspension pinSuspension(m_httpClient);
 
     const NativeRegistrationResult result = m_client.registerDevice(
         QUrl(params.registrationUrl), params.subscriberId, params.pairingToken, deviceToken, QString(), params.deviceName);
@@ -130,8 +171,21 @@ NativeRegistrationResult DeviceRegistrationService::pair(const PairingParams& pa
     // the paired server's origin: the pin describes that relay, and enforcing
     // it on the deliberately cross-server PGP QR fetch only ever produced a
     // false "your mail server is being impersonated" alarm.
-    if (!result.peerSpkiSha256.isEmpty())
+    if (!result.peerSpkiSha256.isEmpty()) {
         m_httpClient.setCertificatePin(result.peerSpkiSha256, QUrl(params.serverBaseUrl));
+        pinSuspension.keepNewPin();
+    } else if (pinSuspension.saved().isEnforcing()) {
+        // Registered successfully but there is nothing to pin. Over plain
+        // http that is expected (no handshake) -- but it also happens when
+        // QSslCertificate::publicKey() yields a key the backend cannot
+        // represent, and in that case silently dropping a pin this device
+        // was ALREADY enforcing is a downgrade, not a no-op. The guard
+        // restores the previous pin on the way out; say so, because the
+        // pinned key and the newly-registered server may now disagree and
+        // the user's next request is the one that will fail.
+        qWarning("DeviceRegistrationService: registration succeeded but the peer key could not be "
+                 "read; keeping the previously pinned certificate rather than disabling pinning");
+    }
 
     const QUrl serverOrigin(params.serverBaseUrl);
     const QUrl advertisedPullEndpoint(result.response.pullEndpoint);

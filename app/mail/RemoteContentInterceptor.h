@@ -12,10 +12,22 @@ class QQuickWebEngineProfile;
 // poster>, SVG <image>. It does NOT gate the "Stylesheet"/"Media" policies,
 // so a sender's <link rel="stylesheet">, CSS @import, or <video>/<audio>
 // element fired a tracking-pixel-equivalent remote request even with
-// autoLoadImages false, defeating the toggle's entire purpose. This blocks
-// every request except the top-level document load itself while images
-// aren't loaded; once the user opts in, nothing is blocked (matches the
-// toggle's existing "reveal everything" intent).
+// autoLoadImages false, defeating the toggle's entire purpose.
+//
+// The policy is an ALLOWLIST in both directions, which is the correction to
+// how this class originally worked. It used to block everything but the
+// document while images were off and then allow EVERYTHING once the user
+// opted in -- so one click on "Show images" re-opened the exact stylesheet
+// and media vectors this class exists to close, and additionally opened
+// subframes, fonts, XHR, WebSocket and ping/beacon, none of which the user
+// was asked about. Worse, a subframe is not covered by EmailDetail.qml's
+// navigationRequested handler either (that only sees main-frame
+// navigations), so an <iframe src="https://tracker/..."> in a message had
+// no guard left at all.
+//
+// "Show images" now means images. The document load itself is always
+// allowed (it is loadHtml()'s own local content); images and favicons are
+// allowed once the user opts in; everything else is refused in both states.
 class RemoteContentInterceptor : public QWebEngineUrlRequestInterceptor
 {
     Q_OBJECT

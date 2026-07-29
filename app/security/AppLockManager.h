@@ -49,6 +49,16 @@ class AppLockManager : public QObject
     // the same rule the C++ side enforces, instead of hardcoding a second
     // copy that could drift.
     Q_PROPERTY(int minimumPinLength READ minimumPinLength CONSTANT)
+    // True when the secret store cannot be consulted at all -- no Secret
+    // Service provider running, a locked wallet, no D-Bus session.
+    //
+    // The lock now fails CLOSED in that state (AppLockStore::lockEnabled),
+    // which is the safe answer but an inexplicable one on its own: the user
+    // gets an unlock screen that refuses every PIN, including the right one,
+    // because verifyPin() cannot read the stored hash either. This property
+    // is what lets the overlay say "your keyring is not running" instead of
+    // silently implying they have forgotten their own PIN.
+    Q_PROPERTY(bool storeUnavailable READ storeUnavailable NOTIFY lockStateChanged)
 
 public:
     AppLockManager(AppLockStore& store, SettingsStore& settingsStore, CredentialSealer& sealer,
@@ -61,6 +71,7 @@ public:
     bool credentialPinGateEnabled() const;
     bool hostileLocationEnabled() const;
     bool credentialsUnavailable() const;
+    bool storeUnavailable() const;
     int minimumPinLength() const;
 
     // Returns true and clears `locked` on the right PIN. On a wrong PIN,
@@ -140,6 +151,19 @@ private:
     // lockout, the session floor and the wipe threshold apply to the Settings
     // prompts too. A PIN is only as strong as the slowest way to guess it.
     bool verifyPinRateLimited(const QString& pin);
+
+    // The three conditions under which a PIN must NOT be checked at all,
+    // in the order that matters. True means "refuse, do not verify".
+    //
+    // One function rather than one copy per entry point, because the copies
+    // drifted: tryUnlock() had all three and verifyPinRateLimited() -- which
+    // guards change-PIN, disable-lock, the credential gate toggle and
+    // Hostile Location Protection -- was missing the session floor. That
+    // floor is the only one of the three an attacker holding the machine
+    // cannot defeat by moving the system clock forward, so its absence made
+    // the Settings prompts the cheap way to grind a six-digit PIN while the
+    // unlock screen next to them was properly rate-limited.
+    bool mustRefuseGuess();
 
     AppLockStore& m_store;
     SettingsStore& m_settingsStore;

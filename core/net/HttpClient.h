@@ -21,8 +21,34 @@ class QNetworkReply;
 // mirrors kypost-for-Mac's HTTPClient async/await call shape one-for-one
 // (verified reference: Data/Networking/HTTPClient.swift, read for structure
 // only), so every Task 14-18 client reads as a straight-line sequence
-// instead of a signal/callback chain. Callers must invoke get()/post() off
-// the GUI thread once app/ wiring exists in a later phase.
+// instead of a signal/callback chain.
+//
+// THREADING, stated accurately rather than aspirationally. This header used
+// to say "Callers must invoke get()/post() off the GUI thread once app/
+// wiring exists in a later phase." That phase never arrived: main.cpp
+// constructs one HttpClient on the stack and hands it to eleven clients,
+// every one of which is called from a Q_INVOKABLE on the GUI thread. The
+// sentence described an intention, and reading it as a description of the
+// code is how the following kept being treated as unrelated bugs rather than
+// one consequence:
+//
+//   * a nested QEventLoop keeps delivering QML input, so any controller
+//     method that makes a network call can be re-entered from the UI while
+//     it is suspended (core/util/ReentrancyGuard.h exists for this, and
+//     guards a method against itself only);
+//   * AppLock.lockNow() can land in the middle of PairingStore::save(),
+//     which is why that function needs a lock epoch;
+//   * DeviceRegistrationService has to snapshot the sealing key before the
+//     call, because re-reading it afterwards is a TOCTOU;
+//   * main.cpp's deferred re-registration retry needs a
+//     QTimer::singleShot(0) purely to escape a half-finished unlock.
+//
+// Each of those is a real fix and none of them is the fix. Moving this
+// class, its QNetworkAccessManager and app/platform/SecureStoreKeychain onto
+// a worker thread -- and making the controllers dispatch-and-return against
+// the busy/state properties they already expose -- is what removes the
+// category. Until then: treat every call site as re-entrant, and assume any
+// member read after a call may have changed underneath it.
 //
 // The QNetworkAccessManager is injected via constructor reference rather
 // than default-constructed internally, so tests can point it at a local
@@ -138,6 +164,28 @@ public:
     // user into exactly the unpair/re-pair the pairing-hijack findings need.
     void setCertificatePin(const QByteArray& spkiSha256, const QUrl& origin);
     QByteArray certificatePin() const;
+
+    // The pin AND the origin it is scoped to, as one value.
+    //
+    // certificatePin() alone cannot round-trip the enforcement state,
+    // because a pin without its origin is not restorable -- which is how
+    // DeviceRegistrationService::pair() came to disable pinning
+    // permanently: it clears the pin before registering (it must -- the
+    // registration is what establishes the new anchor) and only re-armed it
+    // on the success path, so ANY failed re-registration left enforcement
+    // off for the rest of the process. reregisterIfPaired() runs unattended
+    // on every push-endpoint rotation, so an on-path attacker needed only
+    // to make one of those fail.
+    struct CertificatePinState
+    {
+        QByteArray spkiSha256;
+        QUrl origin;
+
+        bool isEnforcing() const { return !spkiSha256.isEmpty(); }
+    };
+
+    CertificatePinState certificatePinState() const;
+    void restoreCertificatePin(const CertificatePinState& state);
 
     // Drops the in-memory pin and its origin. Must be called wherever the
     // trust anchor is discarded or re-established -- unpairing, and before a

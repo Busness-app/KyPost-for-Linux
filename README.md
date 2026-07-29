@@ -78,8 +78,11 @@ ctest --test-dir build
 
 Dependencies, with Arch package names: `qt6-base`, `qt6-declarative`, `qt6-webengine`,
 `kirigami` (KF6), `knotifications` (KF6), `kdbusaddons` (KF6), `ki18n` (KF6), `qtkeychain-qt6`,
-`kunifiedpush`, `zxing-cpp`. For the Ubuntu and KDE neon archive equivalents, see
-[`.github/workflows/ci.yml`](.github/workflows/ci.yml).
+`kunifiedpush`, `zxing-cpp`, `openssl`, `argon2`. For the Ubuntu and KDE neon archive
+equivalents, see [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
+
+`openssl` supplies AES-256-GCM and `argon2` the memory-hard key derivation behind the
+credential seal — Qt exposes neither. See `core/security/CredentialCipher.h`.
 
 ### Flatpak
 

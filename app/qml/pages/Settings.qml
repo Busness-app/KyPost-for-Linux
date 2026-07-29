@@ -616,6 +616,20 @@ Item {
                         text: i18n("A PIN is required every time KyPost starts, and whenever the window is hidden or minimised. After 10 failed attempts all local data is erased.")
                     }
 
+                    // Says plainly what the PIN does not do.
+                    //
+                    // Cached mail and contacts live in an unencrypted SQLite
+                    // file, so anyone who can read this account's files can
+                    // read them without ever meeting this PIN. The lock
+                    // guards the running app; "Keep nothing on this device"
+                    // below is the setting that guards the disk. Leaving
+                    // that unsaid let a PIN prompt imply at-rest protection
+                    // it has never provided.
+                    MutedHint {
+                        Layout.fillWidth: true
+                        text: i18n("The PIN protects this app while it is running. It does not encrypt the cached mail and contacts stored on this computer — for that, turn on Keep nothing on this device below.")
+                    }
+
                     GhostButton {
                         visible: AppLock.lockEnabled
                         text: i18n("Change PIN…")

@@ -139,6 +139,44 @@ void DatabaseTest::splitsStatementsOnTopLevelSemicolonsOnly()
     // A trailing statement with no terminator still counts.
     QCOMPARE(splitSqlStatements(QStringLiteral("SELECT 1")).size(), 1);
     QCOMPARE(splitSqlStatements(QStringLiteral("   \n  ")).size(), 0);
+
+    // A CASE inside a trigger body. SQLite closes BOTH `BEGIN` and `CASE`
+    // with `END`, so counting only BEGIN as an opener let this CASE's END
+    // close the trigger body early -- the following semicolon, still inside
+    // the body, then split the trigger into two invalid fragments. Those
+    // fail to exec, Database::open() returns false, and main()'s qFatal
+    // makes that an unrecoverable crash on every launch. All from writing
+    // entirely ordinary SQL in a migration.
+    const QStringList triggerWithCase = splitSqlStatements(QStringLiteral(
+        "CREATE TRIGGER t AFTER INSERT ON x BEGIN "
+        "UPDATE x SET n = CASE WHEN NEW.n > 0 THEN 1 ELSE 2 END; "
+        "END; "
+        "SELECT 1;"));
+    QCOMPARE(triggerWithCase.size(), 2);
+    QVERIFY(triggerWithCase.at(0).contains(QStringLiteral("CASE")));
+    QVERIFY(triggerWithCase.at(0).endsWith(QStringLiteral("END")));
+    QCOMPARE(triggerWithCase.at(1), QStringLiteral("SELECT 1"));
+
+    // Nested CASE, for the same reason -- the counter has to be a counter.
+    const QStringList nestedCase = splitSqlStatements(QStringLiteral(
+        "CREATE TRIGGER t AFTER INSERT ON x BEGIN "
+        "UPDATE x SET n = CASE WHEN a THEN CASE WHEN b THEN 1 ELSE 2 END ELSE 3 END; "
+        "END; "
+        "SELECT 1;"));
+    QCOMPARE(nestedCase.size(), 2);
+
+    // ...and the words must still be whole: a column called "staircase" or
+    // "suspend" is not a block keyword.
+    QCOMPARE(splitSqlStatements(QStringLiteral("CREATE TABLE t (staircase INT, suspend INT); SELECT 1;")).size(),
+             2);
+
+    // A block comment is whitespace, not nothing. Dropping it outright
+    // welded the tokens on either side together.
+    const QStringList commentBetweenTokens =
+        splitSqlStatements(QStringLiteral("SELECT a/* joined */b FROM t;"));
+    QCOMPARE(commentBetweenTokens.size(), 1);
+    QVERIFY(!commentBetweenTokens.at(0).contains(QStringLiteral("ab")));
+    QVERIFY(commentBetweenTokens.at(0).contains(QStringLiteral("a b")));
 }
 
 // Migrations used to run with no transaction: a statement failing part-way

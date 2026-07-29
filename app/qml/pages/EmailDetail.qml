@@ -159,11 +159,6 @@ Item {
         return "#" + pad(c.r) + pad(c.g) + pad(c.b)
     }
 
-    // HTML-vs-plain-text sniff per Task 35's brief: a handful of common tags
-    // followed by whitespace/'>'/'/' is treated as "this is already HTML";
-    // anything else is escaped and wrapped in <pre> so it renders literally.
-    readonly property var htmlSniffRegex: /<(html|head|body|div|p|br|table|tr|td|a|img|span|ul|ol|li|h[1-6])[\s>/]/i
-
     // Schemes a message is allowed to open in the outside world live in
     // Format (utils/format.js) so the rule is testable on its own -- see
     // isExternallyOpenableUrl() there for what it protects against.
@@ -176,20 +171,22 @@ Item {
     // nothing. Cleared by the notice's own timer.
     property string blockedLinkScheme: ""
 
-    function renderedHtml(body) {
-        const inner = htmlSniffRegex.test(body) ? body : ("<pre>" + Format.escapeHtml(body) + "</pre>")
-        return "<html><head>"
-            + "<meta charset=\"utf-8\">"
-            + "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />"
-            + "<style>"
-            + "body { font-family: monospace; font-size: 14px; line-height: 1.5;"
+    // The theme half of the body document. Colours come from the Theme
+    // singleton, which is why this stays here and the security-relevant half
+    // (the CSP, the HTML-vs-text decision, the escaping) lives in Format --
+    // see utils/format.js. Those three are what a test needs to reach, and
+    // they must not require QtWebEngine and the singleton graph to reach.
+    function bodyStyle() {
+        return "body { font-family: monospace; font-size: 14px; line-height: 1.5;"
             + " color: " + colorToHex(Theme.inkStrong) + "; background-color: " + colorToHex(Theme.bg) + ";"
             + " margin: 0; padding: 12px; word-break: break-word; }"
             + "a { color: " + colorToHex(Theme.accent) + "; }"
             + "img { max-width: 100%; height: auto; }"
             + "pre { white-space: pre-wrap; }"
-            + "</style>"
-            + "</head><body>" + inner + "</body></html>"
+    }
+
+    function renderedHtml(body) {
+        return Format.renderedEmailHtml(body, root.imagesLoaded, root.bodyStyle())
     }
 
     // ---- layout ----------------------------------------------------

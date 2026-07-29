@@ -34,7 +34,7 @@ void MfaController::setRespondState(const QString& state, const QString& message
     emit respondStateChanged();
 }
 
-void MfaController::respond(const QString& challengeId, bool approve)
+void MfaController::respond(const QString& challengeId, bool approve, const QString& matchDigits)
 {
     const std::optional<DevicePairing> pairing = m_pairingStore.load();
     if (!pairing.has_value()) {
@@ -45,11 +45,20 @@ void MfaController::respond(const QString& challengeId, bool approve)
     setRespondState(QStringLiteral("sending"));
 
     const MfaResponseResult result = m_client.respond(QUrl(pairing->serverBaseUrl), challengeId, pairing->deviceId,
-                                                        pairing->deviceSecret, approve);
+                                                        pairing->deviceSecret, approve, matchDigits);
 
     switch (result.outcome) {
     case MfaResponseOutcome::Success:
         setRespondState(QStringLiteral("done"), approve ? i18n("Approved") : i18n("Denied"));
+        break;
+    case MfaResponseOutcome::Unauthorized:
+        // Not "already handled" -- the relay refused this device. The
+        // overwhelmingly common cause is the credential PIN gate with the
+        // app locked, where load() hands out an empty deviceSecret by
+        // design and every authenticated request 401s until unlock.
+        setRespondState(QStringLiteral("failed"),
+                         i18n("KyPost could not authenticate to your server. Unlock the app, or "
+                              "pair this device again."));
         break;
     case MfaResponseOutcome::Rejected:
         // status is populated from the response body when the server
