@@ -1,21 +1,26 @@
 #pragma once
 
 #include "contacts/ContactListModel.h"
+#include "domain/ContactSyncRepository.h" // ContactSyncPlan/outcomes cross the thread hop by value
 
 #include <QObject>
 #include <QString>
 #include <QVariantMap>
+#include <functional>
 
-class ContactSyncRepository;
 class GroupsRepository;
 class ContactPhotoRepository;
+class NetworkExecutor;
 class Contact;
 
 // QML-facing bridge (Task 33) over core/domain's ContactSyncRepository.
-// Registered as the "ContactsApp" QML singleton in main.cpp. Every method
-// here that reaches the network (sync()) runs synchronously on the calling
-// (GUI) thread -- see Phase 6 global constraint 2, this is a known, accepted
-// freeze-the-UI tradeoff for this phase, not a bug.
+// Registered as the "ContactsApp" QML singleton in main.cpp.
+//
+// THREADING: sync() and dedupe() dispatch their request to the
+// NetworkExecutor thread and return immediately; every store and DAO read
+// stays here. createContact/updateContact/deleteContact never reach the
+// network at all -- they queue a local change -- so they stay synchronous.
+// See docs/THREADING.md.
 //
 // createContact/updateContact's QVariantMap fields contract: keys fn
 // (QString, required -- rejected with lastError set if blank/whitespace-only,
@@ -61,7 +66,8 @@ public:
     // are deliberately NOT part of the bulk contact sync payload, per
     // task-3-brief.md).
     ContactsController(ContactSyncRepository& repository, GroupsRepository& groupsRepository,
-                        ContactPhotoRepository& photoRepository, QObject* parent = nullptr);
+                        ContactPhotoRepository& photoRepository, NetworkExecutor& networkExecutor,
+                        QObject* parent = nullptr);
 
     QObject* contactModel() const;
     bool isBusy() const;
@@ -134,7 +140,8 @@ signals:
     void statusMessageChanged();
 
 private:
-    void setBusy(bool busy);
+    void pushBusy();
+    void popBusy();
     void setLastError(const QString& error);
     void setStatusMessage(const QString& message);
     // Shared body of createContact/updateContact: populates every
@@ -145,16 +152,22 @@ private:
     ContactSyncRepository& m_repository;
     GroupsRepository& m_groupsRepository;
     ContactPhotoRepository& m_photoRepository;
+    NetworkExecutor& m_executor;
     ContactListModel* m_model; // owned, parented to this
-    bool m_isBusy = false;
+    int m_busyDepth = 0;
     QString m_lastError;
     QString m_statusMessage;
-    // Unguarded body behind the guarded sync() slot -- dedupe() chains into
-    // this so the outer ReentrancyGuard doesn't suppress it. See the .cpp.
-    void syncInternal();
-    // Guards this controller's network-calling slots against re-entering
-    // through the nested QEventLoop HttpClient runs -- QML keeps delivering
-    // clicks while a blocking call is suspended. See
-    // core/util/ReentrancyGuard.h.
-    bool m_inNetworkCall = false;
+    // Coalescing, not re-entrancy guards. Two syncs must not overlap: each
+    // reads the pending queue up front and deletes exactly those records when
+    // it lands, so a second one started mid-flight would push the same queue
+    // twice.
+    bool m_syncInFlight = false;
+    bool m_dedupeInFlight = false;
+    // `onApplied` runs once the outcome has been applied; dedupe() uses it to
+    // prefix its merge count onto the sync's status message, which it can no
+    // longer do by reading statusMessage() after the call. See the .cpp.
+    void syncInternal(std::function<void()> onApplied);
+    void applySyncOutcome(const ContactSyncOutcome& outcome);
+    void applyDedupeOutcome(const ContactDedupeOutcome& outcome);
+    void refreshGroupsCache();
 };

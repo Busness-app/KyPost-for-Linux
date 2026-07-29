@@ -68,9 +68,10 @@ std::optional<DevicePairing> PairingStore::load() const
     // byte went on the wire. On a session where kwalletd is slow or
     // prompting, opening one email visibly froze the UI.
     //
-    // Each of those nested loops is also a re-entrancy window (see
-    // core/util/ReentrancyGuard.h), so this cuts the interleaving surface as
-    // well as the latency. Invalidated by every mutation below -- save(),
+    // Each of those nested loops was also a re-entrancy window, so this cut
+    // the interleaving surface as well as the latency. The loops are gone now
+    // (the requests run on NetworkExecutor's thread); the latency argument
+    // stands on its own. Invalidated by every mutation below -- save(),
     // clear(), and the seal/unseal/lock transitions that change what
     // deviceSecret resolves to.
     if (m_cache.has_value())

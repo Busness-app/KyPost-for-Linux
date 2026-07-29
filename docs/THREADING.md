@@ -1,10 +1,11 @@
 # Getting Relay HTTP off the GUI thread
 
-Status: **Tier A complete; Tier B started.** All three SQL-free controllers
-are asynchronous, and the mail refresh — the one request the user waits on
-most — is too. This file is the plan for the rest, and — more importantly —
-the record of the constraints that decide its shape, because they are
-non-obvious and any one of them silently breaks a naive attempt.
+Status: **Every controller is asynchronous.** `ReentrancyGuard` is deleted —
+nothing can re-enter what is never suspended. Two GUI-thread blocking calls
+remain and are named at the bottom; neither is a controller.
+
+This file is the record of the constraints that decided the shape, because
+they are non-obvious and any one of them silently breaks a naive attempt.
 
 ## The problem
 
@@ -14,18 +15,17 @@ timers keep firing, bindings keep re-evaluating. So any controller method
 that makes a network call can be re-entered from QML while it is suspended
 half-way through its own state changes.
 
-Four things in this repo exist only to survive that:
+Four things in this repo existed only to survive that:
 
-| Mitigation | What it defends against |
-|---|---|
-| `core/util/ReentrancyGuard.h` | A controller method being entered twice |
-| `PairingStore`'s lock epoch | `AppLock.lockNow()` landing inside `save()` |
-| `DeviceRegistrationService`'s sealing-key snapshot | The key changing across the call (TOCTOU) |
-| `main.cpp`'s `QTimer::singleShot(0)` on unlock | Escaping a half-finished `tryUnlock()` |
+| Mitigation | What it defended against | Now |
+|---|---|---|
+| `core/util/ReentrancyGuard.h` | A controller method being entered twice | **Deleted** |
+| `PairingStore`'s lock epoch | `AppLock.lockNow()` landing inside `save()` | Kept — cheap, and still correct against a future caller |
+| `DeviceRegistrationService`'s sealing-key snapshot | The key changing across the call (TOCTOU) | Kept — it is now the *phase 1* snapshot, load-bearing across the thread hop |
+| `main.cpp`'s `QTimer::singleShot(0)` on unlock | Escaping a half-finished `tryUnlock()` | Kept — `reregisterAndReport` still blocks; see the bottom |
 
-Each is correct. None of them is the fix, and the list grows every time
-someone adds a network call. The fix is to run the loop on a thread with no
-QML on it.
+Each was correct, and the list grew every time someone added a network call.
+The fix was to run the loop on a thread with no QML on it.
 
 ## Constraint 1 — thread-confined stores, of which SQL is only the loudest
 
@@ -79,8 +79,8 @@ values straight to QML with no signal to hang them on, so it would have added
 async conversions rather than removing them, and it would have made the
 composition-root restructure a prerequisite for all of Tier B.
 
-So: **Tier B is not blocked on anything.** It is the same three-phase split
-already applied three times, repeated per method.
+So: **Tier B was not blocked on anything.** It was the same three-phase
+split, repeated per method — and that is how it was finished.
 
 ## Constraint 2 — one `HttpClient`, therefore one thread for pin state
 
@@ -214,34 +214,43 @@ Three rules that make it work:
 
 ## Remaining order
 
-1. ~~`PairingController`~~ — done.
-2. ~~`PgpQrController`~~ — done. **Tier A is complete.**
-3. **Retire the GUI-thread `HttpClient`** — still BLOCKED, and not by Tier A.
-   Eight clients are still constructed on it in `main()`
-   (`RelayMailSource`, `ContactSyncClient`, `GroupsClient`, `FolderClient`,
-   `ContactPhotoClient`, `PgpBootstrapClient`, `PgpRecipientChecker`,
-   `PushNotificationClient`), all of them Tier B. So this cannot happen
-   before step 4, and the certificate-pin fan-out keeps both targets until
-   it does. When it can: drop `guiThreadPinSink` from the fan-out in
-   `main()`, leaving the executor as the only target.
-4. **Tier B**, in progress. Not blocked on the composition root — see
-   Constraint 1. Done so far: the mail refresh, the four actions, and the four
-   folder methods. Remaining, in the order they are worth doing:
-   - `sendMail` / `saveDraft` / `confirmPickupFallbackSend`. The awkward one:
-     `pickupFallbackRequired` is documented as being emitted *synchronously*
-     so a Compose instance can tell its own send from another window's. That
-     ownership test has to be replaced (carry the token out of `sendMail()`
-     instead) before the emit can become asynchronous.
-   - `FolderRepository` create/rename/delete/refresh, same three-phase split.
-   - `refreshPgpComposeState` / `preflightRecipients`. Both already have their
-     own in-flight flags, so they convert cleanly; `m_preflightInFlight`
-     becomes ordinary coalescing rather than a re-entrancy defence.
-   - `ContactsController` (5 methods) over `ContactSyncRepository`'s 25 DAO
-     uses — the largest single split left.
-5. **Delete `ReentrancyGuard`** and revisit the three other mitigations
-   above. They become unnecessary, not merely redundant. `MailController`
-   still holds `m_inNetworkCall` for its unconverted methods and is the last
-   real user.
+1. ~~`PairingController`~~, ~~`PgpQrController`~~, ~~`MfaController`~~ — Tier A.
+2. ~~`MailController`~~ — all 14 network methods.
+3. ~~`ContactsController`~~ — `sync`, `dedupe`, and the groups-cache refresh.
+4. ~~Delete `ReentrancyGuard`~~ — done, no users left.
+5. **Retire the GUI-thread `HttpClient`** — still not possible, and now for a
+   precise reason rather than a vague one. Every *controller* is off it, but
+   three things still use it:
+   - the **synchronous composition** each repository keeps (`refreshFolder`,
+     `FolderRepository::create/rename/remove`, `ContactSyncRepository::sync`,
+     `DeviceRegistrationService::pair`, `GroupsRepository::refresh`). These
+     exist so the async phases cannot drift from the behaviour their tests
+     pin, and they are what the tests call. They are not dead code.
+   - **`main()`'s `reregisterAndReport`**, which blocks on
+     `reregisterIfPaired()` at startup and on every transport-tier change.
+     This is the reason `main.cpp` still needs its `QTimer::singleShot(0)`
+     to escape a half-finished unlock.
+   - **`ContactsController::photoPathFor`**, below.
+
+## Still blocking the GUI thread
+
+Two, both outside the controllers, both known:
+
+- **`ContactPhotoRepository::photoPathFor`**, reached from
+  `ContactsController::photoPathFor`, which `Avatar.qml` binds
+  `photoSource` to. It is a *binding*, so it must return a value — there is
+  no signal for it to arrive on. Converting it means giving the controller a
+  uid→path cache plus a `photoReady(uid, path)` signal and having Avatar bind
+  to the cache, which is a UI change rather than a mechanical split. A cache
+  hit does not touch the network at all, so this only blocks the first time a
+  contact with a photo is drawn.
+- **`main()`'s `reregisterAndReport`**. Runs before `app.exec()` on the
+  startup path, where there is no UI to freeze yet — but also from
+  `TransportStateMachine`'s tier-changed handler, where there is.
+
+Both are `DeviceRegistrationService`/`ContactPhotoRepository` calls with the
+three-phase split already available or trivial to add; neither was worth
+bundling into the controller conversions.
 
 ## ThreadSanitizer does not work here — use the affinity guard instead
 

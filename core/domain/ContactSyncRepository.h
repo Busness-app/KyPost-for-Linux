@@ -1,17 +1,18 @@
 #pragma once
 
+#include "db/PendingContactChangeDao.h" // PendingContactChangeRecord -- crosses the thread hop in the plan below
 #include "domain/ContactSyncReconciliation.h"
 #include "models/Contact.h"
 #include "net/ContactSyncClient.h" // for ContactDedupeGroup, held by value in ContactDedupeOutcome
+#include "net/RelayAuth.h"         // RelayEndpoint
 
 #include <QSet>
 #include <QString>
 #include <QVector>
 #include <optional>
 
-class ContactSyncClient;
 class ContactDao;
-class PendingContactChangeDao;
+class HttpClient;
 class CursorStore;
 class PairingStore;
 
@@ -99,6 +100,40 @@ public:
     void queueDelete(const QString& uid, qint64 rev);
 
     ContactSyncOutcome sync();
+
+    // ---- three-phase form, for callers that must not block ---------------
+    //
+    // The largest split in the migration: this chain touches PairingStore,
+    // CursorStore, ContactDao and PendingContactChangeDao, all confined to
+    // the calling thread. Only the one push-or-pull request may move.
+    //
+    // The pending queue is READ in phase 1 and carried across, deliberately.
+    // Phase 3 then deletes exactly those records by id -- not the whole queue
+    // -- so a contact edited while the request was out survives to the next
+    // sync. That rule already existed (a nested event loop let clicks land
+    // mid-sync); moving the request off-thread does not weaken it, it makes
+    // it the normal case rather than the racy one.
+
+    // Everything the request needs, read before it and carried by value.
+    struct ContactSyncPlan
+    {
+        RelayEndpoint endpoint;
+        qint64 cursor = 0;
+        QVector<PendingContactChangeRecord> pending;
+    };
+
+    // Phase 1, on the calling thread. nullopt when there is no pairing.
+    std::optional<ContactSyncPlan> planSync() const;
+    // Phase 2. Push when the queue is non-empty, pull otherwise.
+    static ContactSyncResult syncWith(HttpClient& httpClient, const ContactSyncPlan& plan);
+    // Phase 3, back on the calling thread: reconciliation and every DAO and
+    // cursor write.
+    ContactSyncOutcome applySync(const ContactSyncPlan& plan, const ContactSyncResult& result);
+
+    // dedupe() needs no phase 3 -- it writes nothing locally; the caller
+    // chains into a sync to pull the consequences.
+    static ContactDedupeResult dedupeWith(HttpClient& httpClient, const RelayEndpoint& endpoint);
+    static ContactDedupeOutcome dedupeOutcomeOf(const ContactDedupeResult& result);
 
     // Single-purpose, like sync() -- one HTTP action, does not call sync()
     // itself. The local cache (ContactDao/PendingContactChangeDao) is

@@ -44,8 +44,10 @@ class QNetworkReply;
 //
 //   * a nested QEventLoop keeps delivering QML input, so any controller
 //     method that makes a network call can be re-entered from the UI while
-//     it is suspended (core/util/ReentrancyGuard.h exists for this, and
-//     guards a method against itself only);
+//     it is suspended (core/util/ReentrancyGuard.h existed for this, and
+//     guarded a method against itself only -- deleted once every caller had
+//     moved to NetworkExecutor, since nothing can re-enter what is not
+//     suspended);
 //   * AppLock.lockNow() can land in the middle of PairingStore::save(),
 //     which is why that function needs a lock epoch;
 //   * DeviceRegistrationService has to snapshot the sealing key before the

@@ -264,10 +264,9 @@ private:
     // by a fresh pairFromDeepLink()/pairFromPastedLink() call. Meaningful
     // only while pairingState == "confirm".
     std::optional<PairingParams> m_pendingPair;
-    // Guards this controller's network-calling slots against re-entering
-    // through the nested QEventLoop HttpClient runs -- QML keeps delivering
-    // clicks while a blocking call is suspended. See
-    // core/util/ReentrancyGuard.h.
+    // In-flight flag, not a re-entrancy guard: the requests run on the
+    // executor thread, so nothing can re-enter this object. It stops a second
+    // request piling up behind one already out.
     bool m_inNetworkCall = false;
     bool m_reregistrationRejected = false;
     bool m_certificateMismatch = false;

@@ -790,7 +790,8 @@ int main(int argc, char* argv[])
     // the GUI thread synchronously, same accepted tradeoff as MailController
     // above (see global constraint 2). Its model starts empty until QML
     // calls load()/sync() -- see ContactsController's constructor comment.
-    ContactsController contactsController(contactSyncRepository, groupsRepository, contactPhotoRepository);
+    ContactsController contactsController(contactSyncRepository, groupsRepository, contactPhotoRepository,
+                                           networkExecutor);
     qmlRegisterSingletonInstance<ContactsController>(
         "com.urlxl.mail", 1, 0, "ContactsApp", &contactsController);
 
