@@ -43,6 +43,7 @@
 #include "net/FolderClient.h"
 #include "net/GroupsClient.h"
 #include "net/HttpClient.h"
+#include "net/NetworkExecutor.h"
 #include "net/MfaResponseClient.h"
 #include "net/DeregisterClient.h"
 #include "net/NativeRegistrationClient.h"
@@ -536,6 +537,24 @@ int main(int argc, char* argv[])
     QNetworkAccessManager networkManager;
     HttpClient httpClient(networkManager);
 
+    // 6b. The worker thread Relay HTTP is migrating onto, with its own
+    // QNetworkAccessManager and HttpClient constructed over there.
+    //
+    // Two HttpClients coexist during the migration and that is deliberate,
+    // not an oversight: the GUI-thread one above still serves every
+    // controller that has not been converted, because moving them all at
+    // once would mean rewriting 23 controller methods, ~12 QML call sites
+    // and three 1,000-line test files in a single step. The cost of the
+    // overlap is that TOFU pin state has to be installed in both places
+    // until the last caller moves -- see docs/THREADING.md, which also
+    // records why the mail/contacts controllers cannot follow the same
+    // route as this one (their call chains touch QSqlDatabase, which is
+    // bound to the thread that opened it).
+    //
+    // Currently used by MfaController alone, which is the reference
+    // conversion.
+    NetworkExecutor networkExecutor;
+
     // Enforce the certificate pin captured when this device paired (trust on
     // first use -- see DeviceRegistrationService::pair). Empty for a pairing
     // made before pinning existed, or over plain http in testing, in which
@@ -873,7 +892,7 @@ int main(int argc, char* argv[])
     // engine as `Mfa` is attack surface with nothing on the other end.
     // Re-add the qmlRegisterSingletonInstance line in the same commit that
     // adds the approval screen, once the backend change lands.
-    MfaController mfaController(mfaResponseClient, pairingStore);
+    MfaController mfaController(networkExecutor, pairingStore);
     Q_UNUSED(mfaController);
 
     QQmlApplicationEngine engine;
@@ -1108,6 +1127,15 @@ int main(int argc, char* argv[])
     pushConnector.registerClient(QStringLiteral("KyPost push notifications"));
 
     const int exitCode = app.exec();
+
+    // Stop the network thread FIRST, before any controller is destroyed.
+    // NetworkExecutor delivers completion handlers to controllers by raw
+    // pointer, and shutdown() is the barrier that guarantees none is in
+    // flight -- it waits for executing work and refuses queued work. The
+    // executor cannot simply be declared after the controllers (which would
+    // destroy it first) because they take a reference to it at
+    // construction, so the ordering is made explicit here instead.
+    networkExecutor.shutdown();
 
     // A clean quit should leave nothing behind, rather than relying on
     // five-minute timers that will never fire now the loop has stopped.

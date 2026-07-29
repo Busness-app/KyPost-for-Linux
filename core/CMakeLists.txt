@@ -86,6 +86,8 @@ add_library(kypostcore STATIC
   net/RelayAuth.h
   net/HttpClient.cpp
   net/HttpClient.h
+  net/NetworkExecutor.cpp
+  net/NetworkExecutor.h
   net/NativeRegistrationClient.cpp
   net/NativeRegistrationClient.h
   net/PushNotificationClient.cpp

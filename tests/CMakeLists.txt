@@ -87,6 +87,10 @@ kypost_add_test(PgpQrRepositoryTest core/domain/PgpQrRepositoryTest.cpp)
 kypost_add_test(NetworkErrorTest core/net/NetworkErrorTest.cpp)
 kypost_add_test(RelayAuthTest core/net/RelayAuthTest.cpp)
 kypost_add_test(HttpClientTest core/net/HttpClientTest.cpp)
+# Asserts the property the whole threading migration exists for: that the
+# calling thread is never re-entered while a request is in flight.
+kypost_add_test(NetworkExecutorTest core/net/NetworkExecutorTest.cpp)
+target_include_directories(NetworkExecutorTest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/core/net)
 kypost_add_test(NativeRegistrationClientTest core/net/NativeRegistrationClientTest.cpp)
 kypost_add_test(PushNotificationClientTest core/net/PushNotificationClientTest.cpp)
 kypost_add_test(MfaResponseClientTest core/net/MfaResponseClientTest.cpp)

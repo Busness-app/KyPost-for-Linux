@@ -1,9 +1,11 @@
 #pragma once
 
+#include "net/MfaResponseClient.h"
+
 #include <QObject>
 #include <QString>
 
-class MfaResponseClient;
+class NetworkExecutor;
 class PairingStore;
 
 // QML-facing bridge (Task 34) over core/net's MfaResponseClient, reading the
@@ -34,22 +36,40 @@ class MfaController : public QObject
     Q_OBJECT
     Q_PROPERTY(QString respondState READ respondState NOTIFY respondStateChanged) // "idle" | "sending" | "done" | "failed"
     Q_PROPERTY(QString resultMessage READ resultMessage NOTIFY respondStateChanged) // human-readable, meaningful for "done"/"failed"
+    Q_PROPERTY(bool inFlight READ inFlight NOTIFY inFlightChanged)
 
 public:
-    MfaController(MfaResponseClient& client, PairingStore& pairingStore, QObject* parent = nullptr);
+    // Takes the executor rather than an MfaResponseClient. The client is a
+    // stateless wrapper around an HttpClient reference, so it is constructed
+    // per call ON the executor thread, where the HttpClient it must borrow
+    // actually lives. Holding a long-lived client here would mean holding a
+    // reference to an HttpClient owned by another thread.
+    MfaController(NetworkExecutor& executor, PairingStore& pairingStore, QObject* parent = nullptr);
 
     QString respondState() const;
     QString resultMessage() const;
+    // True between respond() and its answer, so a screen can disable its
+    // buttons for the duration -- the job the synchronous call's return
+    // value used to do implicitly by not coming back.
+    bool inFlight() const;
 
 public slots:
-    // Reads sub/hash/deviceId from pairingStore.load() -- if not paired,
-    // respondState="failed"+resultMessage set, no network call. Otherwise
-    // calls client.respond(serverBaseUrl, challengeId, sub, hash, deviceId,
-    // approve) and maps the MfaResponseOutcome to respondState/
-    // resultMessage: Success -> "done"; Rejected -> "failed" with a message
-    // distinguishing "already resolved" when the server's status field
-    // carried that information, else a generic denial message; Failure ->
-    // "failed" with the detail.
+    // Returns immediately. respondState goes to "sending" before this
+    // returns, then to "done" or "failed" when the reply arrives; QML binds
+    // to that rather than to a return value.
+    //
+    // The pairing is read HERE, on the calling thread, and only the plain
+    // strings it yields are handed to the executor. PairingStore is not
+    // thread-safe -- it caches, and the credential gate mutates it -- so it
+    // stays confined to this thread, which is also why the "not paired"
+    // answer is still immediate.
+    //
+    // Ignored while a response is already in flight. That is request
+    // coalescing, not the re-entrancy guard it replaces: with the blocking
+    // call gone there is no nested event loop to be re-entered through, so
+    // the only thing left to prevent is two overlapping answers to the same
+    // challenge racing to set respondState.
+    //
     // matchDigits is the number-match value the user picked; the server
     // requires it to approve and ignores it to deny. See MfaResponseClient.h —
     // an approve that sends none is refused with a 400.
@@ -58,12 +78,19 @@ public slots:
 
 signals:
     void respondStateChanged();
+    void inFlightChanged();
 
 private:
     void setRespondState(const QString& state, const QString& message = QString());
+    void setInFlight(bool inFlight);
+    // Maps an MfaResponseOutcome onto respondState/resultMessage. Split out
+    // because it now runs from a completion handler rather than inline, and
+    // is the only part a test needs to reach without a server.
+    void applyResult(const MfaResponseResult& result, bool approve);
 
-    MfaResponseClient& m_client;
+    NetworkExecutor& m_executor;
     PairingStore& m_pairingStore;
     QString m_respondState = QStringLiteral("idle");
     QString m_resultMessage;
+    bool m_inFlight = false;
 };

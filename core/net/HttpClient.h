@@ -23,12 +23,21 @@ class QNetworkReply;
 // only), so every Task 14-18 client reads as a straight-line sequence
 // instead of a signal/callback chain.
 //
-// THREADING, stated accurately rather than aspirationally. This header used
-// to say "Callers must invoke get()/post() off the GUI thread once app/
-// wiring exists in a later phase." That phase never arrived: main.cpp
-// constructs one HttpClient on the stack and hands it to eleven clients,
-// every one of which is called from a Q_INVOKABLE on the GUI thread. The
-// sentence described an intention, and reading it as a description of the
+// THREADING, stated accurately rather than aspirationally.
+//
+// An HttpClient is safe to use from whichever thread owns it, and must be
+// used from that thread only -- including its certificate-pin state, which a
+// request reads mid-handshake. core/net/NetworkExecutor owns one on a worker
+// thread and is the supported way to get there; see docs/THREADING.md.
+//
+// MIGRATION IN PROGRESS. Two instances currently coexist: the executor's,
+// used by every converted controller, and one on the GUI thread in main()
+// still serving the rest. For those remaining callers the paragraph below
+// still applies in full.
+//
+// This header used to say "Callers must invoke get()/post() off the GUI
+// thread once app/ wiring exists in a later phase." That phase did not
+// arrive for a long time, and reading an intention as a description of the
 // code is how the following kept being treated as unrelated bugs rather than
 // one consequence:
 //
@@ -44,11 +53,14 @@ class QNetworkReply;
 //     QTimer::singleShot(0) purely to escape a half-finished unlock.
 //
 // Each of those is a real fix and none of them is the fix. Moving this
-// class, its QNetworkAccessManager and app/platform/SecureStoreKeychain onto
-// a worker thread -- and making the controllers dispatch-and-return against
-// the busy/state properties they already expose -- is what removes the
-// category. Until then: treat every call site as re-entrant, and assume any
-// member read after a call may have changed underneath it.
+// class and its QNetworkAccessManager onto a worker thread -- and making the
+// controllers dispatch-and-return against the busy/state properties they
+// already expose -- is what removes the category. That is now underway; see
+// MfaController for the shape and docs/THREADING.md for the order and the
+// two constraints that decide it.
+//
+// Until a given caller is converted: treat its call sites as re-entrant, and
+// assume any member read after a call may have changed underneath it.
 //
 // The QNetworkAccessManager is injected via constructor reference rather
 // than default-constructed internally, so tests can point it at a local
