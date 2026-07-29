@@ -34,9 +34,15 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   add_link_options(-Wl,-z,relro -Wl,-z,now -Wl,-z,noexecstack)
 endif()
 
-# -DKYPOST_SANITIZE=ON builds everything (including the 73 ctest targets)
-# under ASan+UBSan. Not a default: it roughly triples test runtime and
-# needs a matching libasan at runtime.
+# -DKYPOST_SANITIZE=ON builds everything (including the ctest targets) under
+# ASan+UBSan. Not a default: it roughly triples test runtime and needs a
+# matching libasan at runtime.
+#
+# Deliberately ASan+UBSan only, with no ThreadSanitizer option. TSan cannot
+# produce a usable signal against an uninstrumented Qt -- every payload
+# crossing a queued connection is reported as a race, and the suppression
+# sets that quieten those also hide genuine ones. Measured numbers and the
+# affinity check that replaces it are in docs/THREADING.md.
 option(KYPOST_SANITIZE "Build with AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
 if(KYPOST_SANITIZE)
   add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer -g)

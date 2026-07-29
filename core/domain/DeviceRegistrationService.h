@@ -7,7 +7,7 @@
 
 class PairingStore;
 class SettingsStore;
-class HttpClient;
+class CertificatePinSink;
 
 // Initial-pairing and re-registration params for DeviceRegistrationService::
 // pair(). Mirrors DevicePairing's six persisted fields minus deviceId, which
@@ -35,7 +35,7 @@ public:
     // and there is no later point at which the pin can be captured
     // legitimately (by then an attacker's certificate would be pinned).
     DeviceRegistrationService(NativeRegistrationClient& client, PairingStore& pairingStore,
-                               SettingsStore& settingsStore, HttpClient& httpClient);
+                               SettingsStore& settingsStore, CertificatePinSink& pinSink);
 
     NativeRegistrationResult pair(const PairingParams& params, const QString& deviceToken);
 
@@ -45,5 +45,5 @@ private:
     NativeRegistrationClient& m_client;
     PairingStore& m_pairingStore;
     SettingsStore& m_settingsStore;
-    HttpClient& m_httpClient;
+    CertificatePinSink& m_pinSink;
 };

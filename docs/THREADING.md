@@ -63,9 +63,10 @@ executor thread and blocks until done. Blocking is fine there — these are
 in-memory field writes, microseconds, not round trips.
 
 During the migration two `HttpClient`s coexist (the GUI-thread one for
-unconverted callers, the executor's for converted ones). That is a real cost:
-**pin state has to be installed in both** until the last caller moves. It is
-tolerable only because it is temporary; it must not outlive Tier B.
+unconverted callers, the executor's for converted ones), so pin state has to
+reach both until the last caller moves. That is handled structurally rather
+than by remembering — see "Certificate pin state during the migration" below
+for the fan-out, and for the unpinned path that shipped before it existed.
 
 ## What exists now
 
@@ -120,7 +121,8 @@ Three rules that make it work:
    installation to `NetworkExecutor::configure()` in the same change.
 2. **`PgpQrController`** (2 methods, Tier A).
 3. **Retire the GUI-thread `HttpClient`** once Tier A is done and no Tier B
-   caller remains on it — this is what removes the dual-pin-state cost.
+   caller remains on it. Concretely: drop `guiThreadPinSink` from the
+   fan-out in `main()`, leaving the executor as the only target.
 4. **Tier B**: move `Database` + DAOs to the executor thread, which requires
    extracting the composition root first. `MailController` and
    `ContactsController` follow, along with ~12 QML sites that currently
@@ -129,27 +131,74 @@ Three rules that make it work:
 5. **Delete `ReentrancyGuard`** and revisit the three other mitigations
    above. They become unnecessary, not merely redundant.
 
-## A note on ThreadSanitizer
+## ThreadSanitizer does not work here — use the affinity guard instead
 
-Do not add a TSan job to CI for this, and do not trust a TSan run against
-Qt.
+Do not add a TSan job to CI, and do not trust a TSan run against Qt. This was
+measured, not assumed.
 
 Qt is not built with `-fsanitize=thread`, so the happens-before edges its
 event queue establishes are invisible and **everything passed through a
-queued connection is reported as a race**. Verified rather than assumed: a
-20-line program that does nothing but hand a `std::function` to a worker
-thread via `QMetaObject::invokeMethod` produces **11** TSan reports.
+queued connection is reported as a race**. Numbers, from a probe carrying
+both a known-correct Qt handoff and a deliberately injected real race:
 
-TSan was still worth running once, manually — it found two genuine defects
-that code review had not:
+| Configuration | Qt false positives | Real race (plain threads) | Real race (inside Qt slots) |
+|---|---|---|---|
+| No suppressions | 11 | 12 | 10 |
+| `race:qobjectdefs_impl.h` | 5 | 6 | 5 |
+| Narrow (`std::function`, `QCallableObject`, …) | 4 | 4 | 4 |
+
+Both suppression sets cut the **real** reports as well, so neither is safe to
+ship: a suppression file that hides genuine races is worse than no tool.
+TSan happens-before annotations at our own seam were tried too and moved 11 →
+10, because the residual reports are Qt's internal `QMetaCallEvent` storage,
+which cannot be annotated from outside.
+
+### What replaces it
+
+`HttpClient` records its constructing thread and checks it on every public
+entry point (`assertOwningThread`). That covers the defect that actually
+matters — a client touched from the wrong thread, which for the certificate
+pin is a data race on the value deciding where the device secret is sent —
+and it is deterministic, has zero false positives, and fires in every test
+run.
+
+Deliberately not a bare `Q_ASSERT`: the default build type is Release, which
+defines `NDEBUG`, so an assert-only check would be absent from exactly the
+build users run. The condition is evaluated and reported (`qCritical`)
+unconditionally; the abort is the debug-build extra.
+`CertificatePinSinkTest::touchingAnHttpClientFromTheWrongThreadIsReported`
+pins this.
+
+TSan was still worth running once by hand — it found two genuine defects
+that review had not:
 
 - `NetworkExecutor::run` originally held a `QPointer` to the receiver and
   checked it on the executor thread. `QPointer` is documented as not
   thread-safe; the check races with `~QObject` and can report "alive" for an
   object already being torn down. Replaced with a stated precondition
-  enforced by `shutdown()` ordering — see `NetworkExecutor::run`.
+  enforced by `shutdown()` ordering.
 - Several tests observed cross-thread state through plain `bool`s. Now
   `std::atomic`.
 
-If you run it again, filter by hand and treat only reports whose *both*
-sides are in this repo's own code as real.
+If you do run it again, treat only reports whose *both* sides are in this
+repo's own code as real, and expect to filter by hand.
+
+## Certificate pin state during the migration
+
+Pin state lives inside `HttpClient`, and there is more than one of those
+while this is in progress. The first conversion shipped an **unpinned path**
+because of it: `MfaController` moved to the executor's client, which nobody
+had given a pin or a mismatch handler, so its requests went out under
+whatever certificate the CA chain accepted and the impersonation banner had
+nothing to compare against.
+
+`core/net/CertificatePinSink` is the structural fix. Everything that mutates
+pin state takes a `CertificatePinSink&` rather than an `HttpClient&`, and
+`main()` builds a `FanOutCertificatePinSink` over the GUI-thread client and
+the executor. Adding a client means adding one entry; retiring the
+GUI-thread one means removing one. Nobody has to remember to do it twice.
+
+The executor's entry goes through `NetworkExecutor::configure()`, which
+applies the change on the executor thread and blocks — the pin is read
+mid-handshake there, so writing it from the GUI thread would be the race the
+affinity guard now catches.

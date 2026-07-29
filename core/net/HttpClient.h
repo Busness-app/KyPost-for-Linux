@@ -8,6 +8,7 @@
 #include <QList>
 #include <QPair>
 #include <QString>
+#include <QThread>
 #include <QUrl>
 #include <functional>
 #include <optional>
@@ -221,6 +222,29 @@ public:
     void setCertificateMismatchHandler(CertificateMismatchHandler handler);
 
 private:
+    // The thread this client was constructed on, and the only one that may
+    // touch it. Checked by Q_ASSERT on every public entry point.
+    //
+    // This exists because ThreadSanitizer cannot do the job here. Measured,
+    // not assumed: Qt is not built with -fsanitize=thread, so the
+    // happens-before edges its event queue establishes are invisible, and a
+    // 20-line program that does nothing but hand a std::function to a worker
+    // thread via QMetaObject::invokeMethod produces 11 race reports. Two
+    // different suppression sets were tried against a probe carrying both a
+    // real race and the Qt-mediated false positives; both cut the real
+    // reports as well (12 -> 6 and 12 -> 4), and TSan happens-before
+    // annotations at our own seam only moved 11 -> 10 because the residual
+    // reports are Qt's internal QMetaCallEvent storage, which cannot be
+    // annotated from outside. See docs/THREADING.md.
+    //
+    // An affinity assertion is strictly better for the defect that actually
+    // matters -- an HttpClient being touched from the wrong thread, which is
+    // how the pin could be written while a request reads it mid-handshake.
+    // It is deterministic, fires in every debug run including all 76 tests,
+    // and has no false positives at all.
+    void assertOwningThread(const char* where) const;
+    QThread* m_owningThread = nullptr;
+
     QByteArray m_certificatePin;
     QUrl m_pinnedOrigin;
     CertificateMismatchHandler m_certificateMismatchHandler;

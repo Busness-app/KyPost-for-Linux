@@ -2,6 +2,7 @@
 
 #include "domain/DevicePairing.h"
 #include "domain/PairingStore.h"
+#include "net/CertificatePinSink.h"
 #include "net/HttpClient.h"
 #include "security/CredentialCipher.h"
 #include "stores/SettingsStore.h"
@@ -38,21 +39,21 @@ QString derivePullEndpoint(const QUrl& serverBaseUrl)
 class ScopedPinSuspension
 {
 public:
-    explicit ScopedPinSuspension(HttpClient& httpClient)
-        : m_httpClient(httpClient)
-        , m_saved(httpClient.certificatePinState())
+    explicit ScopedPinSuspension(CertificatePinSink& pinSink)
+        : m_pinSink(pinSink)
+        , m_saved(pinSink.pinState())
     {
         // The registration is what establishes a new trust anchor, so the
         // old pin must not be allowed to abort it -- that is what made the
         // certificate-mismatch banner's own "unpair and pair again" advice
         // impossible to follow without restarting the process.
-        m_httpClient.clearCertificatePin();
+        m_pinSink.clearPin();
     }
 
     ~ScopedPinSuspension()
     {
         if (m_restore)
-            m_httpClient.restoreCertificatePin(m_saved);
+            m_pinSink.restorePin(m_saved);
     }
 
     ScopedPinSuspension(const ScopedPinSuspension&) = delete;
@@ -65,7 +66,7 @@ public:
     const HttpClient::CertificatePinState& saved() const { return m_saved; }
 
 private:
-    HttpClient& m_httpClient;
+    CertificatePinSink& m_pinSink;
     HttpClient::CertificatePinState m_saved;
     bool m_restore = true;
 };
@@ -73,11 +74,11 @@ private:
 } // namespace
 
 DeviceRegistrationService::DeviceRegistrationService(NativeRegistrationClient& client, PairingStore& pairingStore,
-                                                       SettingsStore& settingsStore, HttpClient& httpClient)
+                                                       SettingsStore& settingsStore, CertificatePinSink& pinSink)
     : m_client(client)
     , m_pairingStore(pairingStore)
     , m_settingsStore(settingsStore)
-    , m_httpClient(httpClient)
+    , m_pinSink(pinSink)
 {
 }
 
@@ -109,7 +110,7 @@ NativeRegistrationResult DeviceRegistrationService::pair(const PairingParams& pa
     // guard and this function used to respond by clearing the whole pairing.
     const CredentialCipher::SessionKey sealingKey = m_pairingStore.sealingKeySnapshot();
 
-    ScopedPinSuspension pinSuspension(m_httpClient);
+    ScopedPinSuspension pinSuspension(m_pinSink);
 
     const NativeRegistrationResult result = m_client.registerDevice(
         QUrl(params.registrationUrl), params.subscriberId, params.pairingToken, deviceToken, QString(), params.deviceName);
@@ -172,7 +173,7 @@ NativeRegistrationResult DeviceRegistrationService::pair(const PairingParams& pa
     // it on the deliberately cross-server PGP QR fetch only ever produced a
     // false "your mail server is being impersonated" alarm.
     if (!result.peerSpkiSha256.isEmpty()) {
-        m_httpClient.setCertificatePin(result.peerSpkiSha256, QUrl(params.serverBaseUrl));
+        m_pinSink.setPin(result.peerSpkiSha256, QUrl(params.serverBaseUrl));
         pinSuspension.keepNewPin();
     } else if (pinSuspension.saved().isEnforcing()) {
         // Registered successfully but there is nothing to pin. Over plain

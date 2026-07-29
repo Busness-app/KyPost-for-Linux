@@ -1,6 +1,7 @@
 #include "domain/DeviceRegistrationService.h"
 #include "domain/DevicePairing.h"
 #include "domain/PairingStore.h"
+#include "net/CertificatePinSink.h"
 #include "net/HttpClient.h"
 #include "net/NativeRegistrationClient.h"
 #include "stores/SecureStoreFile.h"
@@ -101,7 +102,8 @@ void DeviceRegistrationServiceTest::successfulPairPersistsPairingAndSettings()
     QVERIFY(settingsDir.isValid());
     SettingsStore settingsStore(settingsDir.filePath(QStringLiteral("settings.ini")));
 
-    DeviceRegistrationService service(client, pairingStore, settingsStore, http);
+    HttpClientPinSink pinSink(http);
+    DeviceRegistrationService service(client, pairingStore, settingsStore, pinSink);
 
     PairingParams params = sampleParams(fake.port());
     params.serverBaseUrl = QStringLiteral("http://relay.example:9443");
@@ -154,7 +156,8 @@ void DeviceRegistrationServiceTest::pullEndpointFromDifferentOriginThanServerIsR
     QVERIFY(settingsDir.isValid());
     SettingsStore settingsStore(settingsDir.filePath(QStringLiteral("settings.ini")));
 
-    DeviceRegistrationService service(client, pairingStore, settingsStore, http);
+    HttpClientPinSink pinSink(http);
+    DeviceRegistrationService service(client, pairingStore, settingsStore, pinSink);
 
     const NativeRegistrationResult result =
         service.pair(sampleParams(fake.port()), QStringLiteral("https://push.example/endpoint"));
@@ -180,7 +183,8 @@ void DeviceRegistrationServiceTest::unauthorizedPairLeavesStoresUntouched()
     QVERIFY(settingsDir.isValid());
     SettingsStore settingsStore(settingsDir.filePath(QStringLiteral("settings.ini")));
 
-    DeviceRegistrationService service(client, pairingStore, settingsStore, http);
+    HttpClientPinSink pinSink(http);
+    DeviceRegistrationService service(client, pairingStore, settingsStore, pinSink);
 
     const NativeRegistrationResult result =
         service.pair(sampleParams(fake.port()), QStringLiteral("https://push.example/endpoint"));
@@ -224,7 +228,8 @@ void DeviceRegistrationServiceTest::reregisterIfPairedSendsStoredCredentialsAndU
     QNetworkAccessManager manager;
     HttpClient http(manager);
     NativeRegistrationClient client(http);
-    DeviceRegistrationService service(client, pairingStore, settingsStore, http);
+    HttpClientPinSink pinSink(http);
+    DeviceRegistrationService service(client, pairingStore, settingsStore, pinSink);
 
     const std::optional<NativeRegistrationResult> result =
         service.reregisterIfPaired(QStringLiteral("https://push.example/endpoint"));
@@ -261,7 +266,8 @@ void DeviceRegistrationServiceTest::reregisterIfPairedWithNoPriorPairingMakesNoR
     QNetworkAccessManager manager;
     HttpClient http(manager);
     NativeRegistrationClient client(http);
-    DeviceRegistrationService service(client, pairingStore, settingsStore, http);
+    HttpClientPinSink pinSink(http);
+    DeviceRegistrationService service(client, pairingStore, settingsStore, pinSink);
 
     const std::optional<NativeRegistrationResult> result =
         service.reregisterIfPaired(QStringLiteral("https://push.example/endpoint"));
@@ -296,7 +302,8 @@ void DeviceRegistrationServiceTest::reregisterIfPairedOn401LeavesStoredPairingUn
     QNetworkAccessManager manager;
     HttpClient http(manager);
     NativeRegistrationClient client(http);
-    DeviceRegistrationService service(client, pairingStore, settingsStore, http);
+    HttpClientPinSink pinSink(http);
+    DeviceRegistrationService service(client, pairingStore, settingsStore, pinSink);
 
     const std::optional<NativeRegistrationResult> result =
         service.reregisterIfPaired(QStringLiteral("https://push.example/endpoint"));
@@ -350,7 +357,8 @@ void DeviceRegistrationServiceTest::failedReregistrationKeepsTheCertificatePinEn
     QNetworkAccessManager manager;
     HttpClient http(manager);
     NativeRegistrationClient client(http);
-    DeviceRegistrationService service(client, pairingStore, settingsStore, http);
+    HttpClientPinSink pinSink(http);
+    DeviceRegistrationService service(client, pairingStore, settingsStore, pinSink);
 
     const QByteArray pin = QByteArray(32, 'A');
     const QUrl pinnedOrigin(existing.serverBaseUrl);
@@ -385,7 +393,8 @@ void DeviceRegistrationServiceTest::unpersistableRegistrationKeepsTheCertificate
     QTemporaryDir settingsDir;
     QVERIFY(settingsDir.isValid());
     SettingsStore settingsStore(settingsDir.filePath(QStringLiteral("settings.ini")));
-    DeviceRegistrationService service(client, pairingStore, settingsStore, http);
+    HttpClientPinSink pinSink(http);
+    DeviceRegistrationService service(client, pairingStore, settingsStore, pinSink);
 
     const QByteArray pin = QByteArray(32, 'B');
     const QUrl pinnedOrigin(QStringLiteral("https://relay.example"));
@@ -428,7 +437,8 @@ void DeviceRegistrationServiceTest::deferredRegistrationKeepsTheCertificatePinEn
     QNetworkAccessManager manager;
     HttpClient http(manager);
     NativeRegistrationClient client(http);
-    DeviceRegistrationService service(client, pairingStore, settingsStore, http);
+    HttpClientPinSink pinSink(http);
+    DeviceRegistrationService service(client, pairingStore, settingsStore, pinSink);
 
     const QByteArray pin = QByteArray(32, 'C');
     const QUrl pinnedOrigin(existing.serverBaseUrl);
@@ -467,7 +477,8 @@ void DeviceRegistrationServiceTest::pairFailsWhenCredentialsCannotBePersisted()
     QVERIFY(settingsDir.isValid());
     SettingsStore settingsStore(settingsDir.filePath(QStringLiteral("settings.ini")));
 
-    DeviceRegistrationService service(client, pairingStore, settingsStore, http);
+    HttpClientPinSink pinSink(http);
+    DeviceRegistrationService service(client, pairingStore, settingsStore, pinSink);
     const NativeRegistrationResult result = service.pair(sampleParams(fake.port()), QStringLiteral("tok"));
 
     QCOMPARE(result.outcome, RegistrationOutcome::Failure);
@@ -511,7 +522,8 @@ void DeviceRegistrationServiceTest::reregisterIsDeferredWithoutContactingTheServ
     QNetworkAccessManager manager;
     HttpClient http(manager);
     NativeRegistrationClient client(http);
-    DeviceRegistrationService service(client, pairingStore, settingsStore, http);
+    HttpClientPinSink pinSink(http);
+    DeviceRegistrationService service(client, pairingStore, settingsStore, pinSink);
 
     const std::optional<NativeRegistrationResult> result =
         service.reregisterIfPaired(QStringLiteral("https://push.example/endpoint"));

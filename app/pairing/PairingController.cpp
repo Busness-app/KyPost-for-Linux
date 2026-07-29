@@ -4,6 +4,7 @@
 #include "domain/DevicePairing.h"
 #include "domain/PairingStore.h"
 #include "net/DeregisterClient.h"
+#include "net/CertificatePinSink.h"
 #include "net/HttpClient.h"
 #include "stores/SettingsStore.h"
 #include "util/ReentrancyGuard.h"
@@ -171,13 +172,13 @@ std::optional<ParsedPairingLink> parseNativePairLink(const QUrl& url)
 
 PairingController::PairingController(DeviceRegistrationService& service, PairingStore& pairingStore,
                                        SettingsStore& settingsStore, DeregisterClient& deregisterClient,
-                                       HttpClient& httpClient, QObject* parent)
+                                       CertificatePinSink& pinSink, QObject* parent)
     : QObject(parent)
     , m_service(service)
     , m_pairingStore(pairingStore)
     , m_settingsStore(settingsStore)
     , m_deregisterClient(deregisterClient)
-    , m_httpClient(httpClient)
+    , m_pinSink(pinSink)
 {
     // Unlike MailController/ContactsController (which deliberately start
     // empty until QML calls a load slot), the pairing badge/menu entries
@@ -395,7 +396,7 @@ void PairingController::removePairing()
     // follow: the re-pair POST met the relay's new certificate, the stale pin
     // aborted it, and the banner came straight back until the user restarted
     // -- which minimize-to-tray makes non-obvious and the UI never mentions.
-    m_httpClient.clearCertificatePin();
+    m_pinSink.clearPin();
 
     // A fresh pin is captured on the next pair, so the old mismatch is no
     // longer meaningful -- and leaving the banner up after the user has

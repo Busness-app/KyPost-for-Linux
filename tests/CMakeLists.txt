@@ -90,6 +90,8 @@ kypost_add_test(HttpClientTest core/net/HttpClientTest.cpp)
 # Asserts the property the whole threading migration exists for: that the
 # calling thread is never re-entered while a request is in flight.
 kypost_add_test(NetworkExecutorTest core/net/NetworkExecutorTest.cpp)
+# Guards the unpinned-path regression the first threading conversion caused.
+kypost_add_test(CertificatePinSinkTest core/net/CertificatePinSinkTest.cpp)
 target_include_directories(NetworkExecutorTest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/core/net)
 kypost_add_test(NativeRegistrationClientTest core/net/NativeRegistrationClientTest.cpp)
 kypost_add_test(PushNotificationClientTest core/net/PushNotificationClientTest.cpp)

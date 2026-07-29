@@ -36,8 +36,34 @@ void applyDefaultHeaders(QNetworkRequest& request, const QList<QPair<QString, QS
 
 } // namespace
 
+void HttpClient::assertOwningThread(const char* where) const
+{
+    if (Q_LIKELY(QThread::currentThread() == m_owningThread))
+        return;
+
+    // Deliberately NOT a bare Q_ASSERT_X. The default build type here is
+    // Release, which defines NDEBUG and compiles Q_ASSERT out entirely -- so
+    // an assert-only check would be absent from exactly the build users run,
+    // and its presence in the source would be misleading. The condition is
+    // evaluated unconditionally and reported unconditionally; the abort is
+    // the debug-build extra.
+    //
+    // Worth this much noise because the failure is silent and
+    // security-relevant: the certificate pin is read mid-handshake by a
+    // request on the owning thread, so a write from anywhere else is a data
+    // race on the value that decides whether the device secret goes to the
+    // right server.
+    qCritical("%s: HttpClient touched from a thread other than the one that constructed it. Its "
+              "certificate-pin state is read mid-handshake, so this is a data race on the value "
+              "that decides where the device secret is sent. Use NetworkExecutor::configure() or "
+              "run() to reach the executor's client.",
+              where);
+    Q_ASSERT_X(false, where, "HttpClient used from the wrong thread");
+}
+
 HttpClient::HttpClient(QNetworkAccessManager& manager, int transferTimeoutMs)
-    : m_manager(manager)
+    : m_owningThread(QThread::currentThread())
+    , m_manager(manager)
 {
     // A manager with no transfer timeout configured (the Qt default) leaves
     // waitForReply()'s QEventLoop waiting on ::finished forever if a server
@@ -50,28 +76,33 @@ HttpClient::HttpClient(QNetworkAccessManager& manager, int transferTimeoutMs)
 
 void HttpClient::setCertificatePin(const QByteArray& spkiSha256, const QUrl& origin)
 {
+    assertOwningThread("HttpClient::setCertificatePin");
     m_certificatePin = spkiSha256;
     m_pinnedOrigin = origin;
 }
 
 QByteArray HttpClient::certificatePin() const
 {
+    assertOwningThread("HttpClient::certificatePin");
     return m_certificatePin;
 }
 
 HttpClient::CertificatePinState HttpClient::certificatePinState() const
 {
+    assertOwningThread("HttpClient::certificatePinState");
     return CertificatePinState{ m_certificatePin, m_pinnedOrigin };
 }
 
 void HttpClient::restoreCertificatePin(const CertificatePinState& state)
 {
+    assertOwningThread("HttpClient::restoreCertificatePin");
     m_certificatePin = state.spkiSha256;
     m_pinnedOrigin = state.origin;
 }
 
 void HttpClient::clearCertificatePin()
 {
+    assertOwningThread("HttpClient::clearCertificatePin");
     m_certificatePin.clear();
     m_pinnedOrigin = QUrl();
 }
@@ -91,6 +122,7 @@ HttpClient::RedirectValidator HttpClient::effectiveRedirectValidator(const QUrl&
 
 void HttpClient::setCertificateMismatchHandler(CertificateMismatchHandler handler)
 {
+    assertOwningThread("HttpClient::setCertificateMismatchHandler");
     m_certificateMismatchHandler = std::move(handler);
 }
 
@@ -98,6 +130,7 @@ HttpClient::HttpResult HttpClient::get(const QUrl& url, const QList<QPair<QStrin
                                         const QList<QPair<QString, QString>>& headers,
                                         const RedirectValidator& redirectValidator)
 {
+    assertOwningThread("HttpClient::get");
     const QUrl requestUrl = urlWithQuery(url, query);
     if (!requestUrl.isValid())
         return HttpResult{ NetworkError::InvalidUrl, 0, {}, QStringLiteral("Invalid URL"), {}, {} };
@@ -122,6 +155,7 @@ HttpClient::HttpResult HttpClient::post(const QUrl& url, const QList<QPair<QStri
                                          const QJsonObject& jsonBody, const QList<QPair<QString, QString>>& headers,
                                          const RedirectValidator& redirectValidator)
 {
+    assertOwningThread("HttpClient::post");
     const QUrl requestUrl = urlWithQuery(url, query);
     if (!requestUrl.isValid())
         return HttpResult{ NetworkError::InvalidUrl, 0, {}, QStringLiteral("Invalid URL"), {}, {} };
@@ -139,6 +173,7 @@ HttpClient::HttpResult HttpClient::put(const QUrl& url, const QList<QPair<QStrin
                                         const QJsonObject& jsonBody, const QList<QPair<QString, QString>>& headers,
                                         const RedirectValidator& redirectValidator)
 {
+    assertOwningThread("HttpClient::put");
     const QUrl requestUrl = urlWithQuery(url, query);
     if (!requestUrl.isValid())
         return HttpResult{ NetworkError::InvalidUrl, 0, {}, QStringLiteral("Invalid URL"), {}, {} };
@@ -156,6 +191,7 @@ HttpClient::HttpResult HttpClient::del(const QUrl& url, const QList<QPair<QStrin
                                         const QList<QPair<QString, QString>>& headers,
                                         const RedirectValidator& redirectValidator)
 {
+    assertOwningThread("HttpClient::del");
     const QUrl requestUrl = urlWithQuery(url, query);
     if (!requestUrl.isValid())
         return HttpResult{ NetworkError::InvalidUrl, 0, {}, QStringLiteral("Invalid URL"), {}, {} };

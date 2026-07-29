@@ -42,6 +42,7 @@
 #include "net/ContactSyncClient.h"
 #include "net/FolderClient.h"
 #include "net/GroupsClient.h"
+#include "net/CertificatePinSink.h"
 #include "net/HttpClient.h"
 #include "net/NetworkExecutor.h"
 #include "net/MfaResponseClient.h"
@@ -555,13 +556,28 @@ int main(int argc, char* argv[])
     // conversion.
     NetworkExecutor networkExecutor;
 
+    // 6c. The single sink every certificate-pin mutation goes through.
+    //
+    // There is more than one HttpClient while the threading migration is in
+    // progress, and naming one of them directly is how the first conversion
+    // shipped an unpinned path: MfaController moved to the executor's client,
+    // which nobody had given a pin or a mismatch handler, so its requests
+    // went out under whatever certificate the CA chain accepted and the
+    // impersonation banner had nothing to compare against. Everything that
+    // touches pin state now takes this fan-out instead of an HttpClient, so
+    // "remember to set it on both" is not something anyone has to remember.
+    // Retiring the GUI-thread client later means deleting one entry here.
+    HttpClientPinSink guiThreadPinSink(httpClient);
+    NetworkExecutorPinSink executorPinSink(networkExecutor);
+    FanOutCertificatePinSink certificatePinSink({ &guiThreadPinSink, &executorPinSink });
+
     // Enforce the certificate pin captured when this device paired (trust on
     // first use -- see DeviceRegistrationService::pair). Empty for a pairing
     // made before pinning existed, or over plain http in testing, in which
     // case enforcement stays off rather than bricking every request.
     if (const std::optional<DevicePairing> existingPairing = pairingStore.load();
         existingPairing.has_value() && !existingPairing->certificateSpkiSha256.isEmpty()) {
-        httpClient.setCertificatePin(
+        certificatePinSink.setPin(
             QByteArray::fromBase64(existingPairing->certificateSpkiSha256.toLatin1()),
             QUrl(existingPairing->serverBaseUrl));
     }
@@ -612,7 +628,7 @@ int main(int argc, char* argv[])
     ContactSyncRepository contactSyncRepository(contactSyncClient, contactDao, pendingContactChangeDao,
                                                  cursorStore, pairingStore);
     DeviceRegistrationService deviceRegistrationService(nativeRegistrationClient, pairingStore, settingsStore,
-                                                        httpClient);
+                                                        certificatePinSink);
 
     // 9. Task 41: the push domain graph deferred by the Phase 4 final-review
     // note above -- PushNotificationClient (over httpClient, same
@@ -806,7 +822,7 @@ int main(int argc, char* argv[])
     // PairingController.h's doc comment on why those reuse pairingChanged()
     // rather than a new signal.
     PairingController pairingController(deviceRegistrationService, pairingStore, settingsStore, deregisterClient,
-                                        httpClient);
+                                        certificatePinSink);
     qmlRegisterSingletonInstance<PairingController>(
         "com.urlxl.mail", 1, 0, "Pairing", &pairingController);
 
@@ -844,10 +860,20 @@ int main(int argc, char* argv[])
     // the roots' banner supplies the sentence and offers re-pairing, which
     // is the only real recovery. Safe to capture pairingController by
     // reference: httpClient is declared above it and destroyed after it.
-    httpClient.setCertificateMismatchHandler([&pairingController]() {
+    // Installed on EVERY client, via the fan-out. A mismatch detected on a
+    // path whose client had no handler aborted the request and told the user
+    // nothing -- which is what the executor's client did until now.
+    //
+    // The lambda runs on whichever thread served the request, so the
+    // QObject touch is marshalled rather than called inline: from the
+    // executor thread, setCertificateMismatch() would be writing QML-bound
+    // state from the wrong thread.
+    certificatePinSink.setMismatchHandler([&pairingController]() {
         qCritical("main: TLS certificate pin mismatch -- refusing to send credentials to this "
                   "server; the device must be paired again to trust a new certificate");
-        pairingController.setCertificateMismatch(true);
+        QMetaObject::invokeMethod(
+            &pairingController, [&pairingController]() { pairingController.setCertificateMismatch(true); },
+            Qt::QueuedConnection);
     });
 
     // The ntfy-topic rotation hook that used to sit here (rotate the
