@@ -205,6 +205,57 @@ jobs:
             --runtime-repo=https://flathub.org/repo/flathub.flatpakrepo \
             "${SIGN[@]}"
 
+      # DIAGNOSTIC, failure-only. This job has never once succeeded (36/36
+      # failures since 2026-07-26), always at flatpak-builder's export step
+      # with appstreamcli compose reporting:
+      #
+      #     com.urlxl.mail
+      #       E: file-read-error
+      #     general
+      #       E: filters-but-no-output
+      #
+      # Those are issue *names* with no detail, because flatpak-builder
+      # invokes compose without --print-report, and the temporary result-root
+      # it composes into is gone by the time the step fails. So the actual
+      # reason has never been visible in a log.
+      #
+      # Everything cheap has already been ruled out locally: the metainfo,
+      # the .desktop file and all nine icons are installed correctly (the
+      # build log shows each one), `appstreamcli validate --no-net` passes as
+      # its own step above, and running this exact compose against a staged
+      # `cmake --install` tree succeeds and emits both the component XML and
+      # the 64/128px icons. The one difference left is the tool: ubuntu-24.04
+      # ships appstream 1.0.2, and the local reproduction used 1.1.6.
+      #
+      # This step re-runs compose on the tree flatpak-builder left behind,
+      # with --print-report=full, so the next run says what is actually
+      # wrong instead of that something is. Remove it once this job is green.
+      - name: Diagnose appstreamcli compose failure
+        if: failure()
+        run: |
+          set -x
+          appstreamcli --version || true
+          echo "--- metadata present in the built tree? ---"
+          ls -l build-flatpak/files/share/metainfo/ || true
+          ls -l build-flatpak/files/share/applications/ || true
+          find build-flatpak/files/share/icons -name 'com.urlxl.mail.*' -printf '%s\t%p\n' || true
+          echo "--- compose, with the report flatpak-builder never asks for ---"
+          rm -rf /tmp/ascdiag
+          appstreamcli compose \
+            --print-report=full \
+            --verbose \
+            --no-net \
+            --prefix=/ \
+            --origin="$APP_ID" \
+            --components="$APP_ID","$APP_ID".desktop \
+            --result-root=/tmp/ascdiag \
+            --data-dir=/tmp/ascdiag/xmls \
+            --icons-dir=/tmp/ascdiag/icons \
+            --hints-dir=/tmp/ascdiag/hints \
+            build-flatpak/files || true
+          echo "--- generated hint reports ---"
+          find /tmp/ascdiag/hints -type f -exec echo '### {}' \; -exec cat {} \; || true
+
       # Confirms the app actually loads inside the sandbox rather than just
       # that the build succeeded -- catches components missing from
       # app/qml/qml.qrc, which has bitten this repo for real. Runs before the
