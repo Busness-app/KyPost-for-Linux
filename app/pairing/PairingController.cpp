@@ -430,6 +430,56 @@ void PairingController::setDeviceToken(const QString& token)
     m_deviceToken = token;
 }
 
+void PairingController::setAccountReplacementHandlers(std::function<bool()> purge, std::function<void()> escalate)
+{
+    m_purgeCachedAccountData = std::move(purge);
+    m_escalateToFullWipe = std::move(escalate);
+}
+
+// Runs after a registration has SUCCEEDED and before its result is persisted.
+// Returns false when the caller must abandon the pairing entirely.
+//
+// Order is the whole point, and it is the opposite of the obvious one. Purging
+// first would mean a replacement that failed -- offline, a rejected token, a
+// locked keyring -- had already deleted the mail, contacts and pairing of the
+// account that was working a moment earlier. Nothing is destroyed until the
+// replacement is proven.
+bool PairingController::purgePreviousAccountIfReplaced(const PairingParams& params)
+{
+    if (!m_registrationHadPreviousAccount)
+        return true; // first pairing on this device: nothing to replace
+
+    // Compared against what was current when this registration STARTED, not
+    // against the store now: a second registration can land while this one is
+    // in flight, and re-reading would judge this reply against an account it
+    // never saw.
+    const bool sameAccount = m_registrationStartSubscriberId == params.subscriberId
+        && m_registrationStartServerBaseUrl == params.serverBaseUrl;
+    if (sameAccount)
+        return true;
+
+    if (!m_purgeCachedAccountData) {
+        // Unwired. Refuse rather than proceed: shipping the mixed state is
+        // the failure this exists to prevent, and a missing handler is a
+        // composition-root bug, not a reason to relax the rule.
+        qCritical("PairingController: account replacement with no purge handler installed -- refusing");
+        return false;
+    }
+
+    if (m_purgeCachedAccountData())
+        return true;
+
+    // Something survived. There is no acceptable state in which two accounts'
+    // data coexist on a device whose schema cannot tell them apart, so the
+    // device is wiped rather than left mixed -- and the new pairing is
+    // refused, because proceeding would be the mixing.
+    qCritical("PairingController: could not erase the previous account's cached data -- "
+              "erasing this device instead rather than leaving two accounts' mail readable together");
+    if (m_escalateToFullWipe)
+        m_escalateToFullWipe();
+    return false;
+}
+
 bool PairingController::reregistrationRejected() const
 {
     return m_reregistrationRejected;
@@ -523,6 +573,16 @@ void PairingController::reconnectToServer()
 
     setPairingState(State::Working);
 
+    // Snapshot which account is current BEFORE the request. Judging the reply
+    // against the store afterwards is a TOCTOU: a second registration can land
+    // while this one is in flight (AGENTS.md 6d records the same shape for the
+    // sealing key), and it would decide "is this a replacement?" against an
+    // account this attempt never saw.
+    const std::optional<DevicePairing> previousAccount = m_pairingStore.load();
+    m_registrationHadPreviousAccount = previousAccount.has_value() && !previousAccount->subscriberId.isEmpty();
+    m_registrationStartSubscriberId = previousAccount.has_value() ? previousAccount->subscriberId : QString();
+    m_registrationStartServerBaseUrl = previousAccount.has_value() ? previousAccount->serverBaseUrl : QString();
+
     // Phase 1 here: suspends the pin, which is what lets the request reach a
     // server presenting the NEW certificate at all. If this attempt is
     // abandoned or fails, PairAttempt's destructor puts the old pin back --
@@ -543,6 +603,15 @@ void PairingController::reconnectToServer()
         },
         [this, params, attempt = std::move(attempt)](const NativeRegistrationResult& result) mutable {
             m_inNetworkCall = false;
+            // Reconnect targets the account already paired, so this is a no-op
+            // by construction. Run it anyway rather than depending on that
+            // staying true if this method ever grows a second caller.
+            if (result.outcome == RegistrationOutcome::Success && !purgePreviousAccountIfReplaced(params)) {
+                NativeRegistrationResult refused = result;
+                refused.outcome = RegistrationOutcome::Failure;
+                applyRegistrationResult(refused);
+                return;
+            }
             const NativeRegistrationResult applied = m_service.finishPair(std::move(attempt), params, result);
             if (applied.outcome == RegistrationOutcome::Success) {
                 // The new certificate is now the pinned one, so the condition
@@ -577,6 +646,16 @@ void PairingController::pairFromParsedParams(const QString& sub, const QString& 
     // user completes pairing; the existing endpointChanged ->
     // reregisterIfPaired wiring in main.cpp corrects a stale/empty token
     // once one becomes available.
+    // Snapshot which account is current BEFORE the request. Judging the reply
+    // against the store afterwards is a TOCTOU: a second registration can land
+    // while this one is in flight (AGENTS.md 6d records the same shape for the
+    // sealing key), and it would decide "is this a replacement?" against an
+    // account this attempt never saw.
+    const std::optional<DevicePairing> previousAccount = m_pairingStore.load();
+    m_registrationHadPreviousAccount = previousAccount.has_value() && !previousAccount->subscriberId.isEmpty();
+    m_registrationStartSubscriberId = previousAccount.has_value() ? previousAccount->subscriberId : QString();
+    m_registrationStartServerBaseUrl = previousAccount.has_value() ? previousAccount->serverBaseUrl : QString();
+
     // Phase 1 on this thread: the guards, the sealing-key snapshot and the
     // certificate-pin suspension all touch PairingStore or the pin fan-out,
     // neither of which may leave this thread. Only the request itself moves.
@@ -600,6 +679,22 @@ void PairingController::pairFromParsedParams(const QString& sub, const QString& 
         },
         [this, params, attempt = std::move(attempt)](const NativeRegistrationResult& result) mutable {
             m_inNetworkCall = false;
+            // The replacement is proven here and nothing has been persisted
+            // yet -- the only moment at which erasing the previous account's
+            // data is both safe and still possible before it becomes readable
+            // under the new pairing.
+            if (result.outcome == RegistrationOutcome::Success && !purgePreviousAccountIfReplaced(params)) {
+                NativeRegistrationResult refused = result;
+                refused.outcome = RegistrationOutcome::Failure;
+                refused.detail = QStringLiteral(
+                    "Could not remove the previous account's data from this device, so this device "
+                    "has been erased instead. Pair again to continue.");
+                // `attempt` is dropped without finishPair(), so its destructor
+                // restores the previous pin and nothing from this registration
+                // is written.
+                applyRegistrationResult(refused);
+                return;
+            }
             // Phase 3, back here: persists, installs the new pin, writes the
             // delivery settings.
             applyRegistrationResult(m_service.finishPair(std::move(attempt), params, result));

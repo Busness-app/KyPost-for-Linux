@@ -3,6 +3,8 @@
 #include "domain/DeviceRegistrationService.h"
 
 #include <QObject>
+
+#include <functional>
 #include <QString>
 
 #include <optional>
@@ -247,6 +249,26 @@ public slots:
     // whatever this holds, empty or not, rather than always QString().
     void setDeviceToken(const QString& token);
 
+    // ACCOUNT REPLACEMENT. Late-bound like setDeviceToken() and for the same
+    // reason: LocalDataWipe is constructed after this class in main.cpp's
+    // dependency order.
+    //
+    // No table in this schema carries a subscriber column -- cached mail,
+    // contacts, groups, photos and sync cursors are per-device, not
+    // per-account. So pairing a DIFFERENT account leaves the previous one's
+    // mail sitting in the inbox, readable by whoever just paired. Hand a
+    // laptop to a colleague, let them pair their own account, and they are
+    // looking at the previous owner's mail until a sync happens to replace
+    // each folder.
+    //
+    // `purge` erases that data and returns false if ANY part of it survived.
+    // `escalate` is the answer to a failed purge: there is no acceptable
+    // state in which two accounts' data coexist, so the device is wiped
+    // outright rather than left mixed. Both are called only after a
+    // replacement registration has actually SUCCEEDED -- nothing is destroyed
+    // on the strength of an attempt.
+    void setAccountReplacementHandlers(std::function<bool()> purge, std::function<void()> escalate);
+
     // Called by main.cpp on every AppLockManager::lockedChanged, plus once at
     // startup. While locked, pairFromDeepLink() refuses to enter the confirm
     // state and confirmPendingPair() refuses to act.
@@ -281,6 +303,11 @@ signals:
     void certificateMismatchChanged();
 
 private:
+    // Runs after a registration SUCCEEDS and before its result is persisted.
+    // Returns false when the caller must abandon the pairing entirely -- see
+    // the .cpp for why the purge deliberately happens in that order.
+    bool purgePreviousAccountIfReplaced(const PairingParams& params);
+
     // Builds a PairingParams from already-validated fields, sets
     // pairingState="working", calls
     // deviceRegistrationService.pair(params, m_deviceToken), maps
@@ -311,6 +338,19 @@ private:
     QString m_pairedServerHost;
     QString m_deviceId;
     QByteArray m_observedSpki; // raw SPKI SHA-256 from the failed handshake
+    // Which account was current when the in-flight registration STARTED.
+    // Compared against the reply rather than re-reading the store, because
+    // the store can change while a request is out -- the same TOCTOU that
+    // AGENTS.md 6d records for the sealing key.
+    QString m_registrationStartSubscriberId;
+    QString m_registrationStartServerBaseUrl;
+    bool m_registrationHadPreviousAccount = false;
+    // Erases the previous account's cached data; false if any of it survived.
+    // Escalation is what a failed purge means: there is no acceptable state
+    // in which two accounts' data coexist on a schema that cannot tell them
+    // apart. Both late-bound via setAccountReplacementHandlers().
+    std::function<bool()> m_purgeCachedAccountData;
+    std::function<void()> m_escalateToFullWipe;
     QString m_deviceToken; // set via setDeviceToken(); empty until UnifiedPushConnector reports a real endpoint
     // Set by pairFromDeepLink()/pairFromPastedLink() on a successful parse,
     // consumed by confirmPendingPair(), discarded by cancelPendingPair() or

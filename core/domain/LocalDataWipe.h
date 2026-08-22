@@ -66,6 +66,22 @@ public:
     // not being wiped, they are changing where their mail lives.
     LocalDataWipeResult wipeOnDiskDataOnly();
 
+    // Account replacement: erase the PREVIOUS account's cached data while
+    // keeping the pairing (which by this point describes the NEW account) and
+    // the lock (which belongs to the person holding the device, not to the
+    // account).
+    //
+    // Needed because no table in this schema carries a subscriber column.
+    // Cached mail, contacts, groups, photos and sync cursors are stored
+    // per-device, not per-account, so anything that survives pairing a
+    // different account is readable by whoever paired it. That is not a
+    // theoretical mixing of state: it is one person's mail shown to another.
+    //
+    // Deliberately NOT wipeEverything(): this runs at the moment a new
+    // pairing has just been proven, and destroying the credential that was
+    // established a moment ago would strand the device.
+    LocalDataWipeResult wipeCachedAccountData();
+
 private:
     LocalDataWipeResult wipeCaches(bool removeCurrentDatabaseFile);
 
