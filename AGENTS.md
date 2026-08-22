@@ -509,6 +509,37 @@ never once run.
   live yet. Verify the relevant backend commits are actually deployed to
   `mail.urlxl.com` before running any live end-to-end test — this has
   previously produced a "committed but 404s live" window.
+- **The Flatpak pipeline was red from its first run (2026-07-26) until
+  2026-08-22 — 40 consecutive failures, never once green.** Four independent
+  faults, stacked, each only reachable once the one above it was fixed:
+  1. `appstreamcli compose` could not read the scalable icon, because
+     ubuntu-24.04's appstream 1.0.2 decodes via gdk-pixbuf and the runner had
+     no librsvg loader. Fixed by installing `librsvg2-common`.
+  2. `flatpak build-finish` rejected `--socket=pipewire`; that socket type
+     needs flatpak 1.15.4 and the runner has 1.14.6. Now spelled
+     `--filesystem=xdg-run/pipewire-0`, which is the same grant and works on
+     every version.
+  3. **A real defect in the shipped artifact**: qtkeychain and zxing-cpp
+     resolved `CMAKE_INSTALL_LIBDIR` to `lib64`, but a flatpak's linker path
+     is `/app/lib`. Any bundle this workflow had published would have failed
+     to launch anywhere. Both modules now pass `-DCMAKE_INSTALL_LIBDIR=lib`.
+  4. The launch smoke test had no D-Bus session bus, which
+     `KDBusService(Unique)` requires. Now wrapped in `dbus-run-session`.
+
+  Two lessons worth more than the four fixes. **A permanently-red job hides
+  everything behind it**: the smoke test that caught fault 3 — a bug in what
+  users would have installed — had never executed once. And **when a tool
+  reports an issue name with no detail, make it talk before theorising**:
+  `appstreamcli compose` is invoked by flatpak-builder without
+  `--print-report`, so for a month the log said `file-read-error` and nothing
+  else. A failure-only diagnostic step that re-runs compose with
+  `--print-report=full` now lives in the workflow; it named the icon in one
+  run. Do not delete it.
+
+  Still outstanding: `FLATPAK_GPG_PRIVATE_KEY` is not configured, so
+  `steps.mode.outputs.publish` is false and nothing is published even now that
+  the build is green. Green build != shipped app; see docs/DISTRIBUTION.md.
+
 - **The Secret Service costs ~25 s on its first call when a collection is
   locked.** Measured on a live gnome-keyring, 2026-08-22: `QKeychain::Job`
   `start()` returns instantly, the first `QEventLoop::exec()` blocks for
