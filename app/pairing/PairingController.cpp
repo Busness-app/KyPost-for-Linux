@@ -578,7 +578,24 @@ void PairingController::reconnectToServer()
     // while this one is in flight (AGENTS.md 6d records the same shape for the
     // sealing key), and it would decide "is this a replacement?" against an
     // account this attempt never saw.
-    const std::optional<DevicePairing> previousAccount = m_pairingStore.load();
+    const PairingStore::LoadResult previous = m_pairingStore.loadChecked();
+    // Refused, not assumed. "Could not read the store" is not "there is no
+    // previous account": treating it as one skips the replacement purge
+    // entirely, and the previous account's cached mail is then handed to
+    // whoever this registration is pairing. Nothing is destroyed on this
+    // path either -- refusing costs a retry, and a registration whose
+    // credentials this store cannot be read for could not be saved to it
+    // anyway.
+    if (previous.status == PairingStore::LoadStatus::Unreadable) {
+        NativeRegistrationResult out;
+        out.outcome = RegistrationOutcome::Failure;
+        out.detail = i18n("Could not read this system's secret store, so KyPost cannot tell whether "
+                           "pairing would replace an existing account. Check that a keyring service "
+                           "(gnome-keyring or kwallet) is running and unlocked, then pair again.");
+        applyRegistrationResult(out);
+        return;
+    }
+    const std::optional<DevicePairing>& previousAccount = previous.pairing;
     m_registrationHadPreviousAccount = previousAccount.has_value() && !previousAccount->subscriberId.isEmpty();
     m_registrationStartSubscriberId = previousAccount.has_value() ? previousAccount->subscriberId : QString();
     m_registrationStartServerBaseUrl = previousAccount.has_value() ? previousAccount->serverBaseUrl : QString();
@@ -651,7 +668,24 @@ void PairingController::pairFromParsedParams(const QString& sub, const QString& 
     // while this one is in flight (AGENTS.md 6d records the same shape for the
     // sealing key), and it would decide "is this a replacement?" against an
     // account this attempt never saw.
-    const std::optional<DevicePairing> previousAccount = m_pairingStore.load();
+    const PairingStore::LoadResult previous = m_pairingStore.loadChecked();
+    // Refused, not assumed. "Could not read the store" is not "there is no
+    // previous account": treating it as one skips the replacement purge
+    // entirely, and the previous account's cached mail is then handed to
+    // whoever this registration is pairing. Nothing is destroyed on this
+    // path either -- refusing costs a retry, and a registration whose
+    // credentials this store cannot be read for could not be saved to it
+    // anyway.
+    if (previous.status == PairingStore::LoadStatus::Unreadable) {
+        NativeRegistrationResult out;
+        out.outcome = RegistrationOutcome::Failure;
+        out.detail = i18n("Could not read this system's secret store, so KyPost cannot tell whether "
+                           "pairing would replace an existing account. Check that a keyring service "
+                           "(gnome-keyring or kwallet) is running and unlocked, then pair again.");
+        applyRegistrationResult(out);
+        return;
+    }
+    const std::optional<DevicePairing>& previousAccount = previous.pairing;
     m_registrationHadPreviousAccount = previousAccount.has_value() && !previousAccount->subscriberId.isEmpty();
     m_registrationStartSubscriberId = previousAccount.has_value() ? previousAccount->subscriberId : QString();
     m_registrationStartServerBaseUrl = previousAccount.has_value() ? previousAccount->serverBaseUrl : QString();

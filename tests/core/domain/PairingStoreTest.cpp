@@ -31,6 +31,22 @@ private:
     QHash<QString, QString> m_values;
 };
 
+// A store that cannot be consulted at all -- no Secret Service provider
+// running, a locked wallet, no D-Bus session. Distinct from
+// UnremovableSecureStore above, which answers reads and only refuses
+// removals: this one's reads FAIL, which is the case that must not be
+// mistaken for "there is no pairing".
+class UnreachableSecureStore : public SecureStore
+{
+public:
+    ReadResult read(const QString&) const override { return ReadResult{ ReadStatus::Failed, QString() }; }
+    bool set(const QString&, const QString&) override { return false; }
+    std::optional<QString> get(const QString&) const override { return std::nullopt; }
+    bool remove(const QString&) override { return false; }
+    bool contains(const QString&) const override { return false; }
+};
+
+
 } // namespace
 
 class PairingStoreTest : public QObject
@@ -48,6 +64,7 @@ private slots:
     void clearReportsFailureWhenTheStoreCannotRemove();
 
     void stillCurrentTracksTheAccountAndRegistrationButNotTheSecret();
+    void loadCheckedTellsUnreadableApartFromUnpaired();
 
 private:
     static DevicePairing samplePairing();
@@ -214,6 +231,48 @@ void PairingStoreTest::stillCurrentTracksTheAccountAndRegistrationButNotTheSecre
     // And unpaired again.
     QVERIFY(pairingStore.clear());
     QVERIFY(!pairingStore.stillCurrent(identity));
+}
+
+// load() collapses "never paired" and "the store could not be consulted" into
+// the same nullopt. That is the conflation SecureStore::read() exists to undo,
+// and for account replacement it is not cosmetic: an unreadable store reading
+// as "never paired" means a replacement is not detected, so the previous
+// account's cached mail is never purged.
+void PairingStoreTest::loadCheckedTellsUnreadableApartFromUnpaired()
+{
+    // 1. Unreadable.
+    {
+        UnreachableSecureStore unreachable;
+        PairingStore pairingStore(unreachable);
+
+        const PairingStore::LoadResult result = pairingStore.loadChecked();
+        QCOMPARE(result.status, PairingStore::LoadStatus::Unreadable);
+        QVERIFY(!result.pairing.has_value());
+        // load() still reports nullopt, exactly as before -- the callers that
+        // do not make a security decision are unaffected.
+        QVERIFY(!pairingStore.load().has_value());
+        // And an in-flight reply is discarded rather than written into a
+        // profile whose pairing cannot be established.
+        QVERIFY(!pairingStore.stillCurrent(PairingIdentity{}));
+    }
+
+    // 2. Readable, and genuinely not paired.
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    SecureStoreFile secureStore(dir.path());
+    PairingStore pairingStore(secureStore);
+
+    QCOMPARE(pairingStore.loadChecked().status, PairingStore::LoadStatus::Absent);
+    QVERIFY(!pairingStore.loadChecked().pairing.has_value());
+
+    // 3. Readable and paired.
+    const DevicePairing pairing = samplePairing();
+    QVERIFY(pairingStore.save(pairing));
+
+    const PairingStore::LoadResult loaded = pairingStore.loadChecked();
+    QCOMPARE(loaded.status, PairingStore::LoadStatus::Loaded);
+    QVERIFY(loaded.pairing.has_value());
+    QCOMPARE(loaded.pairing->subscriberId, pairing.subscriberId);
 }
 
 QTEST_GUILESS_MAIN(PairingStoreTest)

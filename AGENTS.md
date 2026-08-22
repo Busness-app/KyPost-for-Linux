@@ -534,6 +534,19 @@ never once run.
   show a false all-clear -- so the bootstrap answer is left unfetched (the next
   compose open asks again) and the preflight list is cleared.
 
+- **"Could not read it" is not "it is not there", and the last place that
+  conflation lived was `PairingStore::load()`.** `sub` decides paired-vs-not,
+  and paired-vs-not decides whether a registration is a REPLACEMENT and
+  therefore whether the previous account's cache is purged. `loadChecked()`
+  reports Unreadable separately and `PairingController` refuses to register on
+  it. Worth knowing what this did and did not fix: the case was already
+  refused before the request, because `credentialGateEnabled()` fails closed
+  and `beginPair()` then cannot reseal. The first write-up of this change
+  claimed it closed a live leak; measuring it showed otherwise. What it
+  actually buys is an error message that names the keyring rather than telling
+  a user with no lock to "Unlock KyPost first", and a protection that is
+  stated here instead of falling out of an unrelated check two layers down.
+
 ## 7. DOX framework
 
 ### Core Contract
