@@ -431,6 +431,39 @@ never once run.
   success while leaving a file behind is the failure mode that class exists
   to prevent.
 
+## 6f. Rules added by the 2026-08-22 keychain-hang fix
+
+- **A nested `QEventLoop` needs an exit that does not depend on the thing you
+  are waiting for.** `SecureStoreKeychain::runBlocking` had exactly one:
+  `QKeychain::Job::finished`. QKeychain does not emit that signal when its
+  underlying D-Bus call gives up (measured, not assumed), so the loop had
+  nothing left to quit it and the application hung forever at startup, before
+  any window existed and with nothing in the journal. Every other nested loop
+  in this repo was already guarded — `HttpClient` by `transferTimeoutMs`,
+  `PgpQrTargetValidator` by its own `QTimer` — so this was the last one.
+  Adding a new one without a timer is a regression.
+
+- **Measure where a block actually is before claiming to have fixed it.** The
+  first diagnosis of the above was "add a timeout and it is bounded". Timing
+  `start()` and `exec()` separately showed the first ~25 s are spent inside a
+  *synchronous* D-Bus call (Qt's default 25000 ms) with the thread not
+  processing events, so no `QEventLoop` timer is delivered until it returns.
+  The timer guarantees termination; it does not and cannot make this fast.
+  A fix described in terms of the wrong mechanism would have had the next
+  person tuning the timeout down and wondering why nothing improved.
+
+- **Startup code that touches the secret store stops at the first failure.**
+  Each blocked call costs ~25 s and `main()` runs before any window exists.
+  The canary used to push on through `set` → `get` → `remove` → `contains`,
+  paying that floor repeatedly to re-learn an answer it already had.
+
+- **When forcing a timing path in a test, verify the forcing is
+  deterministic.** `timeoutMs=1` looked like it would force the timeout and
+  was in fact racy — 20 runs gave 15 `Absent` and 5 `Failed`, which would
+  have been a flaky test asserting a security-critical mapping.
+  `timeoutMs=0` was 20/20. Run the experiment; do not reason about which
+  millisecond wins.
+
 ## 7. DOX framework
 
 ### Core Contract
@@ -476,5 +509,14 @@ never once run.
   live yet. Verify the relevant backend commits are actually deployed to
   `mail.urlxl.com` before running any live end-to-end test — this has
   previously produced a "committed but 404s live" window.
+- **The Secret Service costs ~25 s on its first call when a collection is
+  locked.** Measured on a live gnome-keyring, 2026-08-22: `QKeychain::Job`
+  `start()` returns instantly, the first `QEventLoop::exec()` blocks for
+  ~25.0 s (Qt's default D-Bus call timeout), and `finished` is then never
+  emitted at all. Later calls in the same process are instant. Two
+  consequences worth remembering: a first-run test against a real keyring
+  legitimately takes ~25 s and is not hung, and no `QEventLoop` timer can
+  shorten that window because the thread is not processing events during it.
+  `SecureStoreKeychain` bounds it; see AGENTS.md §6f.
 - **CI Pipline Failes** Before commiting any change check the CI pipline code.
   EVERY Push to main not ment to fix the CI pipeline has broken the CI pipeline.

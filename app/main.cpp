@@ -477,10 +477,20 @@ int main(int argc, char* argv[])
     // pairing token had already been consumed. DeviceRegistrationService now
     // reports that failure properly, but a one-line canary here means the
     // user learns before they try rather than after.
+    //
+    // Each call here can block for ~25 seconds when the Secret Service is
+    // reachable but wedged (a locked collection with no prompter -- see
+    // SecureStoreKeychain.h's measurements), and this runs before any window
+    // exists. So the canary stops at the FIRST failure rather than pushing on
+    // through the remaining calls: the write already answered the question,
+    // and the read and the cleanup would each cost another 25 seconds to
+    // re-learn it. The cleanup is skipped for the same reason it is safe to
+    // skip -- if the write did not land, there is nothing to remove.
     const QString kSecureStoreCanaryKey = QStringLiteral("startup.canary");
     const bool secureStoreWritable = secureStore.set(kSecureStoreCanaryKey, QStringLiteral("1"))
         && secureStore.get(kSecureStoreCanaryKey).has_value();
-    secureStore.remove(kSecureStoreCanaryKey);
+    if (secureStoreWritable)
+        secureStore.remove(kSecureStoreCanaryKey);
     if (!secureStoreWritable) {
         qCritical("main: the system secret store is not writable -- pairing and the app lock "
                   "cannot persist. Start a keyring service (gnome-keyring or kwallet) and "
@@ -512,7 +522,10 @@ int main(int argc, char* argv[])
     // released (v0.1-alpha has zero downloads and the OSTree channel 404s),
     // so the only affected devices are the maintainer's own test hardware,
     // which a manual re-pair fixes.
-    if (secureStore.contains(QStringLiteral("ntfy-topic"))) {
+    // Gated on the canary: an unreachable store cannot be asked whether it
+    // holds this key, and asking costs another ~25 second block at startup to
+    // arrive at an answer that is already known.
+    if (secureStoreWritable && secureStore.contains(QStringLiteral("ntfy-topic"))) {
         if (secureStore.remove(QStringLiteral("ntfy-topic")))
             qInfo("main: removed the orphaned ntfy topic left by the pre-2026-07-26 push tier");
         else

@@ -57,7 +57,7 @@ A row may not sit at **Missing** without an owner phase. A row may not sit at
 | Serialised registration / re-registration / pull | **Missing** | Phase 2. |
 | Secure-store *unreadable* distinguished from *absent* | **Partial** | The credential gate is flag-OR-blob and fails closed (`AGENTS.md` §6d), but `SecureStore::get()` still collapses both into `std::nullopt` everywhere else. Phase 2. |
 | Certificate-renewal recovery UI | **Missing** | Phase 2. |
-| Secret Service call blocks indefinitely when the keyring is locked | **Missing (bug)** | `SecureStoreKeychainTest` hangs for 300 s against a live locked keyring with no prompter. The same call runs at startup. Needs a bounded timeout. Phase 2. |
+| Secret Service calls always terminate | Matched | Fixed 2026-08-22. `SecureStoreKeychain::runBlocking` waited on `QKeychain::Job::finished` alone, and QKeychain never emits it when its D-Bus call gives up — so the app hung **forever** at startup, before any window, with nothing in the journal. Bounded now, and a timeout maps to `Failed`, never `Absent`. Measured floor: the first call costs ~25 s inside a synchronous D-Bus call (Qt's default), which no timer can shorten; `main()`'s canary therefore stops at the first failure instead of paying it three times. |
 | Sync cursors erased on wipe | Matched | Fixed 2026-08-22. `cursors.ini` survived every wipe path — `CursorStore::reset()` had no caller anywhere in the app. |
 
 ## 4. Local data protection
