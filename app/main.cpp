@@ -885,6 +885,45 @@ int main(int argc, char* argv[])
     // QObject touch is marshalled rather than called inline: from the
     // executor thread, setCertificateMismatch() would be writing QML-bound
     // state from the wrong thread.
+    // Account replacement. No table in this schema carries a subscriber
+    // column, so cached mail, contacts, groups, photos and sync cursors are
+    // per-device rather than per-account: anything surviving a pairing to a
+    // DIFFERENT account is readable by whoever paired it. Hand a laptop over,
+    // let the next person pair, and they are looking at the previous owner's
+    // mail until a sync happens to replace each folder.
+    //
+    // Wired here rather than inside PairingController because LocalDataWipe
+    // is constructed above and the controller is not allowed to know about
+    // the database. The controller owns the ORDER (register, then purge,
+    // never the reverse); this owns what "purge" means.
+    pairingController.setAccountReplacementHandlers(
+        [&localDataWipe]() {
+            const LocalDataWipeResult purged = localDataWipe.wipeCachedAccountData();
+            if (!purged.tablesWiped)
+                qCritical("main: account replacement -- cached mail and contacts could not be erased");
+            if (!purged.photoCacheCleared)
+                qCritical("main: account replacement -- the contact-photo cache could not be erased");
+            if (!purged.syncCursorsCleared)
+                qCritical("main: account replacement -- the sync cursors could not be erased");
+            if (!purged.legacyDatabasesRemoved)
+                qCritical("main: account replacement -- a pre-rename database could not be erased");
+            // complete() covers the pairing/lock fields too, which this path
+            // deliberately leaves alone -- so the specific fields are what
+            // decide, not the aggregate.
+            return purged.tablesWiped && purged.photoCacheCleared && purged.syncCursorsCleared
+                && purged.legacyDatabasesRemoved;
+        },
+        [&localDataWipe]() {
+            // A failed purge has no safe partial outcome: two accounts' data
+            // on one device with no way to tell them apart is precisely what
+            // must not ship. Erase everything and relaunch, the same response
+            // as ten failed PIN attempts.
+            const LocalDataWipeResult wiped = localDataWipe.wipeEverything();
+            if (!wiped.complete())
+                qCritical("main: the escalation wipe was itself incomplete -- this device still holds data");
+            AppRelauncher::requestRelaunch();
+        });
+
     certificatePinSink.setMismatchHandler([&pairingController](const QByteArray& observedSpki) {
         qCritical("main: TLS certificate pin mismatch -- refusing to send credentials to this server");
         // Queued because the handler runs on whichever thread made the

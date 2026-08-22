@@ -72,6 +72,14 @@ LocalDataWipeResult LocalDataWipe::wipeCaches(bool removeCurrentDatabaseFile)
     return result;
 }
 
+LocalDataWipeResult LocalDataWipe::wipeCachedAccountData()
+{
+    // The database FILE stays: the app keeps running on this connection and
+    // is about to sync the new account into it. wipeAllTables() empties the
+    // rows, which is what "the previous account's data is gone" means here.
+    return wipeCaches(/*removeCurrentDatabaseFile=*/false);
+}
+
 LocalDataWipeResult LocalDataWipe::wipeEverything()
 {
     LocalDataWipeResult result = wipeCaches(/*removeCurrentDatabaseFile=*/false);

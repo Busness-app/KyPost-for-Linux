@@ -20,6 +20,7 @@
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QTest>
+#include <memory>
 #include <QUrl>
 #include <QUrlQuery>
 
@@ -49,6 +50,10 @@ private slots:
     void certificateMismatchCarriesBothFingerprintsInComparableForm();
     void reconnectToServerIsRefusedWhileAppLocked();
     void reconnectToServerKeepsThePairingAndDoesNotDeregister();
+    void pairingADifferentAccountPurgesThePreviousAccountsCachedData();
+    void pairingTheSameAccountAgainPurgesNothing();
+    void aFailedRegistrationDestroysNothing();
+    void aFailedPurgeRefusesTheNewPairingAndEscalates();
 
     // Behaviour that only exists once the registration is asynchronous.
     void confirmPendingPairReturnsWithoutBlocking();
@@ -1313,6 +1318,163 @@ void PairingControllerTest::reconnectToServerKeepsThePairingAndDoesNotDeregister
     // And the banner is gone: the certificate that just served the
     // registration is the pinned one now.
     QVERIFY(!controller.certificateMismatch());
+}
+
+
+namespace {
+
+// Builds a controller wired to recording replacement handlers, with `pairing`
+// pre-seeded as the account already on the device.
+struct ReplacementFixture
+{
+    FakeRelayServer fake;
+    QTemporaryDir secureDir;
+    QTemporaryDir settingsDir;
+    std::unique_ptr<SecureStoreFile> secureStore;
+    std::unique_ptr<PairingStore> pairingStore;
+    std::unique_ptr<SettingsStore> settingsStore;
+    QNetworkAccessManager manager;
+    std::unique_ptr<HttpClient> http;
+    std::unique_ptr<NativeRegistrationClient> client;
+    std::unique_ptr<HttpClientPinSink> pinSink;
+    std::unique_ptr<NetworkExecutor> executor;
+    std::unique_ptr<DeviceRegistrationService> service;
+    std::unique_ptr<PairingController> controller;
+
+    int purgeCalls = 0;
+    int escalateCalls = 0;
+    bool purgeSucceeds = true;
+
+    explicit ReplacementFixture(QByteArray response)
+        : fake(std::move(response))
+    {
+    }
+
+    bool build(const QString& seededSubscriberId)
+    {
+        if (!secureDir.isValid() || !settingsDir.isValid())
+            return false;
+        secureStore = std::make_unique<SecureStoreFile>(secureDir.path());
+        pairingStore = std::make_unique<PairingStore>(*secureStore);
+
+        if (!seededSubscriberId.isEmpty()) {
+            DevicePairing seeded;
+            seeded.subscriberId = seededSubscriberId;
+            seeded.serverBaseUrl = QStringLiteral("http://127.0.0.1:%1").arg(fake.port());
+            seeded.registrationUrl =
+                QStringLiteral("http://127.0.0.1:%1/api/notifications/native/register").arg(fake.port());
+            seeded.pairingToken = QStringLiteral("tok-old");
+            seeded.deviceId = QStringLiteral("dev-old");
+            seeded.deviceSecret = QStringLiteral("secret-old");
+            if (!pairingStore->save(seeded))
+                return false;
+        }
+
+        settingsStore = std::make_unique<SettingsStore>(settingsDir.filePath(QStringLiteral("settings.ini")));
+        http = std::make_unique<HttpClient>(manager);
+        client = std::make_unique<NativeRegistrationClient>(*http);
+        pinSink = std::make_unique<HttpClientPinSink>(*http);
+        executor = std::make_unique<NetworkExecutor>(3000);
+        service = std::make_unique<DeviceRegistrationService>(*client, *pairingStore, *settingsStore, *pinSink);
+        controller = std::make_unique<PairingController>(*service, *pairingStore, *settingsStore, *pinSink,
+                                                          *executor);
+        controller->setAccountReplacementHandlers([this]() { ++purgeCalls; return purgeSucceeds; },
+                                                   [this]() { ++escalateCalls; });
+        return true;
+    }
+
+    QString linkFor(const QString& subscriberId) const
+    {
+        return QStringLiteral("kypost://native-pair?sub=%1&srv=http://127.0.0.1:%2&pt=tok-new")
+            .arg(subscriberId)
+            .arg(fake.port());
+    }
+};
+
+const char* const kRegisterOk =
+    R"({"ok":true,"deviceId":"dev-new","deviceSecret":"secret-new","transport":"unifiedpush"})";
+
+} // namespace
+
+// THE LEAK THIS EXISTS TO CLOSE. No table in this schema carries a subscriber
+// column, so cached mail, contacts, groups, photos and cursors are per-device.
+// Pairing a different account left the previous one's mail in the inbox,
+// readable by whoever just paired -- hand over a laptop, let the next person
+// pair, and they are reading the previous owner's mail.
+void PairingControllerTest::pairingADifferentAccountPurgesThePreviousAccountsCachedData()
+{
+    ReplacementFixture f(httpResponse(200, "OK", kRegisterOk));
+    QVERIFY(f.build(QStringLiteral("sub-previous")));
+
+    QVERIFY(f.controller->pairFromDeepLink(QUrl(f.linkFor(QStringLiteral("sub-new")))));
+    f.controller->confirmPendingPair();
+    QTRY_COMPARE_WITH_TIMEOUT(f.controller->pairingState(), QStringLiteral("paired"), 5000);
+
+    QCOMPARE(f.purgeCalls, 1);
+    QCOMPARE(f.escalateCalls, 0);
+}
+
+// Re-pairing the SAME account is not a replacement, and treating it as one
+// would delete the user's mail every time they re-paired to fix push.
+void PairingControllerTest::pairingTheSameAccountAgainPurgesNothing()
+{
+    ReplacementFixture f(httpResponse(200, "OK", kRegisterOk));
+    QVERIFY(f.build(QStringLiteral("sub-same")));
+
+    QVERIFY(f.controller->pairFromDeepLink(QUrl(f.linkFor(QStringLiteral("sub-same")))));
+    f.controller->confirmPendingPair();
+    QTRY_COMPARE_WITH_TIMEOUT(f.controller->pairingState(), QStringLiteral("paired"), 5000);
+
+    QCOMPARE(f.purgeCalls, 0);
+    QCOMPARE(f.escalateCalls, 0);
+}
+
+// ORDER IS THE DESIGN. Purging first would mean a replacement that failed --
+// offline, a rejected token, a locked keyring -- had already deleted the mail
+// and contacts of the account that was working a moment earlier. Nothing is
+// destroyed until the replacement is proven.
+void PairingControllerTest::aFailedRegistrationDestroysNothing()
+{
+    ReplacementFixture f(httpResponse(401, "Unauthorized", R"({"error":"invalid or expired pairing token"})"));
+    QVERIFY(f.build(QStringLiteral("sub-previous")));
+
+    QVERIFY(f.controller->pairFromDeepLink(QUrl(f.linkFor(QStringLiteral("sub-new")))));
+    f.controller->confirmPendingPair();
+    QTRY_COMPARE_WITH_TIMEOUT(f.controller->pairingState(), QStringLiteral("failed"), 5000);
+
+    QVERIFY2(f.purgeCalls == 0, "a failed replacement must not have deleted the working account's data");
+    QCOMPARE(f.escalateCalls, 0);
+
+    // And the account that was working is still the one on the device.
+    const std::optional<DevicePairing> after = f.pairingStore->load();
+    QVERIFY(after.has_value());
+    QCOMPARE(after->subscriberId, QStringLiteral("sub-previous"));
+    QCOMPARE(after->deviceSecret, QStringLiteral("secret-old"));
+}
+
+// There is no acceptable state in which two accounts' data coexist on a device
+// whose schema cannot tell them apart. If the purge leaves anything behind,
+// the new pairing is REFUSED and the device is wiped -- proceeding would be
+// the mixing this whole path exists to prevent.
+void PairingControllerTest::aFailedPurgeRefusesTheNewPairingAndEscalates()
+{
+    ReplacementFixture f(httpResponse(200, "OK", kRegisterOk));
+    QVERIFY(f.build(QStringLiteral("sub-previous")));
+    f.purgeSucceeds = false;
+
+    QVERIFY(f.controller->pairFromDeepLink(QUrl(f.linkFor(QStringLiteral("sub-new")))));
+    f.controller->confirmPendingPair();
+    QTRY_COMPARE_WITH_TIMEOUT(f.controller->pairingState(), QStringLiteral("failed"), 5000);
+
+    QCOMPARE(f.purgeCalls, 1);
+    QCOMPARE(f.escalateCalls, 1);
+
+    // The new account was NOT persisted: finishPair() is never reached, so
+    // nothing from this registration was written.
+    const std::optional<DevicePairing> after = f.pairingStore->load();
+    if (after.has_value())
+        QVERIFY2(after->subscriberId != QStringLiteral("sub-new"),
+                 "a refused replacement must not leave the new account paired");
 }
 
 QTEST_GUILESS_MAIN(PairingControllerTest)
