@@ -24,6 +24,8 @@ private slots:
     void refreshNotPairedReturnsNotPairedAndMakesNoRequest();
     void refreshUnauthorizedLeavesCacheIntact();
     void cachedFoldersSortsByPath();
+    void applyListDiscardsAReplyTheCurrentPairingDidNotAuthorise();
+    void applyMutationDiscardsAReplyTheCurrentPairingDidNotAuthorise();
 
 private:
     static void savePairing(PairingStore& pairingStore, quint16 port);
@@ -181,6 +183,100 @@ void FolderRepositoryTest::cachedFoldersSortsByPath()
     QCOMPARE(cached.at(0).path, QStringLiteral("Archive/alpha"));
     QCOMPARE(cached.at(1).path, QStringLiteral("Archive/mid"));
     QCOMPARE(cached.at(2).path, QStringLiteral("Archive/zeta"));
+}
+
+// applyList() does a snapshot REPLACE, so a stale reply is destructive in both
+// directions: it publishes the previous account's mailbox names -- which are
+// user data, and often revealing ones -- into the new account's sidebar, and
+// deletes the new account's own rows under that parent to do it.
+void FolderRepositoryTest::applyListDiscardsAReplyTheCurrentPairingDidNotAuthorise()
+{
+    Database db;
+    QVERIFY(db.open(QStringLiteral(":memory:")));
+    FolderDao folderDao(db.handle());
+
+    QTemporaryDir secureDir;
+    QVERIFY(secureDir.isValid());
+    SecureStoreFile secureStore(secureDir.path());
+    PairingStore pairingStore(secureStore);
+    savePairing(pairingStore, 1); // nothing is sent in this test
+
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    FolderClient client(http);
+    FolderRepository repository(client, folderDao, pairingStore);
+
+    const std::optional<RelayRequestPlan> plan = repository.planRequest();
+    QVERIFY(plan.has_value());
+
+    // What the NEW account already has cached under the same parent.
+    QVERIFY(folderDao.insertOrReplace(QStringLiteral("Archive/Newcomer"), QStringLiteral("Archive"), true,
+                                       QStringLiteral("relay")));
+
+    FolderListResult listing;
+    listing.parent = QStringLiteral("Archive");
+    listing.folders = QVector<MailFolder>{ MailFolder{ QStringLiteral("Archive/Divorce paperwork"),
+                                                        QStringLiteral("Archive"), true } };
+
+    DevicePairing replacement;
+    replacement.subscriberId = QStringLiteral("sub-2");
+    replacement.deviceId = QStringLiteral("dev-2");
+    replacement.deviceSecret = QStringLiteral("secret-2");
+    replacement.serverBaseUrl = QStringLiteral("http://127.0.0.1:1");
+    QVERIFY(pairingStore.save(replacement));
+
+    QCOMPARE(repository.applyList(*plan, QStringLiteral("Archive"), listing).outcome,
+             MailRepositoryOutcome::PairingChanged);
+
+    const QVector<FolderRecord> after = folderDao.findByParent(QStringLiteral("Archive"));
+    QCOMPARE(after.size(), 1);
+    QCOMPARE(after.first().path, QStringLiteral("Archive/Newcomer"));
+}
+
+// The mutation already happened on the server, under the previous account, and
+// cannot be undone from here. What must not happen is writing its result into
+// the account paired now.
+void FolderRepositoryTest::applyMutationDiscardsAReplyTheCurrentPairingDidNotAuthorise()
+{
+    Database db;
+    QVERIFY(db.open(QStringLiteral(":memory:")));
+    FolderDao folderDao(db.handle());
+
+    QTemporaryDir secureDir;
+    QVERIFY(secureDir.isValid());
+    SecureStoreFile secureStore(secureDir.path());
+    PairingStore pairingStore(secureStore);
+    savePairing(pairingStore, 1);
+
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    FolderClient client(http);
+    FolderRepository repository(client, folderDao, pairingStore);
+
+    const std::optional<RelayRequestPlan> plan = repository.planRequest();
+    QVERIFY(plan.has_value());
+
+    FolderRepository::FolderMutationFetch fetched;
+    fetched.mutation.folder = QStringLiteral("Archive/Divorce paperwork");
+    fetched.mutation.parent = QStringLiteral("Archive");
+    fetched.listedParent = QStringLiteral("Archive");
+    fetched.listing.parent = QStringLiteral("Archive");
+    fetched.listing.folders = QVector<MailFolder>{ MailFolder{ QStringLiteral("Archive/Divorce paperwork"),
+                                                                QStringLiteral("Archive"), true } };
+
+    DevicePairing replacement;
+    replacement.subscriberId = QStringLiteral("sub-2");
+    replacement.deviceId = QStringLiteral("dev-2");
+    replacement.deviceSecret = QStringLiteral("secret-2");
+    replacement.serverBaseUrl = QStringLiteral("http://127.0.0.1:1");
+    QVERIFY(pairingStore.save(replacement));
+
+    const FolderRepository::FolderMutationOutcome outcome = repository.applyMutation(*plan, fetched);
+    QCOMPARE(outcome.outcome, MailRepositoryOutcome::PairingChanged);
+    // No folder name handed back either: the caller re-selects what this
+    // returns, and it names a mailbox on an account that is no longer here.
+    QVERIFY(outcome.folder.isEmpty());
+    QVERIFY(folderDao.findAll().isEmpty());
 }
 
 QTEST_GUILESS_MAIN(FolderRepositoryTest)

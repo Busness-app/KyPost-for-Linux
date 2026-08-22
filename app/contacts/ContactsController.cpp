@@ -316,6 +316,15 @@ void ContactsController::applySyncOutcome(const ContactSyncOutcome& outcome)
         setStatusMessage(QString());
         setLastError(outcome.detail.isEmpty() ? i18n("Sync failed, try again") : outcome.detail);
         break;
+    case ContactSyncStatus::PairingChanged:
+        // The reply belonged to the account that was paired when the request
+        // went out, and the repository discarded it rather than write it into
+        // the account paired now. Silent -- but both fields are still cleared,
+        // because sync() set "Syncing..." on the way in and falling out of
+        // this switch would leave that on screen forever.
+        setStatusMessage(QString());
+        setLastError(QString());
+        break;
     }
 }
 
@@ -353,17 +362,17 @@ void ContactsController::dedupe()
 // sync into a visible error.
 void ContactsController::refreshGroupsCache()
 {
-    const std::optional<RelayEndpoint> endpoint = m_groupsRepository.planRefresh();
-    if (!endpoint.has_value())
+    const std::optional<RelayRequestPlan> plan = m_groupsRepository.planRefresh();
+    if (!plan.has_value())
         return;
 
     pushBusy();
     m_executor.run(
         this,
-        [endpoint = *endpoint](HttpClient& http) { return GroupsRepository::fetchWith(http, endpoint); },
-        [this](const GroupsFetchResult& result) {
+        [endpoint = plan->endpoint](HttpClient& http) { return GroupsRepository::fetchWith(http, endpoint); },
+        [this, plan = *plan](const GroupsFetchResult& result) {
             popBusy();
-            m_groupsRepository.applyRefresh(result);
+            m_groupsRepository.applyRefresh(plan, result);
         });
 }
 

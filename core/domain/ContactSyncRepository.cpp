@@ -232,6 +232,7 @@ std::optional<ContactSyncRepository::ContactSyncPlan> ContactSyncRepository::pla
                                     RelayAuth{ pairing->deviceId, pairing->deviceSecret } };
     plan.cursor = storedCursor.isEmpty() ? 0 : storedCursor.toLongLong();
     plan.pending = m_pendingDao.findAll();
+    plan.identity = identityOf(*pairing);
     return plan;
 }
 
@@ -254,6 +255,17 @@ ContactSyncResult ContactSyncRepository::syncWith(HttpClient& httpClient, const 
 ContactSyncOutcome ContactSyncRepository::applySync(const ContactSyncPlan& plan, const ContactSyncResult& result)
 {
     const QVector<PendingContactChangeRecord>& pending = plan.pending;
+
+    // First, before either branch below writes anything. The tooOld branch in
+    // particular deletes every contact and clears the cursor: run for a reply
+    // that belongs to a pairing this device no longer has, it would wipe the
+    // NEW account's contacts on the previous account's say-so.
+    //
+    // The pending queue is deliberately left alone here too. Those are local
+    // edits that have not been accepted anywhere yet; dropping them because
+    // the account changed would silently discard the user's own work.
+    if (!m_pairingStore.stillCurrent(plan.identity))
+        return { ContactSyncStatus::PairingChanged, {}, QString(), {} };
 
     // An unpushed queue must survive to the next sync() call -- pending is
     // deliberately left untouched here.

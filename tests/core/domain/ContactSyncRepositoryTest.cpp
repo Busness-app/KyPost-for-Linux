@@ -41,6 +41,7 @@ private slots:
     void dedupeUnauthorizedFrom401MapsStatus();
     void dedupeServiceUnavailableFrom503MapsStatus();
     void deletingAnUnsyncedContactDropsItsLaterEditsToo();
+    void applySyncDiscardsAReplyTheCurrentPairingDidNotAuthorise();
 
 private:
     static void savePairing(PairingStore& pairingStore, quint16 port);
@@ -845,6 +846,86 @@ void ContactSyncRepositoryTest::deletingAnUnsyncedContactDropsItsLaterEditsToo()
     // contact the server never heard of.
     QCOMPARE(pendingDao.findAll().size(), 0);
     QVERIFY(contactDao.findAll().isEmpty());
+}
+
+// The tooOld branch of applySync() deletes EVERY contact and clears the
+// cursor. Run against a reply that belongs to a pairing this device no longer
+// has, it destroys the new account's contacts on the previous account's say-so
+// -- so this guard is not only about leaking data out, it is about a stale
+// reply deleting data that was never its to touch.
+//
+// The pending queue must survive either way: those are local edits nobody has
+// accepted yet, and dropping them because the account changed would silently
+// discard the user's own work.
+void ContactSyncRepositoryTest::applySyncDiscardsAReplyTheCurrentPairingDidNotAuthorise()
+{
+    Database db;
+    QVERIFY(db.open(QStringLiteral(":memory:")));
+    ContactDao contactDao(db.handle());
+    PendingContactChangeDao pendingDao(db.handle());
+
+    QTemporaryDir cursorDir;
+    QVERIFY(cursorDir.isValid());
+    CursorStore cursorStore(cursorDir.filePath(QStringLiteral("cursors.ini")));
+    cursorStore.setContactBaseCursor(QStringLiteral("55"));
+
+    QTemporaryDir secureDir;
+    QVERIFY(secureDir.isValid());
+    SecureStoreFile secureStore(secureDir.path());
+    PairingStore pairingStore(secureStore);
+    savePairing(pairingStore, 1); // nothing is sent in this test
+
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    ContactSyncClient client(http);
+    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore);
+
+    const std::optional<ContactSyncRepository::ContactSyncPlan> plan = repository.planSync();
+    QVERIFY(plan.has_value());
+
+    // A contact belonging to whoever is paired NOW.
+    Contact newAccountContact;
+    newAccountContact.uid = QStringLiteral("uid-new-account");
+    newAccountContact.fn = QStringLiteral("Someone Else Entirely");
+    QVERIFY(contactDao.insertOrReplace(newAccountContact));
+
+    DevicePairing replacement;
+    replacement.subscriberId = QStringLiteral("sub-2");
+    replacement.deviceId = QStringLiteral("device-2");
+    replacement.deviceSecret = QStringLiteral("secret-2");
+    replacement.serverBaseUrl = QStringLiteral("http://127.0.0.1:1");
+    QVERIFY(pairingStore.save(replacement));
+
+    // 1. A tooOld reply, the destructive branch.
+    ContactSyncResult tooOld;
+    tooOld.tooOld = true;
+    QCOMPARE(repository.applySync(*plan, tooOld).status, ContactSyncStatus::PairingChanged);
+    QCOMPARE(contactDao.findAll().size(), 1);
+    QCOMPARE(contactDao.findAll().first().uid, QStringLiteral("uid-new-account"));
+    QCOMPARE(cursorStore.contactBaseCursor(), QStringLiteral("55"));
+
+    // 2. An ordinary reply carrying the previous account's contacts.
+    Contact previousAccountContact;
+    previousAccountContact.uid = QStringLiteral("uid-previous-account");
+    previousAccountContact.fn = QStringLiteral("Divorce Lawyer");
+
+    ContactSyncResult changed;
+    changed.cursor = 99;
+    changed.changed = QVector<Contact>{ previousAccountContact };
+    QCOMPARE(repository.applySync(*plan, changed).status, ContactSyncStatus::PairingChanged);
+    QVERIFY2(!contactDao.findById(QStringLiteral("uid-previous-account")).has_value(),
+             "the previous account's contact was written into the new account's address book");
+    QCOMPARE(cursorStore.contactBaseCursor(), QStringLiteral("55"));
+
+    // Control: restore the pairing the plan named and the same reply applies.
+    DevicePairing original;
+    original.subscriberId = QStringLiteral("sub-1");
+    original.deviceId = QStringLiteral("device-1");
+    original.deviceSecret = QStringLiteral("secret-1");
+    original.serverBaseUrl = QStringLiteral("http://127.0.0.1:1");
+    QVERIFY(pairingStore.save(original));
+    QCOMPARE(repository.applySync(*plan, changed).status, ContactSyncStatus::Success);
+    QVERIFY(contactDao.findById(QStringLiteral("uid-previous-account")).has_value());
 }
 
 QTEST_GUILESS_MAIN(ContactSyncRepositoryTest)

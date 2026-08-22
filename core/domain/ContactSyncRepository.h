@@ -4,6 +4,7 @@
 #include "domain/ContactSyncReconciliation.h"
 #include "models/Contact.h"
 #include "net/ContactSyncClient.h" // for ContactDedupeGroup, held by value in ContactDedupeOutcome
+#include "domain/DevicePairing.h"
 #include "net/RelayAuth.h"         // RelayEndpoint
 
 #include <QSet>
@@ -25,7 +26,10 @@ struct ContactSyncSummary
     bool operator==(const ContactSyncSummary&) const = default;
 };
 
-enum class ContactSyncStatus { Success, NotPaired, Unauthorized, ServiceUnavailable, Retry };
+// PairingChanged: the reply was authorised by a pairing this device no longer
+// has. Nothing was written -- see PairingIdentity in DevicePairing.h. Not an
+// error; the request did exactly what it was told.
+enum class ContactSyncStatus { Success, NotPaired, Unauthorized, ServiceUnavailable, Retry, PairingChanged };
 
 struct ContactSyncOutcome
 {
@@ -120,6 +124,12 @@ public:
         RelayEndpoint endpoint;
         qint64 cursor = 0;
         QVector<PendingContactChangeRecord> pending;
+        // Which pairing authorised this sync. applySync() refuses to write
+        // anything if the device has been re-paired since -- the contacts
+        // table has no subscriber column, and the tooOld branch below
+        // DELETES every contact, which on a stale reply would destroy the
+        // new account's own contacts rather than the previous account's.
+        PairingIdentity identity;
     };
 
     // Phase 1, on the calling thread. nullopt when there is no pairing.

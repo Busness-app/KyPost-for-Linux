@@ -36,13 +36,14 @@ FolderRepository::FolderRepository(FolderClient& client, FolderDao& folderDao, P
 {
 }
 
-std::optional<RelayEndpoint> FolderRepository::planRequest() const
+std::optional<RelayRequestPlan> FolderRepository::planRequest() const
 {
     const std::optional<DevicePairing> pairing = m_pairingStore.load();
     if (!pairing.has_value())
         return std::nullopt;
-    return RelayEndpoint{ QUrl(pairing->serverBaseUrl),
-                          RelayAuth{ pairing->deviceId, pairing->deviceSecret } };
+    return RelayRequestPlan{ RelayEndpoint{ QUrl(pairing->serverBaseUrl),
+                                             RelayAuth{ pairing->deviceId, pairing->deviceSecret } },
+                              identityOf(*pairing) };
 }
 
 FolderListResult FolderRepository::listWith(HttpClient& httpClient, const RelayEndpoint& endpoint,
@@ -55,8 +56,16 @@ FolderListResult FolderRepository::listWith(HttpClient& httpClient, const RelayE
     return client.list(endpoint.serverBaseUrl, endpoint.auth, parent);
 }
 
-MailFetchOutcome FolderRepository::applyList(const QString& parent, const FolderListResult& result)
+MailFetchOutcome FolderRepository::applyList(const RelayRequestPlan& plan, const QString& parent,
+                                              const FolderListResult& result)
 {
+    // Before the snapshot replace below, which is destructive in both
+    // directions: it would publish the previous account's mailbox names into
+    // the new account's sidebar AND delete the new account's own rows for
+    // that parent.
+    if (!m_pairingStore.stillCurrent(plan.identity))
+        return { MailRepositoryOutcome::PairingChanged, QString() };
+
     if (result.error.has_value())
         return { outcomeFromNetworkError(*result.error), result.detail };
 
@@ -111,8 +120,15 @@ FolderRepository::FolderMutationFetch FolderRepository::removeWith(HttpClient& h
     return fetched;
 }
 
-FolderRepository::FolderMutationOutcome FolderRepository::applyMutation(const FolderMutationFetch& fetched)
+FolderRepository::FolderMutationOutcome FolderRepository::applyMutation(const RelayRequestPlan& plan,
+                                                                          const FolderMutationFetch& fetched)
 {
+    // The mutation itself already happened on the server, under the previous
+    // account, and cannot be taken back from here. What must not happen is
+    // writing its result into the account paired now.
+    if (!m_pairingStore.stillCurrent(plan.identity))
+        return { MailRepositoryOutcome::PairingChanged, QString(), QString() };
+
     if (fetched.mutation.error.has_value())
         return { outcomeFromNetworkError(*fetched.mutation.error), fetched.mutation.detail, QString() };
 
@@ -121,17 +137,17 @@ FolderRepository::FolderMutationOutcome FolderRepository::applyMutation(const Fo
     // re-list only means the sidebar is stale until the next refresh. Turning
     // it into a failure would report "could not create folder" for a folder
     // that exists.
-    applyList(fetched.listedParent, fetched.listing);
+    applyList(plan, fetched.listedParent, fetched.listing);
     return { MailRepositoryOutcome::Success, QString(), fetched.mutation.folder };
 }
 
 MailFetchOutcome FolderRepository::refresh(const QString& parent)
 {
-    const std::optional<RelayEndpoint> endpoint = planRequest();
-    if (!endpoint.has_value())
+    const std::optional<RelayRequestPlan> plan = planRequest();
+    if (!plan.has_value())
         return { MailRepositoryOutcome::NotPaired, QStringLiteral("Not paired") };
 
-    return applyList(parent, m_client.list(endpoint->serverBaseUrl, endpoint->auth, parent));
+    return applyList(*plan, parent, m_client.list(plan->endpoint.serverBaseUrl, plan->endpoint.auth, parent));
 }
 
 QVector<MailFolder> FolderRepository::cachedFolders(const QString& parent) const
@@ -157,45 +173,45 @@ QVector<MailFolder> FolderRepository::cachedFolders(const QString& parent) const
 
 FolderRepository::FolderMutationOutcome FolderRepository::create(const QString& parent, const QString& name)
 {
-    const std::optional<RelayEndpoint> endpoint = planRequest();
-    if (!endpoint.has_value())
+    const std::optional<RelayRequestPlan> plan = planRequest();
+    if (!plan.has_value())
         return { MailRepositoryOutcome::NotPaired, QStringLiteral("Not paired"), QString() };
 
     FolderMutationFetch fetched;
-    fetched.mutation = m_client.create(endpoint->serverBaseUrl, endpoint->auth, parent, name);
+    fetched.mutation = m_client.create(plan->endpoint.serverBaseUrl, plan->endpoint.auth, parent, name);
     if (!fetched.mutation.error.has_value()) {
         fetched.listedParent = parent;
-        fetched.listing = m_client.list(endpoint->serverBaseUrl, endpoint->auth, parent);
+        fetched.listing = m_client.list(plan->endpoint.serverBaseUrl, plan->endpoint.auth, parent);
     }
-    return applyMutation(fetched);
+    return applyMutation(*plan, fetched);
 }
 
 FolderRepository::FolderMutationOutcome FolderRepository::rename(const QString& folder, const QString& name)
 {
-    const std::optional<RelayEndpoint> endpoint = planRequest();
-    if (!endpoint.has_value())
+    const std::optional<RelayRequestPlan> plan = planRequest();
+    if (!plan.has_value())
         return { MailRepositoryOutcome::NotPaired, QStringLiteral("Not paired"), QString() };
 
     FolderMutationFetch fetched;
-    fetched.mutation = m_client.rename(endpoint->serverBaseUrl, endpoint->auth, folder, name);
+    fetched.mutation = m_client.rename(plan->endpoint.serverBaseUrl, plan->endpoint.auth, folder, name);
     if (!fetched.mutation.error.has_value()) {
         fetched.listedParent = fetched.mutation.parent;
-        fetched.listing = m_client.list(endpoint->serverBaseUrl, endpoint->auth, fetched.listedParent);
+        fetched.listing = m_client.list(plan->endpoint.serverBaseUrl, plan->endpoint.auth, fetched.listedParent);
     }
-    return applyMutation(fetched);
+    return applyMutation(*plan, fetched);
 }
 
 FolderRepository::FolderMutationOutcome FolderRepository::remove(const QString& folder)
 {
-    const std::optional<RelayEndpoint> endpoint = planRequest();
-    if (!endpoint.has_value())
+    const std::optional<RelayRequestPlan> plan = planRequest();
+    if (!plan.has_value())
         return { MailRepositoryOutcome::NotPaired, QStringLiteral("Not paired"), QString() };
 
     FolderMutationFetch fetched;
-    fetched.mutation = m_client.remove(endpoint->serverBaseUrl, endpoint->auth, folder);
+    fetched.mutation = m_client.remove(plan->endpoint.serverBaseUrl, plan->endpoint.auth, folder);
     if (!fetched.mutation.error.has_value()) {
         fetched.listedParent = fetched.mutation.parent;
-        fetched.listing = m_client.list(endpoint->serverBaseUrl, endpoint->auth, fetched.listedParent);
+        fetched.listing = m_client.list(plan->endpoint.serverBaseUrl, plan->endpoint.auth, fetched.listedParent);
     }
-    return applyMutation(fetched);
+    return applyMutation(*plan, fetched);
 }

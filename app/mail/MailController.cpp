@@ -451,8 +451,8 @@ QVariantList MailController::mailFolders() const
 
 void MailController::refreshFolders()
 {
-    const std::optional<RelayEndpoint> endpoint = m_folderRepository.planRequest();
-    if (!endpoint.has_value())
+    const std::optional<RelayRequestPlan> plan = m_folderRepository.planRequest();
+    if (!plan.has_value())
         return; // unpaired: an ordinary state at startup, not an error
 
     // Only Archive today, matching Android's folder picker: the other five
@@ -462,14 +462,21 @@ void MailController::refreshFolders()
 
     m_executor.run(
         this,
-        [endpoint = *endpoint, parent](HttpClient& http) { return FolderRepository::listWith(http, endpoint, parent); },
-        [this, parent](const FolderListResult& result) {
-            const MailFetchOutcome outcome = m_folderRepository.applyList(parent, result);
+        [endpoint = plan->endpoint, parent](HttpClient& http) {
+            return FolderRepository::listWith(http, endpoint, parent);
+        },
+        [this, plan = *plan, parent](const FolderListResult& result) {
+            const MailFetchOutcome outcome = m_folderRepository.applyList(plan, parent, result);
             // A failure here is deliberately quiet: the sidebar still shows
             // all six standard mailboxes, so the app stays fully usable and
-            // there is nothing for the user to act on.
-            if (outcome.outcome != MailRepositoryOutcome::Success)
+            // there is nothing for the user to act on. PairingChanged is not
+            // even that -- it is the correct outcome for a listing that
+            // belongs to an account this device no longer has, so it is not
+            // worth a log line either.
+            if (outcome.outcome != MailRepositoryOutcome::Success
+                && outcome.outcome != MailRepositoryOutcome::PairingChanged) {
                 qWarning("Folder refresh failed: %s", qUtf8Printable(outcome.detail));
+            }
             emit foldersChanged();
         });
 }
@@ -483,8 +490,8 @@ void MailController::runFolderMutation(const QString& failureMessage,
                                                                                              const RelayEndpoint&)> work,
                                         std::function<void(const QString& resultingFolder)> onApplied)
 {
-    const std::optional<RelayEndpoint> endpoint = m_folderRepository.planRequest();
-    if (!endpoint.has_value()) {
+    const std::optional<RelayRequestPlan> plan = m_folderRepository.planRequest();
+    if (!plan.has_value()) {
         setLastError(i18n("Not paired"));
         emit folderMutationCompleted(false);
         return;
@@ -493,11 +500,21 @@ void MailController::runFolderMutation(const QString& failureMessage,
     pushBusy();
     m_executor.run(
         this,
-        [endpoint = *endpoint, work = std::move(work)](HttpClient& http) { return work(http, endpoint); },
-        [this, failureMessage, onApplied = std::move(onApplied)](
+        [endpoint = plan->endpoint, work = std::move(work)](HttpClient& http) { return work(http, endpoint); },
+        [this, plan = *plan, failureMessage, onApplied = std::move(onApplied)](
             const FolderRepository::FolderMutationFetch& fetched) {
             popBusy();
-            const FolderRepository::FolderMutationOutcome outcome = m_folderRepository.applyMutation(fetched);
+            const FolderRepository::FolderMutationOutcome outcome =
+                m_folderRepository.applyMutation(plan, fetched);
+            // The mutation did happen, on the account that is now gone. It is
+            // neither a success to celebrate in this account's sidebar nor a
+            // failure to blame the user for, so the completion is reported
+            // false and no error text is shown.
+            if (outcome.outcome == MailRepositoryOutcome::PairingChanged) {
+                setLastError(QString());
+                emit folderMutationCompleted(false);
+                return;
+            }
             if (outcome.outcome != MailRepositoryOutcome::Success) {
                 setLastError(outcome.detail.isEmpty() ? failureMessage : outcome.detail);
                 emit folderMutationCompleted(false);
@@ -800,6 +817,8 @@ void MailController::refreshPgpComposeState(bool force)
     if (!requirePairing(serverBaseUrl, auth))
         return; // not cached: pairing later must still get a real answer
 
+    const PairingIdentity requestedBy = m_pairingStore.currentIdentity();
+
     m_pgpBootstrapInFlight = true;
     m_executor.run(
         this,
@@ -807,8 +826,16 @@ void MailController::refreshPgpComposeState(bool force)
             PgpBootstrapClient client(http);
             return client.fetch(serverBaseUrl, auth);
         },
-        [this](const PgpBootstrapResult& bootstrap) {
+        [this, requestedBy](const PgpBootstrapResult& bootstrap) {
             m_pgpBootstrapInFlight = false;
+            // This answer describes the PREVIOUS account's key custody, and
+            // it decides whether compose offers to sign and encrypt at all.
+            // Applying it to the account paired now would either hide those
+            // controls from someone entitled to them or offer them to someone
+            // whose server has no identity to use. Left unfetched instead, so
+            // the next compose open asks again.
+            if (!m_pairingStore.stillCurrent(requestedBy))
+                return;
             const PgpComposeState state = bootstrap.ok
                 ? pgpComposeStateOf(bootstrap.hasIdentity, bootstrap.protection)
                 : pgpComposeStateOf(std::nullopt, std::nullopt);
@@ -864,6 +891,8 @@ void MailController::preflightRecipients(const QString& to, const QString& cc, c
         return;
     }
 
+    const PairingIdentity requestedBy = m_pairingStore.currentIdentity();
+
     m_preflightInFlight = true;
     m_executor.run(
         this,
@@ -871,8 +900,15 @@ void MailController::preflightRecipients(const QString& to, const QString& cc, c
             PgpRecipientChecker checker(http);
             return checker.check(serverBaseUrl, auth, addresses);
         },
-        [this](const RecipientKeyCheckResult& result) {
+        [this, requestedBy](const RecipientKeyCheckResult& result) {
             m_preflightInFlight = false;
+            // Which recipients the PREVIOUS account had keys for says nothing
+            // about this one. Clear rather than keep: a stale all-clear is
+            // the one outcome this warning must never show.
+            if (!m_pairingStore.stillCurrent(requestedBy)) {
+                applyKeylessRecipients(QStringList());
+                return;
+            }
             // A failed preflight shows nothing rather than a false all-clear
             // -- and clears whatever it showed before, rather than leaving a
             // stale list standing in for an answer this call did not get.
@@ -1027,6 +1063,9 @@ void MailController::downloadAttachment(const QString& mailbox, const QString& m
         return;
     }
 
+    // Captured at dispatch: which account this attachment belongs to.
+    const PairingIdentity requestedBy = m_pairingStore.currentIdentity();
+
     pushBusy();
     m_executor.run(
         this,
@@ -1034,8 +1073,17 @@ void MailController::downloadAttachment(const QString& mailbox, const QString& m
             RelayMailSource source(http);
             return source.downloadAttachment(serverBaseUrl, auth, mailbox, messageId, index);
         },
-        [this, messageId, index, suggestedName](const DownloadAttachmentResult& result) {
+        [this, requestedBy, messageId, index, suggestedName](const DownloadAttachmentResult& result) {
             popBusy();
+            // Nothing is written, and nothing is opened. The ephemeral branch
+            // of storeDownloadedAttachment() hands the file straight to the
+            // desktop, so proceeding here would not merely leave the previous
+            // account's attachment on disk -- it would open it in front of
+            // whoever is using the device now.
+            if (!m_pairingStore.stillCurrent(requestedBy)) {
+                emit attachmentDownloaded(messageId, index, false);
+                return;
+            }
             // Everything below -- the filename hardening, the exclusive
             // create, the ephemeral open -- stays on THIS thread. Only the
             // fetch moved. QStandardPaths, the 5-minute delete QTimer and

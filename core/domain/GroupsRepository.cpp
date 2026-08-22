@@ -21,13 +21,14 @@ QVector<Group> GroupsRepository::groups() const
     return m_groupDao.findAll();
 }
 
-std::optional<RelayEndpoint> GroupsRepository::planRefresh() const
+std::optional<RelayRequestPlan> GroupsRepository::planRefresh() const
 {
     const std::optional<DevicePairing> pairing = m_pairingStore.load();
     if (!pairing.has_value())
         return std::nullopt;
-    return RelayEndpoint{ QUrl(pairing->serverBaseUrl),
-                          RelayAuth{ pairing->deviceId, pairing->deviceSecret } };
+    return RelayRequestPlan{ RelayEndpoint{ QUrl(pairing->serverBaseUrl),
+                                             RelayAuth{ pairing->deviceId, pairing->deviceSecret } },
+                              identityOf(*pairing) };
 }
 
 GroupsFetchResult GroupsRepository::fetchWith(HttpClient& httpClient, const RelayEndpoint& endpoint)
@@ -36,10 +37,16 @@ GroupsFetchResult GroupsRepository::fetchWith(HttpClient& httpClient, const Rela
     return client.fetch(endpoint.serverBaseUrl, endpoint.auth);
 }
 
-void GroupsRepository::applyRefresh(const GroupsFetchResult& result)
+void GroupsRepository::applyRefresh(const RelayRequestPlan& plan, const GroupsFetchResult& result)
 {
     if (result.error.has_value())
         return; // degrade gracefully -- next sync cycle retries, no crash
+
+    // Same silent give-up as an error, and for a stronger reason: these rows
+    // belong to the account that asked for them, not to whatever account is
+    // paired now.
+    if (!m_pairingStore.stillCurrent(plan.identity))
+        return;
 
     for (const Group& group : result.groups)
         m_groupDao.insertOrReplace(group);
@@ -48,8 +55,8 @@ void GroupsRepository::applyRefresh(const GroupsFetchResult& result)
 // The synchronous form, kept as the composition of the three phases above.
 void GroupsRepository::refresh()
 {
-    const std::optional<RelayEndpoint> endpoint = planRefresh();
-    if (!endpoint.has_value())
+    const std::optional<RelayRequestPlan> plan = planRefresh();
+    if (!plan.has_value())
         return;
-    applyRefresh(m_client.fetch(endpoint->serverBaseUrl, endpoint->auth));
+    applyRefresh(*plan, m_client.fetch(plan->endpoint.serverBaseUrl, plan->endpoint.auth));
 }
