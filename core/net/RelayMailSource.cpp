@@ -151,8 +151,14 @@ InboxFetchResult RelayMailSource::fetchInbox(const QUrl& serverBaseUrl, const Re
     if (since.has_value())
         query.append({ QStringLiteral("since"), QString::number(*since) });
 
+    // The largest response this client ever reads, and the one route that
+    // needs more than HttpClient's default ceiling: a full window is up to
+    // `maxInboxLimit` (500) messages carrying complete HTML bodies, which the
+    // relay does not truncate. Named here rather than raising the global
+    // default, so every other route keeps the tight one.
     const HttpClient::HttpResult result = m_httpClient.get(
-        joinUrlPath(serverBaseUrl, QStringLiteral("api/inbox")), query, auth.headerItems());
+        joinUrlPath(serverBaseUrl, QStringLiteral("api/inbox")), query, auth.headerItems(), {},
+        HttpClient::kMaxInboxResponseBytes);
 
     InboxFetchResult out;
     if (result.error.has_value()) {
@@ -395,8 +401,12 @@ DownloadAttachmentResult RelayMailSource::downloadAttachment(const QUrl& serverB
     query.append({ QStringLiteral("messageId"), messageId });
     query.append({ QStringLiteral("index"), QString::number(index) });
 
+    // The other exception: one attachment, bounded by the relay's own 25 MB
+    // cap. The attachment LIST above deliberately keeps the default -- it
+    // returns names and sizes, not content.
     const HttpClient::HttpResult result = m_httpClient.get(
-        joinUrlPath(serverBaseUrl, QStringLiteral("api/mail/attachment")), query, auth.headerItems());
+        joinUrlPath(serverBaseUrl, QStringLiteral("api/mail/attachment")), query, auth.headerItems(), {},
+        HttpClient::kMaxAttachmentResponseBytes);
 
     DownloadAttachmentResult out;
     if (result.error.has_value()) {
