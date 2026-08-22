@@ -239,8 +239,10 @@ HttpClient::HttpResult HttpClient::waitForReply(QNetworkReply* reply, const Redi
     // fetch only ever produces a false "your mail server is being
     // impersonated" alarm.
     bool pinMismatch = false;
+    QByteArray observedSpki;
     const bool enforcePin = !m_certificatePin.isEmpty() && sameUrlOrigin(reply->request().url(), m_pinnedOrigin);
-    QObject::connect(reply, &QNetworkReply::encrypted, reply, [this, reply, enforcePin, &pinMismatch]() {
+    QObject::connect(reply, &QNetworkReply::encrypted, reply,
+                      [this, reply, enforcePin, &pinMismatch, &observedSpki]() {
         if (!enforcePin)
             return;
 
@@ -258,8 +260,14 @@ HttpClient::HttpResult HttpClient::waitForReply(QNetworkReply* reply, const Redi
         // enforcing, and leave lastPeerSpkiSha256 empty so the pairing flow
         // records "no pin" (enforcement off) rather than a bogus one.
         const QByteArray spkiDer = peer.publicKey().toDer();
-        if (spkiDer.isEmpty() || QCryptographicHash::hash(spkiDer, QCryptographicHash::Sha256) != m_certificatePin) {
+        const QByteArray peerSpki =
+            spkiDer.isEmpty() ? QByteArray() : QCryptographicHash::hash(spkiDer, QCryptographicHash::Sha256);
+        if (peerSpki.isEmpty() || peerSpki != m_certificatePin) {
             pinMismatch = true;
+            // Recorded so the recovery UI can show what was actually
+            // presented. Stays empty when the key could not be read, which
+            // is a different situation and must not render as a fingerprint.
+            observedSpki = peerSpki;
             reply->abort();
         }
     });
@@ -343,7 +351,7 @@ HttpClient::HttpResult HttpClient::waitForReply(QNetworkReply* reply, const Redi
         // failed request at a time while this condition is global to the
         // pairing and needs a persistent explanation with a way out.
         if (m_certificateMismatchHandler)
-            m_certificateMismatchHandler();
+            m_certificateMismatchHandler(observedSpki);
     } else if (redirectRefused) {
         // Ranked above the status code for the same reason the pin mismatch
         // is: the 3xx the reply is carrying describes what the server WANTED

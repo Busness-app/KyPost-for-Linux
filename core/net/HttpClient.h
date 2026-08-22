@@ -220,7 +220,13 @@ public:
     // failed" with no explanation and no way out. main.cpp routes this to a
     // persistent banner offering re-pairing. Empty by default; core/ has no
     // opinion about what the app does with it.
-    using CertificateMismatchHandler = std::function<void()>;
+    // Carries the SPKI SHA-256 actually presented by the server that failed
+    // the pin, so the UI can show the user what changed instead of only that
+    // something did. A recovery action that asks "trust this new
+    // certificate?" without naming it is a confirmation the user cannot
+    // reason about -- they need the expected and the observed fingerprint
+    // side by side. Empty only if the peer key could not be read at all.
+    using CertificateMismatchHandler = std::function<void(const QByteArray& observedSpkiSha256)>;
     void setCertificateMismatchHandler(CertificateMismatchHandler handler);
 
 private:

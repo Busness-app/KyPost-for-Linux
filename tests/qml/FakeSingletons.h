@@ -57,9 +57,18 @@ class FakePairing : public QObject
     Q_OBJECT
     Q_PROPERTY(bool reregistrationRejected MEMBER m_reregistrationRejected NOTIFY changed)
     Q_PROPERTY(bool isPaired MEMBER m_isPaired NOTIFY changed)
+    Q_PROPERTY(bool certificateMismatch MEMBER m_certificateMismatch NOTIFY changed)
+    Q_PROPERTY(QString expectedCertificateFingerprint MEMBER m_expectedFingerprint NOTIFY changed)
+    Q_PROPERTY(QString observedCertificateFingerprint MEMBER m_observedFingerprint NOTIFY changed)
 
 public:
     using QObject::QObject;
+
+    // Present so a root that binds it still loads under test. The dialog's
+    // own test spies on its reconnectRequested signal instead: connecting
+    // that signal to this call is the ROOT's job, not the dialog's, and a
+    // test should not assert across a seam it isn't exercising.
+    Q_INVOKABLE void reconnectToServer() { }
 
 signals:
     void changed();
@@ -67,6 +76,9 @@ signals:
 private:
     bool m_reregistrationRejected = false;
     bool m_isPaired = true;
+    bool m_certificateMismatch = false;
+    QString m_expectedFingerprint = QStringLiteral("AA:BB");
+    QString m_observedFingerprint = QStringLiteral("CC:DD");
 };
 
 // Just enough of the theme for components that bind colours/fonts.
@@ -80,6 +92,12 @@ class FakeTheme : public QObject
     Q_PROPERTY(QColor inkStrong MEMBER m_colour CONSTANT)
     Q_PROPERTY(QColor accent MEMBER m_colour CONSTANT)
     Q_PROPERTY(QColor dangerColor MEMBER m_colour CONSTANT)
+    // DangerButton binds these two. Absent until the certificate-trust
+    // dialog became the first test to instantiate one, at which point every
+    // run logged "Unable to assign [undefined] to QColor" and the button
+    // under test rendered with no fill or border at all.
+    Q_PROPERTY(QColor dangerFillColor MEMBER m_colour CONSTANT)
+    Q_PROPERTY(QColor dangerBorderColor MEMBER m_colour CONSTANT)
     Q_PROPERTY(QColor readableOnAccent MEMBER m_colour CONSTANT)
     Q_PROPERTY(QString fontUi MEMBER m_font CONSTANT)
     Q_PROPERTY(QString fontMono MEMBER m_font CONSTANT)

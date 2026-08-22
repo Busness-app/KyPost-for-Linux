@@ -89,9 +89,31 @@ class PairingController : public QObject
     // produced in core/net/HttpClient.cpp and read nowhere, so a routine
     // certificate rotation at the relay presented as an app that had simply
     // stopped working, with "Refresh failed" as its entire explanation.
-    // The roots bind this to a banner that says what happened and offers
-    // removePairing() as the way out.
+    // The roots bind this to a banner that says what happened.
+    //
+    // "Unrecoverable from inside the app" was true when this was written and
+    // is no longer: reconnectToServer() re-anchors the pin without destroying
+    // the pairing. What remains true is that every request aborts until the
+    // user decides, which is why this still needs a persistent surface.
     Q_PROPERTY(bool certificateMismatch READ certificateMismatch NOTIFY certificateMismatchChanged)
+
+    // The pinned fingerprint and the one the server actually presented, both
+    // as colon-separated uppercase hex of the SPKI SHA-256 -- the form
+    // `openssl pkey -pubin -outform der | sha256sum` produces, so a user can
+    // compare against their own server.
+    //
+    // Both exist because a recovery action that asks "trust this new
+    // certificate?" without naming it is a confirmation nobody can reason
+    // about. Side by side, an ordinary renewal (which an admin can confirm)
+    // is distinguishable from an interception (which they cannot).
+    //
+    // observedCertificateFingerprint is empty when the peer key could not be
+    // read at all -- a different situation from a mismatch, which the UI must
+    // not render as though a fingerprint had been seen.
+    Q_PROPERTY(QString expectedCertificateFingerprint READ expectedCertificateFingerprint
+                   NOTIFY certificateMismatchChanged)
+    Q_PROPERTY(QString observedCertificateFingerprint READ observedCertificateFingerprint
+                   NOTIFY certificateMismatchChanged)
     // Task 39: read-only display fields for Settings > Notifications.
     // Sourced straight from SettingsStore on every read (no local cache).
     // deliveryMode/transport only ever change together with isPaired/
@@ -136,6 +158,8 @@ public:
     QString transport() const;
     bool reregistrationRejected() const;
     bool certificateMismatch() const;
+    QString expectedCertificateFingerprint() const;
+    QString observedCertificateFingerprint() const;
 
 public slots:
     // Re-reads pairingStore.load(), updates isPaired/pairedServerHost/
@@ -185,6 +209,32 @@ public slots:
     // of the network outcome: offline, already-removed, or no secret at all
     // must never leave the user stuck "paired".
     void removePairing();
+
+    // Non-destructive recovery from a certificate change.
+    //
+    // NOT a pin clear. The pin is only ever captured during registration
+    // (DeviceRegistrationService installs it from the reply that registered),
+    // so clearing it alone would leave this device permanently UNPINNED --
+    // enforcement silently off until the next pair, a downgrade wearing the
+    // costume of a fix.
+    //
+    // This drives a forced re-registration through the same three-phase path
+    // as pairing: the pin is suspended, the request goes out against the new
+    // certificate, and the key that served it is pinned. On failure
+    // PairAttempt's destructor restores the PREVIOUS pin, so a failed
+    // reconnect cannot leave the device less protected than it was.
+    //
+    // Deliberately does not deregister and does not touch cached mail or
+    // contacts; removePairing() stays the destructive operation. It does
+    // rotate the device secret, because every successful register mints a new
+    // one server-side.
+    //
+    // Requires a pairing token the relay still accepts. There is no
+    // token-free recovery: handleNotificationNativeRegister verifies the
+    // pairing token before anything else and 401s without it, so a device
+    // whose stored token has expired needs a fresh pairing link -- and this
+    // reports that rather than pretending otherwise.
+    void reconnectToServer();
     // Late-bound, same pattern as main.cpp's pairingControllerForDeepLinks
     // pointer (Task 34): UnifiedPushConnector is constructed after this
     // class in main.cpp's dependency order, so main.cpp calls this whenever
@@ -220,7 +270,9 @@ public slots:
     // which fires from inside a blocking request on the GUI thread. Latching
     // (only ever set true here) until removePairing() clears it: the pin is
     // process-wide and the condition does not resolve on its own.
-    void setCertificateMismatch(bool mismatch);
+    // observedSpki is the raw SPKI SHA-256 the server presented, captured by
+    // HttpClient at the failed handshake. Empty when clearing.
+    void setCertificateMismatch(bool mismatch, const QByteArray& observedSpki = {});
 
 signals:
     void pairingChanged();
@@ -258,6 +310,7 @@ private:
     bool m_isPaired = false;
     QString m_pairedServerHost;
     QString m_deviceId;
+    QByteArray m_observedSpki; // raw SPKI SHA-256 from the failed handshake
     QString m_deviceToken; // set via setDeviceToken(); empty until UnifiedPushConnector reports a real endpoint
     // Set by pairFromDeepLink()/pairFromPastedLink() on a successful parse,
     // consumed by confirmPendingPair(), discarded by cancelPendingPair() or

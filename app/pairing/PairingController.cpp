@@ -448,12 +448,110 @@ bool PairingController::certificateMismatch() const
     return m_certificateMismatch;
 }
 
-void PairingController::setCertificateMismatch(bool mismatch)
+void PairingController::setCertificateMismatch(bool mismatch, const QByteArray& observedSpki)
 {
-    if (m_certificateMismatch == mismatch)
+    // The fingerprint is part of this state, not separate from it: the
+    // recovery dialog is unusable without it, and a stale one left over from
+    // a previous mismatch would be worse than none. Compared as a pair so
+    // re-reporting the same mismatch with a newly-read key still notifies.
+    if (m_certificateMismatch == mismatch && m_observedSpki == observedSpki)
         return;
     m_certificateMismatch = mismatch;
+    m_observedSpki = mismatch ? observedSpki : QByteArray();
     emit certificateMismatchChanged();
+}
+
+namespace {
+// Colon-separated uppercase hex, the form every certificate tool prints, so
+// what the UI shows can be compared byte-for-byte against
+// `openssl pkey -pubin -outform der | sha256sum` on the server.
+QString formatFingerprint(const QByteArray& sha256)
+{
+    if (sha256.isEmpty())
+        return {};
+    const QByteArray hex = sha256.toHex().toUpper();
+    QString out;
+    out.reserve(hex.size() + hex.size() / 2);
+    for (int i = 0; i < hex.size(); i += 2) {
+        if (i > 0)
+            out += QLatin1Char(':');
+        out += QLatin1String(hex.constData() + i, 2);
+    }
+    return out;
+}
+} // namespace
+
+QString PairingController::expectedCertificateFingerprint() const
+{
+    // Read from the pin sink rather than PairingStore: the sink is what is
+    // actually being ENFORCED, and the two can legitimately differ mid-flight
+    // (DeviceRegistrationService suspends the pin while registering). Showing
+    // the stored value while a different one is in force would be a lie at
+    // exactly the moment the user is trying to make a trust decision.
+    return formatFingerprint(m_pinSink.pinState().spkiSha256);
+}
+
+QString PairingController::observedCertificateFingerprint() const
+{
+    return formatFingerprint(m_observedSpki);
+}
+
+void PairingController::reconnectToServer()
+{
+    // Same guard as removePairing(): this rotates the device credential and
+    // re-anchors the TLS trust anchor, so it must not be reachable from a
+    // popup left open over the lock screen. QML z-order is not a security
+    // boundary (AGENTS.md 6d).
+    if (m_appLocked)
+        return;
+    if (m_inNetworkCall)
+        return;
+
+    const std::optional<DevicePairing> pairing = m_pairingStore.load();
+    if (!pairing.has_value() || pairing->deviceId.isEmpty()) {
+        setPairingState(State::Failed, i18n("This device is not paired, so there is nothing to reconnect."));
+        return;
+    }
+
+    PairingParams params;
+    params.subscriberId = pairing->subscriberId;
+    params.serverBaseUrl = pairing->serverBaseUrl;
+    params.registrationUrl = pairing->registrationUrl.isEmpty() ? deriveRegistrationUrl(pairing->serverBaseUrl)
+                                                                 : pairing->registrationUrl;
+    params.pairingToken = pairing->pairingToken;
+    params.deviceName = pairing->deviceName;
+
+    setPairingState(State::Working);
+
+    // Phase 1 here: suspends the pin, which is what lets the request reach a
+    // server presenting the NEW certificate at all. If this attempt is
+    // abandoned or fails, PairAttempt's destructor puts the old pin back --
+    // the reason a failed reconnect cannot silently disable pinning.
+    DeviceRegistrationService::PairAttempt attempt = m_service.beginPair();
+    if (const std::optional<RegistrationOutcome> refused = attempt.refusedOutcome()) {
+        NativeRegistrationResult out;
+        out.outcome = *refused;
+        applyRegistrationResult(out);
+        return;
+    }
+
+    m_inNetworkCall = true;
+    m_executor.run(
+        this,
+        [params, deviceToken = m_deviceToken](HttpClient& http) {
+            return DeviceRegistrationService::sendRegistration(http, params, deviceToken);
+        },
+        [this, params, attempt = std::move(attempt)](const NativeRegistrationResult& result) mutable {
+            m_inNetworkCall = false;
+            const NativeRegistrationResult applied = m_service.finishPair(std::move(attempt), params, result);
+            if (applied.outcome == RegistrationOutcome::Success) {
+                // The new certificate is now the pinned one, so the condition
+                // the banner describes is over.
+                setCertificateMismatch(false);
+                setReregistrationRejected(false);
+            }
+            applyRegistrationResult(applied);
+        });
 }
 
 void PairingController::pairFromParsedParams(const QString& sub, const QString& srv, const QString& pt,

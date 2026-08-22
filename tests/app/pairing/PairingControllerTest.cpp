@@ -46,6 +46,9 @@ private slots:
     void removePairingSkipsNetworkCallWhenNoDeviceSecretStored();
     void removePairingDeregistersServerSideWhenDeviceSecretPresent();
     void resetReturnsToIdleAfterFailure();
+    void certificateMismatchCarriesBothFingerprintsInComparableForm();
+    void reconnectToServerIsRefusedWhileAppLocked();
+    void reconnectToServerKeepsThePairingAndDoesNotDeregister();
 
     // Behaviour that only exists once the registration is asynchronous.
     void confirmPendingPairReturnsWithoutBlocking();
@@ -1152,6 +1155,164 @@ void PairingControllerTest::aSecondConfirmWhileOneIsInFlightIsIgnored()
     QCOMPARE(controller.pairingState(), QStringLiteral("working"));
 
     QTRY_COMPARE_WITH_TIMEOUT(controller.pairingState(), QStringLiteral("failed"), 10000);
+}
+
+
+// The recovery dialog asks the user to approve a certificate change. It can
+// only do that honestly if it names BOTH keys, in the form the user can
+// compare against their own server -- colon-separated uppercase hex of the
+// SPKI SHA-256, what `openssl pkey -pubin -outform der | sha256sum` prints.
+void PairingControllerTest::certificateMismatchCarriesBothFingerprintsInComparableForm()
+{
+    QTemporaryDir secureDir;
+    QVERIFY(secureDir.isValid());
+    SecureStoreFile secureStore(secureDir.path());
+    PairingStore pairingStore(secureStore);
+
+    QTemporaryDir settingsDir;
+    QVERIFY(settingsDir.isValid());
+    SettingsStore settingsStore(settingsDir.filePath(QStringLiteral("settings.ini")));
+
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    NativeRegistrationClient client(http);
+    HttpClientPinSink pinSink(http);
+    NetworkExecutor executor(3000);
+    DeviceRegistrationService service(client, pairingStore, settingsStore, pinSink);
+    PairingController controller(service, pairingStore, settingsStore, pinSink, executor);
+
+    // Nothing pinned, nothing observed: both empty rather than a formatted
+    // hash of nothing. SHA256("") is a fixed public constant and rendering it
+    // as "the expected fingerprint" would be a fabricated security fact.
+    QVERIFY(controller.expectedCertificateFingerprint().isEmpty());
+    QVERIFY(controller.observedCertificateFingerprint().isEmpty());
+
+    const QByteArray pinned(32, '\x01');
+    const QByteArray presented(32, '\xAB');
+    pinSink.setPin(pinned, QUrl(QStringLiteral("https://relay.example.com")));
+
+    QSignalSpy mismatchSpy(&controller, &PairingController::certificateMismatchChanged);
+    controller.setCertificateMismatch(true, presented);
+
+    QVERIFY(controller.certificateMismatch());
+    QCOMPARE(mismatchSpy.count(), 1);
+    QCOMPARE(controller.expectedCertificateFingerprint(),
+             QStringLiteral("01:01:01:01:01:01:01:01:01:01:01:01:01:01:01:01:"
+                             "01:01:01:01:01:01:01:01:01:01:01:01:01:01:01:01"));
+    QCOMPARE(controller.observedCertificateFingerprint(),
+             QStringLiteral("AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:"
+                             "AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB"));
+
+    // Clearing must drop the observed key too. A fingerprint left over from a
+    // previous mismatch, shown against a later one, is worse than none.
+    controller.setCertificateMismatch(false);
+    QVERIFY(!controller.certificateMismatch());
+    QVERIFY(controller.observedCertificateFingerprint().isEmpty());
+}
+
+// reconnectToServer() rotates the device credential and re-anchors the TLS
+// trust anchor, so it carries the same lock guard removePairing() does. A
+// QQC2 Popup renders inside QQuickOverlay, which Qt stacks above the app-lock
+// overlay -- a Settings sheet left open when the app locks stays visible AND
+// clickable over the PIN screen. QML z-order is not a security boundary.
+void PairingControllerTest::reconnectToServerIsRefusedWhileAppLocked()
+{
+    FakeRelayServer fake(httpResponse(200, "OK", R"({"ok":true,"deviceId":"dev-new"})"));
+
+    QTemporaryDir secureDir;
+    QVERIFY(secureDir.isValid());
+    SecureStoreFile secureStore(secureDir.path());
+    PairingStore pairingStore(secureStore);
+
+    DevicePairing pairing;
+    pairing.subscriberId = QStringLiteral("sub-1");
+    pairing.serverBaseUrl = QStringLiteral("http://127.0.0.1:%1").arg(fake.port());
+    pairing.registrationUrl =
+        QStringLiteral("http://127.0.0.1:%1/api/notifications/native/register").arg(fake.port());
+    pairing.pairingToken = QStringLiteral("tok-1");
+    pairing.deviceId = QStringLiteral("dev-1");
+    pairing.deviceSecret = QStringLiteral("secret-1");
+    QVERIFY(pairingStore.save(pairing));
+
+    QTemporaryDir settingsDir;
+    QVERIFY(settingsDir.isValid());
+    SettingsStore settingsStore(settingsDir.filePath(QStringLiteral("settings.ini")));
+
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    NativeRegistrationClient client(http);
+    HttpClientPinSink pinSink(http);
+    NetworkExecutor executor(3000);
+    DeviceRegistrationService service(client, pairingStore, settingsStore, pinSink);
+    PairingController controller(service, pairingStore, settingsStore, pinSink, executor);
+
+    controller.setAppLocked(true);
+    controller.reconnectToServer();
+
+    QVERIFY2(fake.receivedRequest().isEmpty(),
+             "a locked app must not be able to re-register from a popup over the lock screen");
+}
+
+// The whole point of this action: recover trust WITHOUT the destructive path.
+// removePairing() deregisters the device server-side and forces the user to
+// obtain a fresh pairing link; this must do neither, and must leave the
+// cached pairing identity intact.
+void PairingControllerTest::reconnectToServerKeepsThePairingAndDoesNotDeregister()
+{
+    FakeRelayServer fake(httpResponse(
+        200, "OK", R"({"ok":true,"deviceId":"dev-1","deviceSecret":"secret-rotated","transport":"unifiedpush"})"));
+
+    QTemporaryDir secureDir;
+    QVERIFY(secureDir.isValid());
+    SecureStoreFile secureStore(secureDir.path());
+    PairingStore pairingStore(secureStore);
+
+    DevicePairing pairing;
+    pairing.subscriberId = QStringLiteral("sub-1");
+    pairing.serverBaseUrl = QStringLiteral("http://127.0.0.1:%1").arg(fake.port());
+    pairing.registrationUrl =
+        QStringLiteral("http://127.0.0.1:%1/api/notifications/native/register").arg(fake.port());
+    pairing.pairingToken = QStringLiteral("tok-1");
+    pairing.deviceId = QStringLiteral("dev-1");
+    pairing.deviceSecret = QStringLiteral("secret-original");
+    QVERIFY(pairingStore.save(pairing));
+
+    QTemporaryDir settingsDir;
+    QVERIFY(settingsDir.isValid());
+    SettingsStore settingsStore(settingsDir.filePath(QStringLiteral("settings.ini")));
+
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    NativeRegistrationClient client(http);
+    HttpClientPinSink pinSink(http);
+    NetworkExecutor executor(3000);
+    DeviceRegistrationService service(client, pairingStore, settingsStore, pinSink);
+    PairingController controller(service, pairingStore, settingsStore, pinSink, executor);
+
+    controller.setCertificateMismatch(true, QByteArray(32, '\xAB'));
+    QVERIFY(controller.certificateMismatch());
+
+    controller.reconnectToServer();
+    QTRY_VERIFY_WITH_TIMEOUT(!controller.pairingState().isEmpty(), 5000);
+    QTRY_COMPARE_WITH_TIMEOUT(controller.pairingState(), QStringLiteral("paired"), 5000);
+
+    // The request that went out is a REGISTRATION, not a deregistration.
+    const QByteArray request = fake.receivedRequest();
+    QVERIFY(request.contains("/api/notifications/native/register"));
+    QVERIFY2(!request.contains("deregister"),
+             "reconnect must not deregister the device -- that is removePairing()'s job");
+
+    // Still paired, same subscriber and server. The secret rotates because
+    // every successful register mints a new one server-side.
+    QVERIFY(controller.isPaired());
+    const std::optional<DevicePairing> after = pairingStore.load();
+    QVERIFY(after.has_value());
+    QCOMPARE(after->subscriberId, QStringLiteral("sub-1"));
+    QCOMPARE(after->deviceSecret, QStringLiteral("secret-rotated"));
+
+    // And the banner is gone: the certificate that just served the
+    // registration is the pinned one now.
+    QVERIFY(!controller.certificateMismatch());
 }
 
 QTEST_GUILESS_MAIN(PairingControllerTest)
