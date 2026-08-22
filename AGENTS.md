@@ -474,10 +474,14 @@ never once run.
   back in behind it — the previous account's mail, in the new account's inbox,
   readable by whoever is now holding the machine. So an apply step compares
   `PairingStore::stillCurrent(identity)` against the identity its plan
-  captured, and writes nothing when it has moved. Done for
-  `MailRepository::applyRefresh` and `PushRepository::pullOnce`; NOT yet done
-  for `FolderRepository`, `GroupsRepository`, `ContactSyncRepository`,
-  attachment downloads or the cached PGP compose state (`docs/PARITY.md`).
+  captured, and writes nothing when it has moved. Done at every
+  place a relay reply reaches local storage: `MailRepository::applyRefresh`,
+  `PushRepository::pullOnce`, `FolderRepository::applyList`/`applyMutation`,
+  `GroupsRepository::applyRefresh`, `ContactSyncRepository::applySync`,
+  `ContactPhotoRepository::photoPathFor`, attachment downloads, and the cached
+  PGP compose state and recipient preflight. **Adding a new one is adding this
+  check** -- a plan that does not carry a `PairingIdentity` is a plan that
+  cannot answer the question.
 
 - **The identity is (subscriberId, deviceId) — never the device secret.** The
   credential gate re-saves the pairing on every lock and unlock, so keying on
@@ -504,6 +508,31 @@ never once run.
 - **Prove the guard by removing it.** All four tests added here were run
   against the un-guarded code first and confirmed to fail. A concurrency test
   that has never been seen to fail is not a test.
+
+- **A stale reply can DELETE as easily as it can leak.** `applySync`'s tooOld
+  branch drops every contact and clears the cursor; `applyList` does a
+  snapshot replace. Run against a reply belonging to a pairing this device no
+  longer has, those destroy the NEW account's data on the previous account's
+  say-so. The guard is not only about keeping data in, and an apply step that
+  deletes needs it more than one that inserts.
+
+- **The pending queue is not the server's to invalidate.** `applySync`
+  discards the reply but leaves `PendingContactChangeDao` untouched: those are
+  local edits nobody has accepted yet, and dropping them because the account
+  changed would silently throw away the user's own work.
+
+- **An attachment is not just a file on disk.** `storeDownloadedAttachment`'s
+  ephemeral branch hands the file straight to the desktop to open, so a stale
+  attachment reply does not merely leave the previous account's data around --
+  it displays it to whoever is using the machine now. Refused before the write,
+  not after.
+
+- **A stale answer about keys must clear, never persist.** The PGP compose
+  state decides whether sign/encrypt are offered at all, and the recipient
+  preflight warns which addresses have no key. Carrying either across an
+  account change would either hide controls from someone entitled to them or
+  show a false all-clear -- so the bootstrap answer is left unfetched (the next
+  compose open asks again) and the preflight list is cleared.
 
 ## 7. DOX framework
 

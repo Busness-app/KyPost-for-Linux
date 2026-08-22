@@ -31,10 +31,20 @@ QString ContactPhotoRepository::photoPathFor(const QString& contactUid, const QS
 
     const RelayAuth auth{ pairing->deviceId, pairing->deviceSecret };
     const QUrl serverUrl(pairing->serverBaseUrl);
+    // Captured before the fetch, which blocks this thread on a nested event
+    // loop -- so a re-pair can be delivered during it.
+    const PairingIdentity requestedBy = identityOf(*pairing);
 
     const ContactPhotoFetchResult result = m_client.fetch(serverUrl, contactUid, auth);
     if (result.error.has_value() || result.photoBytes.isEmpty())
         return QString(); // degrade gracefully -- next call simply retries
+
+    // A face is about as identifying as cached data gets, and the photo cache
+    // directory is one of the things pairing a replacement account erases.
+    // Writing this now would put it back, keyed by a photoRef the new
+    // account's contacts can resolve.
+    if (!m_pairingStore.stillCurrent(requestedBy))
+        return QString();
 
     return m_cache.store(photoRef, result.photoBytes);
 }

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "domain/MailRepository.h" // MailRepositoryOutcome / MailFetchOutcome / MailRelayCredentials
+#include "domain/RelayRequestPlan.h"
 #include "models/MailFolder.h"
 #include "net/FolderClient.h" // FolderListResult / FolderMutationResult -- cross the thread hop by value
 
@@ -63,7 +64,7 @@ public:
 
     // Phase 1, on the calling thread: the PairingStore read. Returns nullopt
     // when there is no pairing.
-    std::optional<RelayEndpoint> planRequest() const;
+    std::optional<RelayRequestPlan> planRequest() const;
 
     // What one mutating verb's two requests produced. Crosses the thread hop
     // by value.
@@ -88,8 +89,16 @@ public:
                                            const QString& folder);
 
     // Phase 3, back on the calling thread: the FolderDao writes.
-    MailFetchOutcome applyList(const QString& parent, const FolderListResult& result);
-    FolderMutationOutcome applyMutation(const FolderMutationFetch& fetched);
+    //
+    // Both take the plan, and not only for the endpoint: they refuse to write
+    // when the device has been re-paired since the request went out. The
+    // folders table has no subscriber column, so the previous account's
+    // mailbox names -- which are user data, and often revealing ones -- would
+    // otherwise be listed in the new account's sidebar. Both report that as
+    // MailRepositoryOutcome::PairingChanged.
+    MailFetchOutcome applyList(const RelayRequestPlan& plan, const QString& parent,
+                                const FolderListResult& result);
+    FolderMutationOutcome applyMutation(const RelayRequestPlan& plan, const FolderMutationFetch& fetched);
 
 private:
     FolderClient& m_client;

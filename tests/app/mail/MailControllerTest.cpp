@@ -62,6 +62,9 @@ private slots:
     void aFolderSwitchDuringARefreshIsStillFetched();
     void archiveEmailsReportsCompletionAndDropsTheRowOptimistically();
     void aRefreshThatOutlivesItsAccountWritesNothingAndReportsNoError();
+    void anAttachmentThatOutlivesItsAccountIsNeverWrittenOrOpened();
+    void aPgpComposeAnswerThatOutlivesItsAccountIsNotCached();
+    void aRecipientPreflightThatOutlivesItsAccountShowsNothing();
 
 private:
     static void savePairing(PairingStore& pairingStore, quint16 port);
@@ -1628,6 +1631,199 @@ void MailControllerTest::aRefreshThatOutlivesItsAccountWritesNothingAndReportsNo
     // Nothing failed. Reporting "Refresh failed" here would be a lie told to
     // someone who just paired successfully.
     QVERIFY(controller.lastError().isEmpty());
+}
+
+// The download completes after the device has been re-paired.
+//
+// Not merely a file left on disk: the ephemeral branch of
+// storeDownloadedAttachment() hands the file straight to the desktop to open,
+// so proceeding would display the previous account's attachment to whoever is
+// using the machine now.
+void MailControllerTest::anAttachmentThatOutlivesItsAccountIsNeverWrittenOrOpened()
+{
+    QStandardPaths::setTestModeEnabled(true);
+
+    Database db;
+    QVERIFY(db.open(QStringLiteral(":memory:")));
+    EmailDao emailDao(db.handle());
+
+    const QByteArray attachmentBytes = "confidential-attachment-bytes";
+    FakeRelayServer fake(httpResponse(200, "OK", attachmentBytes, "application/octet-stream"));
+
+    QTemporaryDir secureDir;
+    QVERIFY(secureDir.isValid());
+    SecureStoreFile secureStore(secureDir.path());
+    PairingStore pairingStore(secureStore);
+    savePairing(pairingStore, fake.port());
+
+    QTemporaryDir cursorDir;
+    QVERIFY(cursorDir.isValid());
+    CursorStore cursorStore(cursorDir.filePath(QStringLiteral("cursor.ini")));
+
+    QTemporaryDir settingsDir;
+    QVERIFY(settingsDir.isValid());
+    SettingsStore settingsStore(settingsDir.filePath(QStringLiteral("settings.ini")));
+    KeywordRepository keywordRepository(settingsStore);
+
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    RelayMailSource source(http);
+    PgpBootstrapClient bootstrapClient(http);
+    PgpRecipientChecker recipientChecker(http);
+    MailRepository mailRepository(source, emailDao, pairingStore, cursorStore);
+    FolderDao folderDao(db.handle());
+    FolderClient folderClient(http);
+    FolderRepository folderRepository(folderClient, folderDao, pairingStore);
+
+    NetworkExecutor executor(3000);
+    MailController controller(mailRepository, source, keywordRepository, pairingStore, folderRepository,
+                               settingsStore, bootstrapClient, recipientChecker, executor);
+    ExecutorShutdownGuard shutdownGuard{ executor };
+
+    const QString downloadDir = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
+    QDir().mkpath(downloadDir);
+    const QString target = QDir(downloadDir).filePath(QStringLiteral("payslip.pdf"));
+    QFile::remove(target);
+
+    QSignalSpy spy(&controller, &MailController::attachmentDownloaded);
+    controller.downloadAttachment(QStringLiteral("Inbox"), QStringLiteral("42"), 0,
+                                   QStringLiteral("payslip.pdf"));
+
+    DevicePairing replacement;
+    replacement.subscriberId = QStringLiteral("sub-2");
+    replacement.deviceId = QStringLiteral("dev-2");
+    replacement.deviceSecret = QStringLiteral("secret-2");
+    replacement.serverBaseUrl = QStringLiteral("http://127.0.0.1:%1").arg(fake.port());
+    QVERIFY(pairingStore.save(replacement));
+
+    QVERIFY(spy.wait(10000) || spy.count() > 0);
+    executor.shutdown();
+
+    QVERIFY(!spy.isEmpty());
+    QCOMPARE(spy.at(0).at(2).toBool(), false);
+    QVERIFY2(!QFile::exists(target), "the previous account's attachment was written to disk");
+    // The request did go out -- otherwise this passes for the wrong reason.
+    QVERIFY(!fake.receivedRequest().isEmpty());
+}
+
+// The bootstrap answer describes the PREVIOUS account's key custody, and it
+// decides whether compose offers to sign and encrypt at all. Caching it
+// against the new account would either hide those controls from someone
+// entitled to them or offer them to someone whose server has no identity.
+void MailControllerTest::aPgpComposeAnswerThatOutlivesItsAccountIsNotCached()
+{
+    Database db;
+    QVERIFY(db.open(QStringLiteral(":memory:")));
+    EmailDao emailDao(db.handle());
+
+    FakeRelayServer fake(httpResponse(200, "OK",
+                                       R"({"ok":true,"hasIdentity":true,"protection":"server"})"));
+
+    QTemporaryDir secureDir;
+    QVERIFY(secureDir.isValid());
+    SecureStoreFile secureStore(secureDir.path());
+    PairingStore pairingStore(secureStore);
+    savePairing(pairingStore, fake.port());
+
+    QTemporaryDir cursorDir;
+    QVERIFY(cursorDir.isValid());
+    CursorStore cursorStore(cursorDir.filePath(QStringLiteral("cursor.ini")));
+
+    QTemporaryDir settingsDir;
+    QVERIFY(settingsDir.isValid());
+    SettingsStore settingsStore(settingsDir.filePath(QStringLiteral("settings.ini")));
+    KeywordRepository keywordRepository(settingsStore);
+
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    RelayMailSource source(http);
+    PgpBootstrapClient bootstrapClient(http);
+    PgpRecipientChecker recipientChecker(http);
+    MailRepository mailRepository(source, emailDao, pairingStore, cursorStore);
+    FolderDao folderDao(db.handle());
+    FolderClient folderClient(http);
+    FolderRepository folderRepository(folderClient, folderDao, pairingStore);
+
+    NetworkExecutor executor(3000);
+    MailController controller(mailRepository, source, keywordRepository, pairingStore, folderRepository,
+                               settingsStore, bootstrapClient, recipientChecker, executor);
+    ExecutorShutdownGuard shutdownGuard{ executor };
+
+    QSignalSpy spy(&controller, &MailController::pgpComposeStateChanged);
+    controller.refreshPgpComposeState();
+
+    DevicePairing replacement;
+    replacement.subscriberId = QStringLiteral("sub-2");
+    replacement.deviceId = QStringLiteral("dev-2");
+    replacement.deviceSecret = QStringLiteral("secret-2");
+    replacement.serverBaseUrl = QStringLiteral("http://127.0.0.1:%1").arg(fake.port());
+    QVERIFY(pairingStore.save(replacement));
+
+    // The request really was made and really did come back; what must not
+    // happen is the answer being applied.
+    QTRY_VERIFY_WITH_TIMEOUT(!fake.receivedRequest().isEmpty(), 5000);
+    QVERIFY(!spy.wait(1000));
+
+    QCOMPARE(controller.pgpCanEncrypt(), false);
+    QCOMPARE(controller.pgpCanSign(), false);
+    executor.shutdown();
+}
+
+// Which recipients the PREVIOUS account had keys for says nothing about this
+// one. A stale all-clear is the single outcome this warning must never show,
+// so the answer is dropped and the list cleared rather than kept.
+void MailControllerTest::aRecipientPreflightThatOutlivesItsAccountShowsNothing()
+{
+    Database db;
+    QVERIFY(db.open(QStringLiteral(":memory:")));
+    EmailDao emailDao(db.handle());
+
+    FakeRelayServer fake(httpResponse(200, "OK",
+                                       R"({"results":[{"address":"bob@example.com","hasKey":false}]})"));
+
+    QTemporaryDir secureDir;
+    QVERIFY(secureDir.isValid());
+    SecureStoreFile secureStore(secureDir.path());
+    PairingStore pairingStore(secureStore);
+    savePairing(pairingStore, fake.port());
+
+    QTemporaryDir cursorDir;
+    QVERIFY(cursorDir.isValid());
+    CursorStore cursorStore(cursorDir.filePath(QStringLiteral("cursor.ini")));
+
+    QTemporaryDir settingsDir;
+    QVERIFY(settingsDir.isValid());
+    SettingsStore settingsStore(settingsDir.filePath(QStringLiteral("settings.ini")));
+    KeywordRepository keywordRepository(settingsStore);
+
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    RelayMailSource source(http);
+    PgpBootstrapClient bootstrapClient(http);
+    PgpRecipientChecker recipientChecker(http);
+    MailRepository mailRepository(source, emailDao, pairingStore, cursorStore);
+    FolderDao folderDao(db.handle());
+    FolderClient folderClient(http);
+    FolderRepository folderRepository(folderClient, folderDao, pairingStore);
+
+    NetworkExecutor executor(3000);
+    MailController controller(mailRepository, source, keywordRepository, pairingStore, folderRepository,
+                               settingsStore, bootstrapClient, recipientChecker, executor);
+    ExecutorShutdownGuard shutdownGuard{ executor };
+
+    controller.preflightRecipients(QStringLiteral("bob@example.com"), QString(), QString());
+
+    DevicePairing replacement;
+    replacement.subscriberId = QStringLiteral("sub-2");
+    replacement.deviceId = QStringLiteral("dev-2");
+    replacement.deviceSecret = QStringLiteral("secret-2");
+    replacement.serverBaseUrl = QStringLiteral("http://127.0.0.1:%1").arg(fake.port());
+    QVERIFY(pairingStore.save(replacement));
+
+    QTRY_VERIFY_WITH_TIMEOUT(!fake.receivedRequest().isEmpty(), 5000);
+    QTest::qWait(500); // let any (wrong) apply land before asserting it did not
+    QVERIFY(controller.pgpKeylessRecipients().isEmpty());
+    executor.shutdown();
 }
 
 QTEST_GUILESS_MAIN(MailControllerTest)

@@ -13,6 +13,7 @@
 #include <QNetworkAccessManager>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QTimer>
 
 class ContactPhotoRepositoryTest : public QObject
 {
@@ -24,6 +25,7 @@ private slots:
     void photoPathForFetchesAndCachesOnCacheMiss();
     void photoPathForOnSecondCallReturnsCachedPathWithoutRefetching();
     void photoPathForOnFetchErrorReturnsEmpty();
+    void photoPathForDiscardsAPhotoTheCurrentPairingDidNotAuthorise();
 
 private:
     static void savePairing(PairingStore& pairingStore, quint16 port);
@@ -176,6 +178,54 @@ void ContactPhotoRepositoryTest::photoPathForOnFetchErrorReturnsEmpty()
 
     QVERIFY(repository.photoPathFor(QStringLiteral("contact-1"), QStringLiteral("photo-ref-1")).isEmpty());
     QVERIFY(cache.cachedPathFor(QStringLiteral("photo-ref-1")).isEmpty());
+}
+
+// A face is about as identifying as cached data gets, and the photo cache
+// directory is one of the things pairing a replacement account erases.
+//
+// photoPathFor() blocks this thread on a nested event loop, so the singleShot
+// below fires between the request and the cache write -- which is exactly
+// where a re-pair lands in production, delivered from the executor thread.
+void ContactPhotoRepositoryTest::photoPathForDiscardsAPhotoTheCurrentPairingDidNotAuthorise()
+{
+    const QByteArray photoBytes = QByteArrayLiteral("some-jpeg-bytes");
+    FakeRelayServer fake(httpResponse(200, "OK", photoBytes, "image/jpeg"));
+
+    QTemporaryDir secureDir;
+    QVERIFY(secureDir.isValid());
+    SecureStoreFile secureStore(secureDir.path());
+    PairingStore pairingStore(secureStore);
+    savePairing(pairingStore, fake.port());
+
+    QTemporaryDir cacheDir;
+    QVERIFY(cacheDir.isValid());
+    ContactPhotoCache cache(cacheDir.path());
+
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    ContactPhotoClient client(http);
+
+    ContactPhotoRepository repository(client, cache, pairingStore);
+
+    bool replaced = false;
+    QTimer::singleShot(0, [&]() {
+        DevicePairing replacement;
+        replacement.subscriberId = QStringLiteral("sub-2");
+        replacement.deviceId = QStringLiteral("device-2");
+        replacement.deviceSecret = QStringLiteral("secret-2");
+        replacement.serverBaseUrl = QStringLiteral("http://127.0.0.1:%1").arg(fake.port());
+        replaced = pairingStore.save(replacement);
+    });
+
+    const QString path = repository.photoPathFor(QStringLiteral("contact-1"), QStringLiteral("photo-ref-1"));
+
+    // Asserted, not assumed: without this the test would pass for the wrong
+    // reason if the re-pair never landed inside the call.
+    QVERIFY2(replaced, "the re-pair did not happen during the fetch -- this test proved nothing");
+
+    QVERIFY(path.isEmpty());
+    QVERIFY2(cache.cachedPathFor(QStringLiteral("photo-ref-1")).isEmpty(),
+             "the previous account's contact photo was left in the cache");
 }
 
 QTEST_GUILESS_MAIN(ContactPhotoRepositoryTest)

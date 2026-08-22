@@ -23,6 +23,7 @@ private slots:
     void refreshWithoutPairingIsNoOp();
     void refreshUpsertsGroupsFromServer();
     void refreshOnFetchErrorLeavesExistingCacheUntouched();
+    void applyRefreshDiscardsAReplyTheCurrentPairingDidNotAuthorise();
 
 private:
     static void savePairing(PairingStore& pairingStore, quint16 port);
@@ -129,6 +130,61 @@ void GroupsRepositoryTest::refreshOnFetchErrorLeavesExistingCacheUntouched()
     const QVector<Group> all = repository.groups();
     QCOMPARE(all.size(), 1);
     QCOMPARE(all.at(0), existing);
+}
+
+// Group names are the previous account's data and the group table has no
+// subscriber column, so a reply that lands after the device has been re-paired
+// must not be cached. No server here: phase 3 is exercised directly, which is
+// the only way to place the re-pair exactly between the request and the write.
+void GroupsRepositoryTest::applyRefreshDiscardsAReplyTheCurrentPairingDidNotAuthorise()
+{
+    Database db;
+    QVERIFY(db.open(QStringLiteral(":memory:")));
+    GroupDao groupDao(db.handle());
+
+    QTemporaryDir secureDir;
+    QVERIFY(secureDir.isValid());
+    SecureStoreFile secureStore(secureDir.path());
+    PairingStore pairingStore(secureStore);
+    savePairing(pairingStore, 1); // port is irrelevant -- nothing is sent here
+
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    GroupsClient client(http);
+    GroupsRepository repository(client, groupDao, pairingStore);
+
+    const std::optional<RelayRequestPlan> plan = repository.planRefresh();
+    QVERIFY(plan.has_value());
+
+    Group group;
+    group.id = QStringLiteral("g-1");
+    group.name = QStringLiteral("Legal counsel");
+
+    GroupsFetchResult result;
+    result.groups = QVector<Group>{ group };
+
+    // Re-paired to a different account while the request was out.
+    DevicePairing replacement;
+    replacement.subscriberId = QStringLiteral("sub-2");
+    replacement.deviceId = QStringLiteral("device-2");
+    replacement.deviceSecret = QStringLiteral("secret-2");
+    replacement.serverBaseUrl = QStringLiteral("http://127.0.0.1:1");
+    QVERIFY(pairingStore.save(replacement));
+
+    repository.applyRefresh(*plan, result);
+    QVERIFY2(groupDao.findAll().isEmpty(),
+             "the previous account's group names were cached for the new account");
+
+    // Control: restore the pairing the plan named and the same reply applies,
+    // so the assertion above cannot pass on a repository that stopped writing.
+    DevicePairing original;
+    original.subscriberId = QStringLiteral("sub-1");
+    original.deviceId = QStringLiteral("device-1");
+    original.deviceSecret = QStringLiteral("secret-1");
+    original.serverBaseUrl = QStringLiteral("http://127.0.0.1:1");
+    QVERIFY(pairingStore.save(original));
+    repository.applyRefresh(*plan, result);
+    QCOMPARE(groupDao.findAll().size(), 1);
 }
 
 QTEST_GUILESS_MAIN(GroupsRepositoryTest)

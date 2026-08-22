@@ -1,5 +1,6 @@
 #pragma once
 
+#include "domain/RelayRequestPlan.h"
 #include "net/GroupsClient.h" // GroupsFetchResult -- crosses the thread hop by value
 #include "net/RelayAuth.h"    // RelayEndpoint
 
@@ -42,10 +43,17 @@ public:
     void refresh();
 
     // Three-phase form, same shape as every other repository here. Phase 1 is
-    // just the pairing read; there is no cursor and nothing else to carry.
-    std::optional<RelayEndpoint> planRefresh() const;
+    // just the pairing read; there is no cursor, but the plan does carry the
+    // identity that authorised the request so phase 3 can tell whether the
+    // reply still belongs here.
+    std::optional<RelayRequestPlan> planRefresh() const;
     static GroupsFetchResult fetchWith(HttpClient& httpClient, const RelayEndpoint& endpoint);
-    void applyRefresh(const GroupsFetchResult& result);
+
+    // Writes nothing when the device has been re-paired since the request went
+    // out. Group names are the previous account's data, the group table has no
+    // subscriber column, and pairing a replacement account has just emptied it
+    // -- see PairingIdentity in DevicePairing.h.
+    void applyRefresh(const RelayRequestPlan& plan, const GroupsFetchResult& result);
 
 private:
     GroupsClient& m_client;
