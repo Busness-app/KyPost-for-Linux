@@ -13,6 +13,9 @@ private slots:
     void roundTripsInsertUpdateDelete();
     void findsByFolderAndAll();
     void deleteByFolderRemovesOnlyThatFolder();
+    void sameMessageIdCoexistsInTwoFoldersAsSeparateRows();
+    void insertOrReplaceStoresAnUnsetFolderAsEmptyRatherThanFailing();
+    void findUniqueByIdRefusesAnIdCachedInMoreThanOneFolder();
     void replaceFolderSnapshotWipesOnlyTargetFolderAndInsertsGivenEmails();
 
 private:
@@ -49,7 +52,7 @@ void EmailDaoTest::roundTripsInsertUpdateDelete()
 
     QVERIFY(dao.insertOrReplace(email));
 
-    auto found = dao.findById(email.messageId);
+    auto found = dao.findById(email.folder, email.messageId);
     QVERIFY(found.has_value());
     QCOMPARE(*found, email);
 
@@ -64,13 +67,13 @@ void EmailDaoTest::roundTripsInsertUpdateDelete()
     updated.pgpDecryptError = QString();
     QVERIFY(dao.insertOrReplace(updated));
 
-    auto refetched = dao.findById(email.messageId);
+    auto refetched = dao.findById(email.folder, email.messageId);
     QVERIFY(refetched.has_value());
     QCOMPARE(*refetched, updated);
     QVERIFY(!refetched->body.has_value());
 
-    QVERIFY(dao.deleteById(email.messageId));
-    QVERIFY(!dao.findById(email.messageId).has_value());
+    QVERIFY(dao.deleteById(email.folder, email.messageId));
+    QVERIFY(!dao.findById(email.folder, email.messageId).has_value());
 }
 
 void EmailDaoTest::findsByFolderAndAll()
@@ -114,8 +117,8 @@ void EmailDaoTest::deleteByFolderRemovesOnlyThatFolder()
 
     QVERIFY(dao.deleteByFolder(QStringLiteral("INBOX")));
 
-    QVERIFY(!dao.findById(QStringLiteral("msg-inbox")).has_value());
-    QVERIFY(dao.findById(QStringLiteral("msg-sent")).has_value());
+    QVERIFY(!dao.findById(QStringLiteral("INBOX"), QStringLiteral("msg-inbox")).has_value());
+    QVERIFY(dao.findById(QStringLiteral("Sent"), QStringLiteral("msg-sent")).has_value());
 }
 
 void EmailDaoTest::replaceFolderSnapshotWipesOnlyTargetFolderAndInsertsGivenEmails()
@@ -149,19 +152,104 @@ void EmailDaoTest::replaceFolderSnapshotWipesOnlyTargetFolderAndInsertsGivenEmai
     QVERIFY(dao.replaceFolderSnapshot(QStringLiteral("INBOX"), { newInboxEmail1, newInboxEmail2 }));
 
     // The stale row in the replaced folder is gone.
-    QVERIFY(!dao.findById(QStringLiteral("msg-stale")).has_value());
+    QVERIFY(!dao.findById(QStringLiteral("INBOX"), QStringLiteral("msg-stale")).has_value());
 
     // The two new rows round-trip.
     const QVector<Email> inboxEmails = dao.findByFolder(QStringLiteral("INBOX"));
     QCOMPARE(inboxEmails.size(), 2);
-    QVERIFY(dao.findById(QStringLiteral("msg-new-1")).has_value());
-    QCOMPARE(*dao.findById(QStringLiteral("msg-new-1")), newInboxEmail1);
-    QVERIFY(dao.findById(QStringLiteral("msg-new-2")).has_value());
-    QCOMPARE(*dao.findById(QStringLiteral("msg-new-2")), newInboxEmail2);
+    QVERIFY(dao.findById(QStringLiteral("INBOX"), QStringLiteral("msg-new-1")).has_value());
+    QCOMPARE(*dao.findById(QStringLiteral("INBOX"), QStringLiteral("msg-new-1")), newInboxEmail1);
+    QVERIFY(dao.findById(QStringLiteral("INBOX"), QStringLiteral("msg-new-2")).has_value());
+    QCOMPARE(*dao.findById(QStringLiteral("INBOX"), QStringLiteral("msg-new-2")), newInboxEmail2);
 
     // A row in a different folder survives untouched.
-    QVERIFY(dao.findById(QStringLiteral("msg-sent")).has_value());
-    QCOMPARE(*dao.findById(QStringLiteral("msg-sent")), sentEmail);
+    QVERIFY(dao.findById(QStringLiteral("Sent"), QStringLiteral("msg-sent")).has_value());
+    QCOMPARE(*dao.findById(QStringLiteral("Sent"), QStringLiteral("msg-sent")), sentEmail);
+}
+
+
+// Before migration 006 the PRIMARY KEY was message_id alone, so INSERT OR
+// REPLACE collapsed these two onto one row whose `folder` was whichever
+// mailbox synced last -- and the message vanished from the other folder's
+// list. The relay serves the same messageId from every mailbox holding it,
+// so this is the ordinary case, not an edge one.
+void EmailDaoTest::sameMessageIdCoexistsInTwoFoldersAsSeparateRows()
+{
+    EmailDao dao(m_db.handle());
+
+    Email inboxCopy;
+    inboxCopy.messageId = QStringLiteral("msg-shared");
+    inboxCopy.folder = QStringLiteral("INBOX");
+    inboxCopy.subject = QStringLiteral("Inbox copy");
+    inboxCopy.status = QStringLiteral("unread");
+    QVERIFY(dao.insertOrReplace(inboxCopy));
+
+    Email archiveCopy = inboxCopy;
+    archiveCopy.folder = QStringLiteral("Archive");
+    archiveCopy.subject = QStringLiteral("Archive copy");
+    archiveCopy.status = QStringLiteral("read");
+    QVERIFY(dao.insertOrReplace(archiveCopy));
+
+    QCOMPARE(dao.findAll().size(), 2);
+    QCOMPARE(*dao.findById(QStringLiteral("INBOX"), QStringLiteral("msg-shared")), inboxCopy);
+    QCOMPARE(*dao.findById(QStringLiteral("Archive"), QStringLiteral("msg-shared")), archiveCopy);
+
+    // A folder-scoped delete leaves the other folder's copy alone.
+    QVERIFY(dao.deleteById(QStringLiteral("INBOX"), QStringLiteral("msg-shared")));
+    QVERIFY(!dao.findById(QStringLiteral("INBOX"), QStringLiteral("msg-shared")).has_value());
+    QVERIFY(dao.findById(QStringLiteral("Archive"), QStringLiteral("msg-shared")).has_value());
+
+    // Re-inserting the same (folder, message_id) still upserts rather than
+    // duplicating -- the key is composite, not absent.
+    QVERIFY(dao.insertOrReplace(archiveCopy));
+    QCOMPARE(dao.findAll().size(), 1);
+}
+
+void EmailDaoTest::findUniqueByIdRefusesAnIdCachedInMoreThanOneFolder()
+{
+    EmailDao dao(m_db.handle());
+
+    Email inboxCopy;
+    inboxCopy.messageId = QStringLiteral("msg-shared");
+    inboxCopy.folder = QStringLiteral("INBOX");
+    inboxCopy.subject = QStringLiteral("Inbox copy");
+    QVERIFY(dao.insertOrReplace(inboxCopy));
+
+    QCOMPARE(dao.findUniqueById(QStringLiteral("msg-shared"))->subject, QStringLiteral("Inbox copy"));
+    QVERIFY(!dao.findUniqueById(QStringLiteral("no-such-id")).has_value());
+
+    Email archiveCopy = inboxCopy;
+    archiveCopy.folder = QStringLiteral("Archive");
+    QVERIFY(dao.insertOrReplace(archiveCopy));
+
+    // Ambiguous: no answer, rather than an arbitrary one.
+    QVERIFY(!dao.findUniqueById(QStringLiteral("msg-shared")).has_value());
+}
+
+
+// `folder` is NOT NULL and half the PRIMARY KEY since migration 006, but a
+// default-constructed QString binds as SQL NULL -- so an Email whose folder
+// was never set became a constraint violation instead of a row. Most callers
+// of insertOrReplace don't check the bool, which made that a silently
+// dropped message rather than a visible error.
+void EmailDaoTest::insertOrReplaceStoresAnUnsetFolderAsEmptyRatherThanFailing()
+{
+    EmailDao dao(m_db.handle());
+
+    Email noFolder;
+    noFolder.messageId = QStringLiteral("msg-no-folder");
+    noFolder.subject = QStringLiteral("Folderless");
+    QVERIFY(noFolder.folder.isNull());
+
+    QVERIFY(dao.insertOrReplace(noFolder));
+
+    const std::optional<Email> found = dao.findById(QString::fromLatin1(""), QStringLiteral("msg-no-folder"));
+    QVERIFY(found.has_value());
+    QCOMPARE(found->subject, QStringLiteral("Folderless"));
+
+    // Still an upsert, not an append: the key resolved to ('', id) both times.
+    QVERIFY(dao.insertOrReplace(noFolder));
+    QCOMPARE(dao.findAll().size(), 1);
 }
 
 QTEST_GUILESS_MAIN(EmailDaoTest)

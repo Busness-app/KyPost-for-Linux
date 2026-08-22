@@ -83,7 +83,7 @@ finish-args:
   # camera access (QtMultimedia Camera/CaptureSession, decoded via
   # PgpQrScanner/zxing-cpp). This machine's qt6-multimedia-ffmpeg
   # backend talks to V4L2 devices directly, not the pipewire camera
-  # portal, so the narrower --socket=pipewire (sufficient for a
+  # portal, so the narrower PipeWire socket grant below (sufficient for a
   # GStreamer/pipewire-portal backend) is NOT enough here --
   # confirmed by which qt6-multimedia-* backend package is actually
   # installed (ffmpeg, not gstreamer) on this dev machine.
@@ -97,7 +97,7 @@ finish-args:
   # camera work, not because the surface was intended.
   #
   # --device=dri covers the GPU nodes the Qt Quick scenegraph and
-  # WebEngine use. Camera access rides on --socket=pipewire plus the
+  # WebEngine use. Camera access rides on the PipeWire socket plus the
   # camera portal where the backend supports it; the remaining
   # V4L2-direct case is handled by the far narrower --device=input
   # substitute below being ABSENT on purpose -- if the ffmpeg backend
@@ -106,7 +106,25 @@ finish-args:
   # re-verified as necessary against that runtime, rather than
   # inherited from this dev machine.
   - --device=dri
-  - --socket=pipewire
+  # Spelled as a filesystem grant rather than `--socket=pipewire`, which is
+  # what this used to say. They expose the same thing -- the PipeWire socket
+  # at $XDG_RUNTIME_DIR/pipewire-0 -- but the `pipewire` SOCKET TYPE only
+  # exists in flatpak 1.15.4 and newer, and `flatpak build-finish` rejects an
+  # unknown socket type outright:
+  #
+  #   error: Unknown socket type pipewire, valid types are: x11, wayland,
+  #   pulseaudio, session-bus, system-bus, fallback-x11, ssh-auth, pcsc,
+  #   cups, gpg-agent
+  #
+  # ubuntu-24.04 ships flatpak 1.14.6, so this failed every CI build at the
+  # "Finishing app" step. The filesystem spelling has worked since 1.0 and is
+  # what Flathub used for years before the socket type existed, so it also
+  # keeps the built app installable by users on older flatpak.
+  #
+  # Same grant, same narrowness -- this is NOT a widening. See the note above
+  # on why --device=all was removed and must not come back without a dated
+  # re-verification.
+  - --filesystem=xdg-run/pipewire-0
 
   # Attachment downloads. Without a filesystem grant, $HOME inside the
   # sandbox is ~/.var/app/com.urlxl.mail, so
@@ -171,6 +189,22 @@ modules:
       - -DBUILD_WITH_QT5=OFF
       - -DBUILD_TEST_APPLICATION=OFF
       - -DBUILD_TRANSLATIONS=OFF
+
+      # Install into /app/lib, not /app/lib64. Both this module and zxing-cpp
+      # use GNUInstallDirs, which resolves CMAKE_INSTALL_LIBDIR to `lib64` on
+      # x86-64 in this SDK -- but a flatpak's runtime linker path is /app/lib,
+      # and nothing adds /app/lib64 to it. The libraries were built, installed
+      # and shipped, and the app then died on launch with:
+      #
+      #   kypost: error while loading shared libraries: libZXing.so.4:
+      #   cannot open shared object file: No such file or directory
+      #
+      # Fixed for BOTH modules at once deliberately: libqt6keychain.so.1 was
+      # landing in the same wrong place, so correcting only the library named
+      # in the error would have produced the identical failure on the next
+      # run. (libargon2 already avoids this -- it passes LIBRARY_REL=lib to
+      # its plain Makefile for exactly this reason.)
+      - -DCMAKE_INSTALL_LIBDIR=lib
     sources:
       - type: archive
         url: https://github.com/frankosterfeld/qtkeychain/archive/refs/tags/0.17.0.tar.gz
@@ -180,6 +214,21 @@ modules:
     buildsystem: cmake-ninja
     config-opts:
       - -DCMAKE_BUILD_TYPE=Release
+      # Install into /app/lib, not /app/lib64. Both this module and zxing-cpp
+      # use GNUInstallDirs, which resolves CMAKE_INSTALL_LIBDIR to `lib64` on
+      # x86-64 in this SDK -- but a flatpak's runtime linker path is /app/lib,
+      # and nothing adds /app/lib64 to it. The libraries were built, installed
+      # and shipped, and the app then died on launch with:
+      #
+      #   kypost: error while loading shared libraries: libZXing.so.4:
+      #   cannot open shared object file: No such file or directory
+      #
+      # Fixed for BOTH modules at once deliberately: libqt6keychain.so.1 was
+      # landing in the same wrong place, so correcting only the library named
+      # in the error would have produced the identical failure on the next
+      # run. (libargon2 already avoids this -- it passes LIBRARY_REL=lib to
+      # its plain Makefile for exactly this reason.)
+      - -DCMAKE_INSTALL_LIBDIR=lib
       - -DZXING_READERS=ON
       - -DZXING_WRITERS=ON
       - -DZXING_EXAMPLES=OFF

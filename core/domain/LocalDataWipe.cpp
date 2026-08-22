@@ -4,17 +4,20 @@
 #include "db/SecurityWipe.h"
 #include "domain/PairingStore.h"
 #include "security/AppLockStore.h"
+#include "stores/CursorStore.h"
 #include "stores/SettingsStore.h"
 
 #include <QFile>
 
 LocalDataWipe::LocalDataWipe(Database& database, PairingStore& pairingStore, AppLockStore& appLockStore,
-                              SettingsStore& settingsStore, const QString& dataDir,
-                              const QString& currentDatabasePath, const QStringList& legacyDatabasePaths)
+                              SettingsStore& settingsStore, CursorStore& cursorStore,
+                              const QString& dataDir, const QString& currentDatabasePath,
+                              const QStringList& legacyDatabasePaths)
     : m_database(database)
     , m_pairingStore(pairingStore)
     , m_appLockStore(appLockStore)
     , m_settingsStore(settingsStore)
+    , m_cursorStore(cursorStore)
     , m_dataDir(dataDir)
     , m_currentDatabasePath(currentDatabasePath)
     , m_legacyDatabasePaths(legacyDatabasePaths)
@@ -51,6 +54,20 @@ LocalDataWipeResult LocalDataWipe::wipeCaches(bool removeCurrentDatabaseFile)
 
     result.photoCacheCleared =
         SecurityWipe::clearCacheDirectory(m_dataDir + QStringLiteral("/contact-photos"));
+
+    // cursors.ini survived every wipe path until now: CursorStore::reset()
+    // existed but had no caller anywhere in the app. It is not mail content,
+    // but it is a separate file naming the subscriber id and every mailbox
+    // this device synced -- and since mail cursors became per (subscriber,
+    // folder) it names strictly more of them than it used to. A wipe that
+    // leaves behind "this machine synced INBOX, Work/Legal and Archive for
+    // subscriber X" has not wiped.
+    //
+    // It must also go for a correctness reason, not only a privacy one: the
+    // wipe empties the mail tables, so a surviving cursor would have the next
+    // sync ask for a delta against a cache that no longer exists, and the
+    // messages before that cursor would never be re-fetched.
+    result.syncCursorsCleared = m_cursorStore.wipeAll();
 
     return result;
 }

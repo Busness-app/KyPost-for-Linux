@@ -38,14 +38,25 @@ struct InboxFetchResult
     QStringList tabs;
     // QMap sorts by key alphabetically -- iterate via tabs (order-preserving) if wire/tab order matters, not this map directly.
     QMap<QString, QVector<InboxEmailItem>> byTab;
-    // Delta (`since=`) response fields -- confirmed against
-    // internal/api/server.go's delta branch of handleInbox (~line 2097-2105):
-    // a delta response is {tabs, byTab, delta:true, cursor, removed:[messageId,...]},
-    // a full-snapshot response (no `since` sent) is just {tabs, byTab} with
-    // none of these three keys present, hence the false/0/empty defaults.
-    bool isDelta = false;   // json "delta", defaults false when absent (full-snapshot response)
-    qint64 cursor = 0;      // json "cursor", meaningless when !isDelta
-    QStringList removed;    // json "removed", always empty when !isDelta
+    // Cursor-protocol response fields. Re-confirmed against kypost-server's
+    // backend/internal/api/server_inbox.go (the response literal at the end
+    // of serveInbox), because the previous note here was wrong in a way that
+    // cost this client delta sync entirely:
+    //
+    //   * Sending `since` AT ALL selects the cursor protocol. All three keys
+    //     below are then present -- on a full window too.
+    //   * `delta` is `since > 0`. It describes whether the window came back
+    //     partial, NOT whether `since` was sent.
+    //   * `cursor` is therefore meaningful whenever `since` was sent, and a
+    //     since=0 request is precisely how a client with no cursor gets one.
+    //     The old comment called it "meaningless when !isDelta", which is why
+    //     MailRepository only persisted it on the delta branch.
+    //   * Omitting `since` takes the classic path, whose response really is
+    //     just {tabs, byTab} -- hence the false/0/empty defaults, which stay
+    //     correct for that case.
+    bool isDelta = false;   // json "delta" == (since > 0); false on a full window
+    qint64 cursor = 0;      // json "cursor"; meaningful whenever `since` was sent
+    QStringList removed;    // json "removed"; empty on a full window
 };
 
 // One entry of POST /api/inbox/actions's "failed" array.

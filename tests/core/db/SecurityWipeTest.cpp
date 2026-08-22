@@ -123,15 +123,15 @@ void SecurityWipeTest::wipeAllTablesEmptiesRowsAndKeepsSchema()
     email.subject = QStringLiteral("Confidential");
     email.body = QStringLiteral("secret body text");
     QVERIFY(dao.insertOrReplace(email));
-    QVERIFY(dao.findById(QStringLiteral("m1")).has_value());
+    QVERIFY(dao.findById(QStringLiteral("INBOX"), QStringLiteral("m1")).has_value());
 
     QVERIFY(db.wipeAllTables());
 
-    QVERIFY(!dao.findById(QStringLiteral("m1")).has_value());
+    QVERIFY(!dao.findById(QStringLiteral("INBOX"), QStringLiteral("m1")).has_value());
     // The schema must survive -- the app keeps running after a wipe, and a
     // dropped table would break every later query.
     QVERIFY(dao.insertOrReplace(email));
-    QVERIFY(dao.findById(QStringLiteral("m1")).has_value());
+    QVERIFY(dao.findById(QStringLiteral("INBOX"), QStringLiteral("m1")).has_value());
 }
 
 void SecurityWipeTest::wipeAllTablesLeavesNoRecoverableContent()

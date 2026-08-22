@@ -99,8 +99,35 @@ jobs:
           # qtkeychain, long before anything KyPost-specific is reached.
           # Not pulled in by flatpak-builder's own dependencies, and not
           # present on ubuntu-24.04 runners by default.
+          # librsvg2-common supplies gdk-pixbuf's SVG loader
+          # (libpixbufloader-svg.so), and without it this job could never
+          # succeed -- it failed 36/36 runs from 2026-07-26 for exactly this.
+          #
+          # flatpak-builder runs `appstreamcli compose` at export. ubuntu-24.04
+          # ships appstream 1.0.2, which decodes images through gdk-pixbuf;
+          # gdk-pixbuf cannot read SVG at all unless librsvg's loader is
+          # installed, and `appstream` does not depend on it. So compose hit
+          # the app's scalable icon and reported:
+          #
+          #   E: file-read-error
+          #      Unable to read data from file
+          #      `//share/icons/hicolor/scalable/apps/com.urlxl.mail.svg`:
+          #      Unrecognized image file format
+          #
+          # ...followed by `filters-but-no-output`, because the component was
+          # then dropped and the --components filter matched nothing. Neither
+          # message names the icon: flatpak-builder invokes compose without
+          # --print-report, so for a month the log showed only the issue names.
+          # The "Diagnose appstreamcli compose failure" step below is what
+          # surfaced the text above, which is why it stays.
+          #
+          # Verified rather than assumed: gdk-pixbuf WITH librsvg loads this
+          # exact file (1024x1024), and appstream 1.1.6 composes it fine
+          # because 1.1.x decodes via glycin instead of gdk-pixbuf -- which is
+          # why it reproduced locally as a success and only ever failed here.
           sudo apt-get install -y --no-install-recommends \
-            flatpak flatpak-builder ostree appstream desktop-file-utils elfutils
+            flatpak flatpak-builder ostree appstream desktop-file-utils elfutils \
+            librsvg2-common dbus-bin
           # Added to both installations deliberately: flatpak-builder runs
           # with --user below, but the pre-existing system-wide remote is
           # what the nightly job has been resolving --install-deps-from
@@ -205,6 +232,60 @@ jobs:
             --runtime-repo=https://flathub.org/repo/flathub.flatpakrepo \
             "${SIGN[@]}"
 
+      # DIAGNOSTIC, failure-only. This job has never once succeeded (36/36
+      # failures since 2026-07-26), always at flatpak-builder's export step
+      # with appstreamcli compose reporting:
+      #
+      #     com.urlxl.mail
+      #       E: file-read-error
+      #     general
+      #       E: filters-but-no-output
+      #
+      # Those are issue *names* with no detail, because flatpak-builder
+      # invokes compose without --print-report, and the temporary result-root
+      # it composes into is gone by the time the step fails. So the actual
+      # reason has never been visible in a log.
+      #
+      # Everything cheap has already been ruled out locally: the metainfo,
+      # the .desktop file and all nine icons are installed correctly (the
+      # build log shows each one), `appstreamcli validate --no-net` passes as
+      # its own step above, and running this exact compose against a staged
+      # `cmake --install` tree succeeds and emits both the component XML and
+      # the 64/128px icons. The one difference left is the tool: ubuntu-24.04
+      # ships appstream 1.0.2, and the local reproduction used 1.1.6.
+      #
+      # This step re-runs compose on the tree flatpak-builder left behind,
+      # with --print-report=full, so a failing run says what is actually
+      # wrong instead of merely that something is. It is what identified the
+      # missing librsvg2-common above, after a month of logs that named the
+      # issue but never its cause. It stays: it is `if: failure()`, so it
+      # costs a passing run nothing.
+      - name: Diagnose appstreamcli compose failure
+        if: failure()
+        run: |
+          set -x
+          appstreamcli --version || true
+          echo "--- metadata present in the built tree? ---"
+          ls -l build-flatpak/files/share/metainfo/ || true
+          ls -l build-flatpak/files/share/applications/ || true
+          find build-flatpak/files/share/icons -name 'com.urlxl.mail.*' -printf '%s\t%p\n' || true
+          echo "--- compose, with the report flatpak-builder never asks for ---"
+          rm -rf /tmp/ascdiag
+          appstreamcli compose \
+            --print-report=full \
+            --verbose \
+            --no-net \
+            --prefix=/ \
+            --origin="$APP_ID" \
+            --components="$APP_ID","$APP_ID".desktop \
+            --result-root=/tmp/ascdiag \
+            --data-dir=/tmp/ascdiag/xmls \
+            --icons-dir=/tmp/ascdiag/icons \
+            --hints-dir=/tmp/ascdiag/hints \
+            build-flatpak/files || true
+          echo "--- generated hint reports ---"
+          find /tmp/ascdiag/hints -type f -exec echo '### {}' \; -exec cat {} \; || true
+
       # Confirms the app actually loads inside the sandbox rather than just
       # that the build succeeded -- catches components missing from
       # app/qml/qml.qrc, which has bitten this repo for real. Runs before the
@@ -213,7 +294,24 @@ jobs:
         run: |
           set -o pipefail
           rc=0
-          timeout 15 flatpak-builder --run build-flatpak \
+          # dbus-run-session, because this app legitimately requires a session
+          # bus and a GitHub runner has none. main.cpp constructs
+          # KDBusService(KDBusService::Unique) for duplicate-launch detection
+          # and kypost:// activation, KNotifications and KUnifiedPush both
+          # need the bus too, and Qt's platform theme calls
+          # org.freedesktop.portal.Settings.ReadAll before any of that. With
+          # no bus the app exited 1 during startup:
+          #
+          #   Call to org.freedesktop.portal.Settings.ReadAll failed
+          #   QDBusError("org.freedesktop.DBus.Error.Disconnected", ...)
+          #   kf.dbusaddons: DBus session bus not found.
+          #
+          # That is the runner missing a desktop session, not a defect in the
+          # app -- every real Plasma/GNOME session has one. Spawning a private
+          # bus for the duration is the standard fix and keeps this test
+          # measuring what it is meant to measure: whether the QML root and
+          # the bundled libraries actually load.
+          timeout 15 dbus-run-session -- flatpak-builder --run build-flatpak \
             "$MANIFEST" kypost --platform offscreen > launch.log 2>&1 || rc=$?
           cat launch.log
 

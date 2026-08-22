@@ -637,12 +637,39 @@ only the last two checks.
       other KI18n/QML warnings in the terminal/journal — confirmed during
       Task 49's own verification pass.
 
+## Mail sync: what to expect on the wire (corrected 2026-08-22)
+
+Before this date the client **never entered delta mode**. `since` was omitted
+from `/api/inbox`, which takes the relay's classic path and returns no
+cursor, so no cursor was ever stored and the next refresh omitted it again —
+a full 500-message window with bodies, every 90 seconds, forever.
+
+What to expect now, verifiable with any HTTP proxy or from the relay's own
+access log:
+
+- Every `/api/inbox` request carries `since=`. There is no request without it.
+- A cold start, a folder never synced by this subscriber, and "Refresh" all
+  send `since=0`, and the response has `"delta": false` plus a real `cursor`.
+- The next refresh of that same folder sends that cursor, and the response has
+  `"delta": true` with a much smaller `byTab` and a `removed` list.
+- Switching folders does **not** reuse another folder's cursor: cursors live
+  per `(subscriberId, folder)` in `cursors.ini`.
+- A message present in two mailboxes now has two cached rows, not one. A
+  `removed` entry evicts only the copy in the folder that was requested.
+- If the local write fails, the cursor is **not** advanced and the UI says
+  the mail could not be saved — the same window is fetched again next time.
+- `cursors.ini` is erased by both wipe paths. It used to survive them.
+
 ## Known non-goals / do-not-expect
 
 - **No IMAP/SMTP anywhere.** `mail.urlxl.com` is the sole transport; this
   is a relay-only client (`AGENTS.md` Section 4). Don't go looking for a
   "server settings" IMAP/SMTP screen — it doesn't exist and never will in
   this design.
+- **No system address-book (Akonadi/KDE PIM) sync.** Reaffirmed as an
+  intentional difference from Android on 2026-08-22 — see `docs/PARITY.md`
+  §2. `core/db/migrations/002`'s `native_contact_links` table is groundwork
+  kept in case that is ever reversed; it is not wired to anything today.
 - **No Clickable/Ubuntu-Touch build.** Qt5/Ubuntu Touch support was
   dropped outright, not paused (`AGENTS.md` Section 4). `packaging/click/`
   is an intentionally-empty `.gitkeep` placeholder; there is no

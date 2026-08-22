@@ -1,4 +1,5 @@
 #include "db/Database.h"
+#include "db/EmailDao.h"
 
 #include <QSqlDatabase>
 #include <QSqlQuery>
@@ -20,6 +21,7 @@ private slots:
     // Review-finding regressions.
     void splitsStatementsOnTopLevelSemicolonsOnly();
     void migrationIsAtomicSoAFailureLeavesNoHalfAppliedSchema();
+    void migration006RekeysAnExistingProfileWithoutLosingCachedMail();
 };
 
 void DatabaseTest::opensInMemoryAndAppliesSchema()
@@ -30,12 +32,12 @@ void DatabaseTest::opensInMemoryAndAppliesSchema()
     QSqlQuery versionQuery(db.handle());
     QVERIFY(versionQuery.exec(QStringLiteral("PRAGMA user_version")));
     QVERIFY(versionQuery.next());
-    // 5 migrations on disk (001_initial, 002_native_contact_links,
+    // 6 migrations on disk (001_initial, 002_native_contact_links,
     // 003_extended_contact_fields, 004_contact_self_and_merged,
-    // 005_email_pgp_state) -- bumping this when a migration is added is how
-    // this test proves the loop in Database::open() actually walks
-    // version+1..N end-to-end.
-    QCOMPARE(versionQuery.value(0).toInt(), 5);
+    // 005_email_pgp_state, 006_emails_folder_scoped_key) -- bumping this when
+    // a migration is added is how this test proves the loop in
+    // Database::open() actually walks version+1..N end-to-end.
+    QCOMPARE(versionQuery.value(0).toInt(), 6);
 
     QSqlQuery tablesQuery(db.handle());
     QVERIFY(tablesQuery.exec(
@@ -84,7 +86,7 @@ void DatabaseTest::openIsIdempotentOnRealFile()
         QSqlQuery query(db1.handle());
         QVERIFY(query.exec(QStringLiteral("PRAGMA user_version")));
         QVERIFY(query.next());
-        QCOMPARE(query.value(0).toInt(), 5);
+        QCOMPARE(query.value(0).toInt(), 6);
     }
     {
         Database db2;
@@ -92,7 +94,7 @@ void DatabaseTest::openIsIdempotentOnRealFile()
         QSqlQuery query(db2.handle());
         QVERIFY(query.exec(QStringLiteral("PRAGMA user_version")));
         QVERIFY(query.next());
-        QCOMPARE(query.value(0).toInt(), 5);
+        QCOMPARE(query.value(0).toInt(), 6);
     }
 }
 
@@ -266,7 +268,7 @@ void DatabaseTest::migrationIsAtomicSoAFailureLeavesNoHalfAppliedSchema()
     QSqlQuery versionQuery(db.handle());
     QVERIFY(versionQuery.exec(QStringLiteral("PRAGMA user_version")));
     QVERIFY(versionQuery.next());
-    QCOMPARE(versionQuery.value(0).toInt(), 5);
+    QCOMPARE(versionQuery.value(0).toInt(), 6);
 }
 
 
@@ -309,6 +311,84 @@ void DatabaseTest::refusesAnOutOfRangeSchemaVersion()
     Database database;
     // Refused, not crashed and not silently opened unmigrated.
     QVERIFY(!database.open(path));
+}
+
+
+// Migration 006 rebuilds `emails` around a composite (folder, message_id)
+// key. Every other test here opens a fresh :memory: profile, where 006 runs
+// against an empty table and proves nothing about the part that can actually
+// lose data: the INSERT ... SELECT that carries an existing cache across.
+//
+// So this seeds a genuine v5 profile -- the pre-006 schema, with rows,
+// including a NULL `folder` from before that column was written consistently
+// -- and opens it through the real Database::open().
+void DatabaseTest::migration006RekeysAnExistingProfileWithoutLosingCachedMail()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("v5.db"));
+
+    {
+        QSqlDatabase seed = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), QStringLiteral("v5seed"));
+        seed.setDatabaseName(path);
+        QVERIFY(seed.open());
+        QSqlQuery q(seed);
+        // The v5 `emails` shape: 001's columns plus 005's two, keyed on
+        // message_id alone.
+        QVERIFY(q.exec(QStringLiteral(
+            "CREATE TABLE emails (message_id TEXT PRIMARY KEY, folder TEXT, sender TEXT, "
+            "sent_to TEXT, cc TEXT, bcc TEXT, subject TEXT, preview TEXT, body TEXT, label TEXT, "
+            "keywords_json TEXT, status TEXT, at_utc TEXT, has_attachments INTEGER, "
+            "source_mode TEXT, pgp_encrypted INTEGER DEFAULT 0, pgp_decrypt_error TEXT DEFAULT '')")));
+        QVERIFY(q.exec(QStringLiteral("CREATE INDEX idx_emails_folder_atutc ON emails(folder, at_utc)")));
+        QVERIFY(q.exec(QStringLiteral(
+            "INSERT INTO emails (message_id, folder, subject, body, at_utc, pgp_encrypted) "
+            "VALUES ('m-inbox', 'INBOX', 'Kept', 'body text', '2026-07-01T00:00:00Z', 1)")));
+        // A row from before `folder` was written consistently. NULL is not
+        // comparable to itself in a composite PRIMARY KEY, so 006 COALESCEs
+        // it -- without that, this row lets duplicates back in.
+        QVERIFY(q.exec(QStringLiteral(
+            "INSERT INTO emails (message_id, subject, at_utc) VALUES ('m-orphan', 'No folder', '2026-07-02T00:00:00Z')")));
+        QVERIFY(q.exec(QStringLiteral("PRAGMA user_version = 5")));
+        seed.close();
+    }
+    QSqlDatabase::removeDatabase(QStringLiteral("v5seed"));
+
+    Database db;
+    QVERIFY2(db.open(path), "an existing v5 profile must upgrade, not fail to open");
+
+    QSqlQuery version(db.handle());
+    QVERIFY(version.exec(QStringLiteral("PRAGMA user_version")));
+    QVERIFY(version.next());
+    QCOMPARE(version.value(0).toInt(), 6);
+
+    // Nothing was dropped on the way across, values included.
+    EmailDao dao(db.handle());
+    QCOMPARE(dao.findAll().size(), 2);
+    const std::optional<Email> kept = dao.findById(QStringLiteral("INBOX"), QStringLiteral("m-inbox"));
+    QVERIFY(kept.has_value());
+    QCOMPARE(kept->subject, QStringLiteral("Kept"));
+    QCOMPARE(*kept->body, QStringLiteral("body text"));
+    QCOMPARE(kept->pgpEncrypted, true);
+    // The NULL folder became '', which is a key SQLite can actually match.
+    // Note the empty-but-not-null QString: QString() binds as SQL NULL, and
+    // `folder = NULL` matches nothing, ever.
+    QVERIFY(dao.findById(QString::fromLatin1(""), QStringLiteral("m-orphan")).has_value());
+
+    // The new key is live: the same id in a second folder is now a second
+    // row, which is the whole point of the rebuild.
+    Email archived = *kept;
+    archived.folder = QStringLiteral("Archive");
+    archived.subject = QStringLiteral("Archive copy");
+    QVERIFY(dao.insertOrReplace(archived));
+    QCOMPARE(dao.findAll().size(), 3);
+    QCOMPARE(dao.findById(QStringLiteral("INBOX"), QStringLiteral("m-inbox"))->subject, QStringLiteral("Kept"));
+
+    // And the index the rebuild recreated is back, under its original name.
+    QSqlQuery indexes(db.handle());
+    QVERIFY(indexes.exec(QStringLiteral(
+        "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_emails_folder_atutc'")));
+    QVERIFY2(indexes.next(), "the folder/at_utc index must survive the table rebuild");
 }
 
 QTEST_GUILESS_MAIN(DatabaseTest)

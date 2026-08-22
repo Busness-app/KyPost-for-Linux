@@ -15,6 +15,7 @@
 #include "../net/FakeRelayServer.h"
 
 #include <QNetworkAccessManager>
+#include <QSqlQuery>
 #include <QTemporaryDir>
 #include <QTest>
 #include <algorithm>
@@ -28,13 +29,17 @@ private slots:
     void refreshFolderDeltaMergesNewUpdatedRemovedAndPersistsCursor();
     void refreshFolderMessageInTwoTabsProducesOneRowWithBothKeywords();
     void refreshFolderNotPairedReturnsNotPairedWithNoRequest();
-    void refreshFolderForceFullResyncOmitsSinceAndReplacesFolderCache();
+    void refreshFolderForceFullResyncSendsSinceZeroAndReplacesFolderCache();
+    void refreshFolderDeltaRemovedOnlyEvictsTheRequestedFolder();
+    void refreshFolderUsesTheCursorForThisFolderNotAnotherFolders();
+    void findCachedEmailRefusesAMessageIdCachedInMoreThanOneFolder();
     void findCachedEmailReturnsValueWhenPresentAndNulloptWhenMissing();
     void refreshFolderUpdatedDeltaKeepsCachedBody();
     void refreshFolderUpdatedDeltaDoesNotTurnDecryptedMailIntoClientProtected();
     void refreshFolderNewDeltaWithNoBodyStaysClientProtected();
     void planRefreshReturnsNothingWhenUnpairedAndCarriesTheStoredCursorOtherwise();
     void applyRefreshPersistsTheSameRowsWithNoNetworkAndNoStoreReads();
+    void applyRefreshHoldsTheCursorBackWhenTheCacheWriteFails();
 
 private:
     static void savePairing(PairingStore& pairingStore, quint16 port);
@@ -105,12 +110,17 @@ void MailRepositoryTest::refreshFolderFullSnapshotReplacesFolderCache()
     const MailFetchOutcome outcome = repository.refreshFolder(QStringLiteral("INBOX"));
     QCOMPARE(outcome.outcome, MailRepositoryOutcome::Success);
 
-    // No stored cursor and no forced resync -- since must be omitted entirely.
+    // No stored cursor and no forced resync: `since=0`, NOT omitted. Sending
+    // `since` at all is what selects the relay's cursor protocol, and the
+    // cursor it returns is the only way this client ever acquires one. This
+    // assertion used to read `QVERIFY(!request.contains("since="))`, which
+    // pinned the bug in place: omitting it took the classic path, which
+    // returns no cursor, so the next refresh had none either -- forever.
     const QByteArray request = fake.receivedRequest();
-    QVERIFY(!request.contains("since="));
+    QVERIFY(request.contains("since=0"));
     QVERIFY(request.contains("mailbox=INBOX"));
 
-    QVERIFY(!emailDao.findById(QStringLiteral("stale-1")).has_value());
+    QVERIFY(!emailDao.findById(QStringLiteral("INBOX"), QStringLiteral("stale-1")).has_value());
     const QVector<Email> cached = emailDao.findByFolder(QStringLiteral("INBOX"));
     QCOMPARE(cached.size(), 1);
     QCOMPARE(cached.at(0).messageId, QStringLiteral("m1"));
@@ -196,17 +206,17 @@ void MailRepositoryTest::refreshFolderDeltaMergesNewUpdatedRemovedAndPersistsCur
     const MailFetchOutcome outcome = repository.refreshFolder(QStringLiteral("INBOX"));
     QCOMPARE(outcome.outcome, MailRepositoryOutcome::Success);
 
-    QVERIFY(emailDao.findById(QStringLiteral("m-new")).has_value());
+    QVERIFY(emailDao.findById(QStringLiteral("INBOX"), QStringLiteral("m-new")).has_value());
 
-    const std::optional<Email> updated = emailDao.findById(QStringLiteral("m-updated"));
+    const std::optional<Email> updated = emailDao.findById(QStringLiteral("INBOX"), QStringLiteral("m-updated"));
     QVERIFY(updated.has_value());
     QCOMPARE(updated->subject, QStringLiteral("New subject"));
     QCOMPARE(updated->status, QStringLiteral("read"));
     QCOMPARE(updated->hasAttachments, true);
 
-    QVERIFY(!emailDao.findById(QStringLiteral("m-removed")).has_value());
+    QVERIFY(!emailDao.findById(QStringLiteral("INBOX"), QStringLiteral("m-removed")).has_value());
 
-    QCOMPARE(cursorStore.mailCursor(), QStringLiteral("4242"));
+    QCOMPARE(cursorStore.mailCursor(QStringLiteral("sub-1"), QStringLiteral("INBOX")), QStringLiteral("4242"));
 }
 
 void MailRepositoryTest::refreshFolderMessageInTwoTabsProducesOneRowWithBothKeywords()
@@ -287,14 +297,14 @@ void MailRepositoryTest::refreshFolderMessageInTwoTabsProducesOneRowWithBothKeyw
     const QVector<Email> cached = emailDao.findByFolder(QStringLiteral("INBOX"));
     QCOMPARE(cached.size(), 2);
 
-    const std::optional<Email> m1 = emailDao.findById(QStringLiteral("m1"));
+    const std::optional<Email> m1 = emailDao.findById(QStringLiteral("INBOX"), QStringLiteral("m1"));
     QVERIFY(m1.has_value());
     QCOMPARE(m1->folder, QStringLiteral("INBOX"));
     QStringList expectedKeywords{ QStringLiteral("Urgent"), QStringLiteral("Work") };
     std::sort(expectedKeywords.begin(), expectedKeywords.end());
     QCOMPARE(m1->keywords, expectedKeywords);
 
-    const std::optional<Email> m2 = emailDao.findById(QStringLiteral("m2"));
+    const std::optional<Email> m2 = emailDao.findById(QStringLiteral("INBOX"), QStringLiteral("m2"));
     QVERIFY(m2.has_value());
     // Only appeared under the "Uncategorized" fallback tab -- excluded from
     // keywords, matching the display-only-bucket rule.
@@ -328,7 +338,7 @@ void MailRepositoryTest::refreshFolderNotPairedReturnsNotPairedWithNoRequest()
     QVERIFY(fake.receivedRequest().isEmpty());
 }
 
-void MailRepositoryTest::refreshFolderForceFullResyncOmitsSinceAndReplacesFolderCache()
+void MailRepositoryTest::refreshFolderForceFullResyncSendsSinceZeroAndReplacesFolderCache()
 {
     Database db;
     QVERIFY(db.open(QStringLiteral(":memory:")));
@@ -345,10 +355,13 @@ void MailRepositoryTest::refreshFolderForceFullResyncOmitsSinceAndReplacesFolder
     staleEmail.atUtc = QStringLiteral("2026-01-01T00:00:00Z");
     QVERIFY(emailDao.insertOrReplace(staleEmail));
 
-    // Genuine full-snapshot payload: no "delta"/"cursor"/"removed" keys,
-    // matching what a real omitted-`since` request gets back.
+    // Full-window payload as the cursor protocol reports it: delta=false
+    // (because since==0), plus the cursor this fetch establishes.
     const QByteArray body = R"(
     {
+      "delta": false,
+      "cursor": 5150,
+      "removed": [],
       "tabs": ["Inbox"],
       "byTab": {
         "Inbox": [
@@ -379,9 +392,10 @@ void MailRepositoryTest::refreshFolderForceFullResyncOmitsSinceAndReplacesFolder
     QTemporaryDir cursorDir;
     QVERIFY(cursorDir.isValid());
     CursorStore cursorStore(cursorDir.filePath(QStringLiteral("cursor.ini")));
-    // A stored cursor exists, but forceFullResync must bypass it entirely --
-    // proving the omission isn't just an accident of an empty cursor.
-    cursorStore.setMailCursor(QStringLiteral("999"));
+    // A stored cursor exists, but forceFullResync must ignore it and ask for
+    // the whole window -- proving since=0 isn't just an accident of an empty
+    // cursor.
+    cursorStore.setMailCursor(QStringLiteral("sub-1"), QStringLiteral("INBOX"), QStringLiteral("999"));
 
     QNetworkAccessManager manager;
     HttpClient http(manager);
@@ -391,29 +405,37 @@ void MailRepositoryTest::refreshFolderForceFullResyncOmitsSinceAndReplacesFolder
     const MailFetchOutcome outcome = repository.refreshFolder(QStringLiteral("INBOX"), /*forceFullResync=*/true);
     QCOMPARE(outcome.outcome, MailRepositoryOutcome::Success);
 
-    // Root-cause assertion: forceFullResync must omit `since` entirely, not
-    // send since=0 -- since present at all (even 0) puts the mail endpoint
-    // into delta mode per RelayMailSource's wire contract.
+    // Root-cause assertion, inverted from what it used to say. A full window
+    // is `since=0`, not an omitted `since`: kypost-server's serveInbox reads
+    // `cursorSync := TrimSpace(query "since") != ""` and answers `"delta":
+    // since > 0`, so 0 asks for the cursor protocol AND a complete window.
+    // Omitting it took the classic path, which returns no cursor at all.
     const QByteArray request = fake.receivedRequest();
-    QVERIFY(!request.contains("since="));
+    QVERIFY(request.contains("since=0"));
+    QVERIFY(!request.contains("since=999"));
     QVERIFY(request.contains("mailbox=INBOX"));
 
     // Consequence assertion: the stale/orphaned row must not survive a
     // forced full resync -- it only would if this had gone through the
     // delta-merge branch instead of replaceFolderSnapshot.
-    QVERIFY(!emailDao.findById(QStringLiteral("stale-orphan")).has_value());
+    QVERIFY(!emailDao.findById(QStringLiteral("INBOX"), QStringLiteral("stale-orphan")).has_value());
     const QVector<Email> cached = emailDao.findByFolder(QStringLiteral("INBOX"));
     QCOMPARE(cached.size(), 1);
     QCOMPARE(cached.at(0).messageId, QStringLiteral("fresh-1"));
+
+    // The cursor the full window returned replaces the stale one. Persisting
+    // it only on the delta branch is what stranded this client on the classic
+    // path: a full window advanced nothing, so the next refresh was full too.
+    QCOMPARE(cursorStore.mailCursor(QStringLiteral("sub-1"), QStringLiteral("INBOX")),
+             QStringLiteral("5150"));
 }
 
 void MailRepositoryTest::findCachedEmailReturnsValueWhenPresentAndNulloptWhenMissing()
 {
-    // Task 35: findCachedEmail() is a pure local-cache lookup by messageId
-    // (EmailDao's SQLite PRIMARY KEY), independent of folder -- unlike
-    // cachedEmails(folder) above, it doesn't need the caller to already
-    // know which folder the message lives in. No network call is involved,
-    // so no FakeRelayServer/pairing setup is needed for this test.
+    // findCachedEmail() is a pure local-cache lookup for callers that have
+    // only a messageId (a desktop notification's payload carries no mailbox).
+    // No network call is involved, so no FakeRelayServer/pairing setup is
+    // needed. The ambiguous case has its own test below.
     Database db;
     QVERIFY(db.open(QStringLiteral(":memory:")));
     EmailDao emailDao(db.handle());
@@ -506,7 +528,7 @@ void MailRepositoryTest::refreshFolderUpdatedDeltaKeepsCachedBody()
 
     QCOMPARE(repository.refreshFolder(QStringLiteral("INBOX")).outcome, MailRepositoryOutcome::Success);
 
-    const std::optional<Email> stored = emailDao.findById(QStringLiteral("m-updated"));
+    const std::optional<Email> stored = emailDao.findById(QStringLiteral("INBOX"), QStringLiteral("m-updated"));
     QVERIFY(stored.has_value());
     // The metadata the delta *did* carry must still win...
     QCOMPARE(stored->subject, QStringLiteral("New subject"));
@@ -534,7 +556,7 @@ void MailRepositoryTest::refreshFolderUpdatedDeltaDoesNotTurnDecryptedMailIntoCl
     seed.pgpEncrypted = true;
     seed.atUtc = QStringLiteral("2026-01-01T00:00:00Z");
     QVERIFY(emailDao.insertOrReplace(seed));
-    QCOMPARE(pgpMessageStateOf(*emailDao.findById(QStringLiteral("m-pgp"))),
+    QCOMPARE(pgpMessageStateOf(*emailDao.findById(QStringLiteral("INBOX"), QStringLiteral("m-pgp"))),
              PgpMessageState::DecryptedByServer);
 
     const QByteArray body = R"(
@@ -575,7 +597,7 @@ void MailRepositoryTest::refreshFolderUpdatedDeltaDoesNotTurnDecryptedMailIntoCl
 
     QCOMPARE(repository.refreshFolder(QStringLiteral("INBOX")).outcome, MailRepositoryOutcome::Success);
 
-    const std::optional<Email> stored = emailDao.findById(QStringLiteral("m-pgp"));
+    const std::optional<Email> stored = emailDao.findById(QStringLiteral("INBOX"), QStringLiteral("m-pgp"));
     QVERIFY(stored.has_value());
     QCOMPARE(pgpMessageStateOf(*stored), PgpMessageState::DecryptedByServer);
 }
@@ -629,7 +651,7 @@ void MailRepositoryTest::refreshFolderNewDeltaWithNoBodyStaysClientProtected()
 
     QCOMPARE(repository.refreshFolder(QStringLiteral("INBOX")).outcome, MailRepositoryOutcome::Success);
 
-    const std::optional<Email> stored = emailDao.findById(QStringLiteral("m-sealed"));
+    const std::optional<Email> stored = emailDao.findById(QStringLiteral("INBOX"), QStringLiteral("m-sealed"));
     QVERIFY(stored.has_value());
     QCOMPARE(pgpMessageStateOf(*stored), PgpMessageState::ClientProtected);
 }
@@ -652,7 +674,7 @@ void MailRepositoryTest::planRefreshReturnsNothingWhenUnpairedAndCarriesTheStore
     QTemporaryDir cursorDir;
     QVERIFY(cursorDir.isValid());
     CursorStore cursorStore(cursorDir.filePath(QStringLiteral("cursor.ini")));
-    cursorStore.setMailCursor(QStringLiteral("4242"));
+    cursorStore.setMailCursor(QStringLiteral("sub-1"), QStringLiteral("INBOX"), QStringLiteral("4242"));
 
     QNetworkAccessManager manager;
     HttpClient http(manager);
@@ -668,16 +690,24 @@ void MailRepositoryTest::planRefreshReturnsNothingWhenUnpairedAndCarriesTheStore
     QVERIFY(delta.has_value());
     QCOMPARE(delta->folder, QStringLiteral("INBOX"));
     QCOMPARE(delta->endpoint.auth.deviceId, QStringLiteral("dev-1"));
-    QVERIFY(delta->since.has_value());
-    QCOMPARE(*delta->since, 4242);
+    QCOMPARE(delta->since, qint64(4242));
+    // The plan carries the cursor's OWNER too: applyRefresh files the returned
+    // cursor back under it rather than re-reading the pairing, which can be
+    // cleared while the request is in flight.
+    QCOMPARE(delta->subscriberId, QStringLiteral("sub-1"));
 
-    // forceFullResync must OMIT `since` rather than send 0 -- `since` present
-    // at all puts this endpoint into delta mode. Same rule the synchronous
-    // form has always followed; pinned here because the plan is now the only
-    // thing carrying that decision to the request.
+    // forceFullResync sends since=0. This assertion used to require `since`
+    // be absent; see refreshFolder()'s header for why that was wrong and what
+    // it cost.
     const std::optional<MailRefreshPlan> full = repository.planRefresh(QStringLiteral("INBOX"), true);
     QVERIFY(full.has_value());
-    QVERIFY(!full->since.has_value());
+    QCOMPARE(full->since, qint64(0));
+
+    // A folder this subscriber has no cursor for is since=0 as well -- the
+    // same full-window request, reached without the caller forcing it.
+    const std::optional<MailRefreshPlan> other = repository.planRefresh(QStringLiteral("Archive"), false);
+    QVERIFY(other.has_value());
+    QCOMPARE(other->since, qint64(0));
 }
 
 // Phase 3 does the delta merge and every database write. Proving it needs no
@@ -719,16 +749,21 @@ void MailRepositoryTest::applyRefreshPersistsTheSameRowsWithNoNetworkAndNoStoreR
 
     MailRefreshPlan plan;
     plan.folder = QStringLiteral("INBOX");
+    // The plan names the cursor's owner. applyRefresh files the returned
+    // cursor under it rather than re-reading PairingStore -- which this test
+    // deliberately leaves unpaired, so a re-read would find nothing and drop
+    // the cursor on the floor.
+    plan.subscriberId = QStringLiteral("sub-1");
 
     QCOMPARE(repository.applyRefresh(plan, result).outcome, MailRepositoryOutcome::Success);
 
     // Both wire-mapping fixes this layer owns still happen: folder corrected
     // to the requested mailbox, keywords populated from the tab bucket.
-    const std::optional<Email> stored = emailDao.findById(QStringLiteral("m1"));
+    const std::optional<Email> stored = emailDao.findById(QStringLiteral("INBOX"), QStringLiteral("m1"));
     QVERIFY(stored.has_value());
     QCOMPARE(stored->folder, QStringLiteral("INBOX"));
     QCOMPARE(stored->keywords, QStringList{ QStringLiteral("Work") });
-    QCOMPARE(cursorStore.mailCursor(), QStringLiteral("99"));
+    QCOMPARE(cursorStore.mailCursor(QStringLiteral("sub-1"), QStringLiteral("INBOX")), QStringLiteral("99"));
 
     // A transport error is reported without touching the cache at all.
     InboxFetchResult failed;
@@ -737,7 +772,233 @@ void MailRepositoryTest::applyRefreshPersistsTheSameRowsWithNoNetworkAndNoStoreR
     const MailFetchOutcome outcome = repository.applyRefresh(plan, failed);
     QCOMPARE(outcome.outcome, MailRepositoryOutcome::ServiceUnavailable);
     QCOMPARE(outcome.detail, QStringLiteral("relay down"));
-    QVERIFY(emailDao.findById(QStringLiteral("m1")).has_value());
+    QVERIFY(emailDao.findById(QStringLiteral("INBOX"), QStringLiteral("m1")).has_value());
+}
+
+
+// The relay's `removed` list is the diff for the mailbox the request named.
+// An unscoped DELETE evicted the same messageId from every other folder too,
+// so archiving a message (which removes it from INBOX's window) deleted the
+// Archive copy the very same sync had just cached.
+void MailRepositoryTest::refreshFolderDeltaRemovedOnlyEvictsTheRequestedFolder()
+{
+    Database db;
+    QVERIFY(db.open(QStringLiteral(":memory:")));
+    EmailDao emailDao(db.handle());
+
+    // The same message, cached under two mailboxes -- which migration 006's
+    // composite PRIMARY KEY is what makes representable at all.
+    Email inboxCopy;
+    inboxCopy.messageId = QStringLiteral("m-shared");
+    inboxCopy.folder = QStringLiteral("INBOX");
+    inboxCopy.subject = QStringLiteral("Shared");
+    QVERIFY(emailDao.insertOrReplace(inboxCopy));
+
+    Email archiveCopy = inboxCopy;
+    archiveCopy.folder = QStringLiteral("Archive");
+    QVERIFY(emailDao.insertOrReplace(archiveCopy));
+
+    QCOMPARE(emailDao.findAll().size(), 2);
+
+    const QByteArray body = R"(
+    {
+      "delta": true,
+      "cursor": 77,
+      "removed": ["m-shared"],
+      "tabs": ["Uncategorized"],
+      "byTab": { "Uncategorized": [] }
+    }
+    )";
+    FakeRelayServer fake(httpResponse(200, "OK", body));
+
+    QTemporaryDir secureDir;
+    QVERIFY(secureDir.isValid());
+    SecureStoreFile secureStore(secureDir.path());
+    PairingStore pairingStore(secureStore);
+    savePairing(pairingStore, fake.port());
+
+    QTemporaryDir cursorDir;
+    QVERIFY(cursorDir.isValid());
+    CursorStore cursorStore(cursorDir.filePath(QStringLiteral("cursor.ini")));
+    cursorStore.setMailCursor(QStringLiteral("sub-1"), QStringLiteral("INBOX"), QStringLiteral("70"));
+
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    RelayMailSource source(http);
+    MailRepository repository(source, emailDao, pairingStore, cursorStore);
+
+    QCOMPARE(repository.refreshFolder(QStringLiteral("INBOX")).outcome, MailRepositoryOutcome::Success);
+
+    QVERIFY(!emailDao.findById(QStringLiteral("INBOX"), QStringLiteral("m-shared")).has_value());
+    QVERIFY(emailDao.findById(QStringLiteral("Archive"), QStringLiteral("m-shared")).has_value());
+}
+
+// One cursor for the whole account asked Archive for a diff against a window
+// only INBOX ever had. The relay keys its cursor per mailbox, so the client
+// must too.
+void MailRepositoryTest::refreshFolderUsesTheCursorForThisFolderNotAnotherFolders()
+{
+    Database db;
+    QVERIFY(db.open(QStringLiteral(":memory:")));
+    EmailDao emailDao(db.handle());
+
+    const QByteArray body = R"(
+    {
+      "delta": false,
+      "cursor": 31337,
+      "removed": [],
+      "tabs": ["Uncategorized"],
+      "byTab": { "Uncategorized": [] }
+    }
+    )";
+    FakeRelayServer fake(httpResponse(200, "OK", body));
+
+    QTemporaryDir secureDir;
+    QVERIFY(secureDir.isValid());
+    SecureStoreFile secureStore(secureDir.path());
+    PairingStore pairingStore(secureStore);
+    savePairing(pairingStore, fake.port());
+
+    QTemporaryDir cursorDir;
+    QVERIFY(cursorDir.isValid());
+    CursorStore cursorStore(cursorDir.filePath(QStringLiteral("cursor.ini")));
+    // INBOX is well ahead; Archive has never synced.
+    cursorStore.setMailCursor(QStringLiteral("sub-1"), QStringLiteral("INBOX"), QStringLiteral("900"));
+
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    RelayMailSource source(http);
+    MailRepository repository(source, emailDao, pairingStore, cursorStore);
+
+    QCOMPARE(repository.refreshFolder(QStringLiteral("Archive")).outcome, MailRepositoryOutcome::Success);
+
+    const QByteArray request = fake.receivedRequest();
+    QVERIFY(request.contains("mailbox=Archive"));
+    QVERIFY(request.contains("since=0"));
+    QVERIFY(!request.contains("since=900"));
+
+    // Each folder's cursor advances on its own; Archive's arrival must not
+    // stamp over INBOX's.
+    QCOMPARE(cursorStore.mailCursor(QStringLiteral("sub-1"), QStringLiteral("Archive")),
+             QStringLiteral("31337"));
+    QCOMPARE(cursorStore.mailCursor(QStringLiteral("sub-1"), QStringLiteral("INBOX")),
+             QStringLiteral("900"));
+}
+
+// A notification payload names a messageId and no mailbox. Once the same id
+// can be cached under several folders, "open that message" has no single
+// answer, and picking one silently opens the wrong copy.
+void MailRepositoryTest::findCachedEmailRefusesAMessageIdCachedInMoreThanOneFolder()
+{
+    Database db;
+    QVERIFY(db.open(QStringLiteral(":memory:")));
+    EmailDao emailDao(db.handle());
+
+    Email inboxCopy;
+    inboxCopy.messageId = QStringLiteral("m-dup");
+    inboxCopy.folder = QStringLiteral("INBOX");
+    inboxCopy.subject = QStringLiteral("Inbox copy");
+    QVERIFY(emailDao.insertOrReplace(inboxCopy));
+
+    QTemporaryDir secureDir;
+    QVERIFY(secureDir.isValid());
+    SecureStoreFile secureStore(secureDir.path());
+    PairingStore pairingStore(secureStore);
+
+    QTemporaryDir cursorDir;
+    QVERIFY(cursorDir.isValid());
+    CursorStore cursorStore(cursorDir.filePath(QStringLiteral("cursor.ini")));
+
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    RelayMailSource source(http);
+    MailRepository repository(source, emailDao, pairingStore, cursorStore);
+
+    // One folder: unambiguous, so it resolves.
+    const std::optional<Email> single = repository.findCachedEmail(QStringLiteral("m-dup"));
+    QVERIFY(single.has_value());
+    QCOMPARE(single->subject, QStringLiteral("Inbox copy"));
+
+    Email archiveCopy = inboxCopy;
+    archiveCopy.folder = QStringLiteral("Archive");
+    archiveCopy.subject = QStringLiteral("Archive copy");
+    QVERIFY(emailDao.insertOrReplace(archiveCopy));
+
+    // Two folders: refuse, rather than return whichever row SQLite yields.
+    QVERIFY(!repository.findCachedEmail(QStringLiteral("m-dup")).has_value());
+
+    // A caller that knows the mailbox is unaffected.
+    QCOMPARE(repository.cachedEmail(QStringLiteral("Archive"), QStringLiteral("m-dup"))->subject,
+             QStringLiteral("Archive copy"));
+    QCOMPARE(repository.cachedEmail(QStringLiteral("INBOX"), QStringLiteral("m-dup"))->subject,
+             QStringLiteral("Inbox copy"));
+}
+
+
+// The cursor is a promise that everything up to it has been applied. Advance
+// it past rows that failed to write and the relay never mentions them again:
+// the messages are gone from this device permanently, with no error the user
+// ever saw. So a failed write must hold the cursor AND report itself.
+void MailRepositoryTest::applyRefreshHoldsTheCursorBackWhenTheCacheWriteFails()
+{
+    Database db;
+    QVERIFY(db.open(QStringLiteral(":memory:")));
+    EmailDao emailDao(db.handle());
+
+    QTemporaryDir secureDir;
+    QVERIFY(secureDir.isValid());
+    SecureStoreFile secureStore(secureDir.path());
+    PairingStore pairingStore(secureStore);
+
+    QTemporaryDir cursorDir;
+    QVERIFY(cursorDir.isValid());
+    CursorStore cursorStore(cursorDir.filePath(QStringLiteral("cursor.ini")));
+    cursorStore.setMailCursor(QStringLiteral("sub-1"), QStringLiteral("INBOX"), QStringLiteral("10"));
+
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    RelayMailSource source(http);
+    MailRepository repository(source, emailDao, pairingStore, cursorStore);
+
+    // Make every write fail, the bluntest honest way: take the table away.
+    {
+        QSqlQuery drop(db.handle());
+        QVERIFY(drop.exec(QStringLiteral("DROP TABLE emails")));
+    }
+
+    Email incoming;
+    incoming.messageId = QStringLiteral("m-lost");
+    incoming.folder = QStringLiteral("INBOX");
+    incoming.atUtc = QStringLiteral("2026-07-01T00:00:00Z");
+
+    InboxFetchResult result;
+    result.tabs = QStringList{ QStringLiteral("Uncategorized") };
+    result.byTab[QStringLiteral("Uncategorized")] =
+        QVector<InboxEmailItem>{ InboxEmailItem{ incoming, QString(), std::nullopt } };
+    result.isDelta = true;
+    result.cursor = 500;
+
+    MailRefreshPlan plan;
+    plan.folder = QStringLiteral("INBOX");
+    plan.subscriberId = QStringLiteral("sub-1");
+
+    const MailFetchOutcome outcome = repository.applyRefresh(plan, result);
+    QCOMPARE(outcome.outcome, MailRepositoryOutcome::CacheWriteFailed);
+    // No English sentence from core/: the wording belongs to app/.
+    QVERIFY(outcome.detail.isEmpty());
+
+    // The cursor did NOT move, so the next refresh asks for this window again.
+    QCOMPARE(cursorStore.mailCursor(QStringLiteral("sub-1"), QStringLiteral("INBOX")),
+             QStringLiteral("10"));
+
+    // Same rule on the full-window branch, where the failure mode is worse:
+    // replaceFolderSnapshot deletes before it inserts.
+    InboxFetchResult fullWindow = result;
+    fullWindow.isDelta = false;
+    fullWindow.cursor = 600;
+    QCOMPARE(repository.applyRefresh(plan, fullWindow).outcome, MailRepositoryOutcome::CacheWriteFailed);
+    QCOMPARE(cursorStore.mailCursor(QStringLiteral("sub-1"), QStringLiteral("INBOX")),
+             QStringLiteral("10"));
 }
 
 QTEST_GUILESS_MAIN(MailRepositoryTest)

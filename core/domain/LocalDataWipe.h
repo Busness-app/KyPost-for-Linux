@@ -4,6 +4,7 @@
 #include <QStringList>
 
 class AppLockStore;
+class CursorStore;
 class Database;
 class PairingStore;
 class SettingsStore;
@@ -29,13 +30,14 @@ struct LocalDataWipeResult
     bool currentDatabaseRemoved = true;
     bool legacyDatabasesRemoved = true;
     bool photoCacheCleared = true;
+    bool syncCursorsCleared = true;
     bool pairingCleared = true;
     bool lockCleared = true;
 
     bool complete() const
     {
         return tablesWiped && currentDatabaseRemoved && legacyDatabasesRemoved && photoCacheCleared
-            && pairingCleared && lockCleared;
+            && syncCursorsCleared && pairingCleared && lockCleared;
     }
 };
 
@@ -50,8 +52,8 @@ class LocalDataWipe
 {
 public:
     LocalDataWipe(Database& database, PairingStore& pairingStore, AppLockStore& appLockStore,
-                  SettingsStore& settingsStore, const QString& dataDir, const QString& currentDatabasePath,
-                  const QStringList& legacyDatabasePaths);
+                  SettingsStore& settingsStore, CursorStore& cursorStore, const QString& dataDir,
+                  const QString& currentDatabasePath, const QStringList& legacyDatabasePaths);
 
     // The wipe-after-ten-failed-PIN-attempts path: local caches, the pairing
     // credential, AND the lock itself. The lock goes too on purpose --
@@ -71,6 +73,7 @@ private:
     PairingStore& m_pairingStore;
     AppLockStore& m_appLockStore;
     SettingsStore& m_settingsStore;
+    CursorStore& m_cursorStore;
     QString m_dataDir;
     QString m_currentDatabasePath;
     QStringList m_legacyDatabasePaths;

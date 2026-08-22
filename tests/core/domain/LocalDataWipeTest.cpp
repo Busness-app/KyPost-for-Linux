@@ -1,5 +1,7 @@
 #include "domain/LocalDataWipe.h"
 
+#include "stores/CursorStore.h"
+
 #include "db/Database.h"
 #include "domain/DevicePairing.h"
 #include "domain/PairingStore.h"
@@ -66,6 +68,7 @@ class LocalDataWipeTest : public QObject
 
 private slots:
     void wipeEverythingClearsCachesPairingAndLock();
+    void wipeEverythingErasesTheSyncCursors();
     void wipeEverythingTakesThePreRenameDatabasesToo();
     void wipeEverythingKeepsTheLiveDatabaseFileUsable();
     void wipeEverythingReportsAnUnremovablePairingCredential();
@@ -99,7 +102,10 @@ void LocalDataWipeTest::wipeEverythingClearsCachesPairingAndLock()
     QVERIFY(QDir().mkpath(dir.filePath(QStringLiteral("contact-photos"))));
     writeDummyDatabase(dir.filePath(QStringLiteral("contact-photos/abc.jpg")));
 
-    LocalDataWipe wipe(database, pairingStore, appLockStore, settingsStore, dir.path(), dbPath, {});
+    CursorStore cursorStore(dir.filePath(QStringLiteral("cursors.ini")));
+    cursorStore.setMailCursor(QStringLiteral("sub-1"), QStringLiteral("INBOX"), QStringLiteral("4242"));
+    cursorStore.setNotificationCursor(77);
+    LocalDataWipe wipe(database, pairingStore, appLockStore, settingsStore, cursorStore, dir.path(), dbPath, {});
     const LocalDataWipeResult result = wipe.wipeEverything();
     QVERIFY(result.complete());
 
@@ -139,7 +145,10 @@ void LocalDataWipeTest::wipeEverythingTakesThePreRenameDatabasesToo()
     writeDummyDatabase(dir.filePath(QStringLiteral("llamamail.db-wal")));
     writeDummyDatabase(dir.filePath(QStringLiteral("llamamail.db-shm")));
 
-    LocalDataWipe wipe(database, pairingStore, appLockStore, settingsStore, dir.path(), dbPath, legacy);
+    CursorStore cursorStore(dir.filePath(QStringLiteral("cursors.ini")));
+    cursorStore.setMailCursor(QStringLiteral("sub-1"), QStringLiteral("INBOX"), QStringLiteral("4242"));
+    cursorStore.setNotificationCursor(77);
+    LocalDataWipe wipe(database, pairingStore, appLockStore, settingsStore, cursorStore, dir.path(), dbPath, legacy);
     const LocalDataWipeResult result = wipe.wipeEverything();
     QVERIFY(result.legacyDatabasesRemoved);
 
@@ -165,7 +174,10 @@ void LocalDataWipeTest::wipeEverythingKeepsTheLiveDatabaseFileUsable()
     AppLockStore appLockStore(secureStore);
     SettingsStore settingsStore(dir.filePath(QStringLiteral("settings.ini")));
 
-    LocalDataWipe wipe(database, pairingStore, appLockStore, settingsStore, dir.path(), dbPath, {});
+    CursorStore cursorStore(dir.filePath(QStringLiteral("cursors.ini")));
+    cursorStore.setMailCursor(QStringLiteral("sub-1"), QStringLiteral("INBOX"), QStringLiteral("4242"));
+    cursorStore.setNotificationCursor(77);
+    LocalDataWipe wipe(database, pairingStore, appLockStore, settingsStore, cursorStore, dir.path(), dbPath, {});
     QVERIFY(wipe.wipeEverything().complete());
 
     QVERIFY(QFile::exists(dbPath));
@@ -194,7 +206,10 @@ void LocalDataWipeTest::wipeEverythingReportsAnUnremovablePairingCredential()
     pairing.deviceSecret = QStringLiteral("super-secret");
     QVERIFY(pairingStore.save(pairing));
 
-    LocalDataWipe wipe(database, pairingStore, appLockStore, settingsStore, dir.path(), dbPath, {});
+    CursorStore cursorStore(dir.filePath(QStringLiteral("cursors.ini")));
+    cursorStore.setMailCursor(QStringLiteral("sub-1"), QStringLiteral("INBOX"), QStringLiteral("4242"));
+    cursorStore.setNotificationCursor(77);
+    LocalDataWipe wipe(database, pairingStore, appLockStore, settingsStore, cursorStore, dir.path(), dbPath, {});
     const LocalDataWipeResult result = wipe.wipeEverything();
 
     QVERIFY(!result.pairingCleared);
@@ -224,7 +239,10 @@ void LocalDataWipeTest::hostileLocationWipeUnlinksTheLiveDatabaseButKeepsThePair
     QVERIFY(pairingStore.save(pairing));
     QVERIFY(appLockStore.setPin(QStringLiteral("419273")));
 
-    LocalDataWipe wipe(database, pairingStore, appLockStore, settingsStore, dir.path(), dbPath, {});
+    CursorStore cursorStore(dir.filePath(QStringLiteral("cursors.ini")));
+    cursorStore.setMailCursor(QStringLiteral("sub-1"), QStringLiteral("INBOX"), QStringLiteral("4242"));
+    cursorStore.setNotificationCursor(77);
+    LocalDataWipe wipe(database, pairingStore, appLockStore, settingsStore, cursorStore, dir.path(), dbPath, {});
     const LocalDataWipeResult result = wipe.wipeOnDiskDataOnly();
     QVERIFY(result.complete());
 
@@ -235,6 +253,84 @@ void LocalDataWipeTest::hostileLocationWipeUnlinksTheLiveDatabaseButKeepsThePair
     // locked. Taking their credential here would be a bug, not a feature.
     QVERIFY(pairingStore.isPaired());
     QVERIFY(appLockStore.lockEnabled());
+}
+
+
+// cursors.ini survived every wipe path: CursorStore::reset() existed and had
+// no caller anywhere in the app. It holds no mail content, but it is a plain
+// INI file naming the subscriber id and every mailbox this device ever
+// synced -- and since mail cursors became per (subscriber, folder) it names
+// strictly more of them than before.
+//
+// It also has to go for correctness: the wipe empties the mail tables, so a
+// surviving cursor would have the next sync request a delta against a cache
+// that no longer exists, and everything before that cursor would never be
+// re-fetched.
+void LocalDataWipeTest::wipeEverythingErasesTheSyncCursors()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString dbPath = dir.filePath(QStringLiteral("kypost.db"));
+
+    Database database;
+    QVERIFY(database.open(dbPath));
+
+    SecureStoreFile secureStore(dir.path());
+    PairingStore pairingStore(secureStore);
+    AppLockStore appLockStore(secureStore);
+    SettingsStore settingsStore(dir.filePath(QStringLiteral("settings.ini")));
+
+    // Seeded through a CursorStore that is then destroyed, so the values are
+    // genuinely FLUSHED to disk before the wipe runs -- which is the real
+    // situation: cursors.ini is a file left behind by a previous session.
+    // Writing and asserting through one live QSettings would have proved
+    // nothing; the first version of this test did exactly that and passed
+    // while the file did not yet exist.
+    const QString cursorsPath = dir.filePath(QStringLiteral("cursors.ini"));
+    {
+        CursorStore seed(cursorsPath);
+        seed.setMailCursor(QStringLiteral("sub-1"), QStringLiteral("INBOX"), QStringLiteral("4242"));
+        seed.setMailCursor(QStringLiteral("sub-1"), QStringLiteral("Work/Legal"), QStringLiteral("99"));
+        seed.setContactBaseCursor(QStringLiteral("rev-7"));
+        seed.setNotificationCursor(77);
+    }
+
+    {
+        QFile before(cursorsPath);
+        QVERIFY2(before.exists(), "the seeded cursors must be on disk before the wipe");
+        QVERIFY(before.open(QIODevice::ReadOnly));
+        const QByteArray seeded = before.readAll();
+        QVERIFY(seeded.contains("Legal"));
+        QVERIFY(seeded.contains("sub-1"));
+        QVERIFY(seeded.contains("4242"));
+    }
+
+    CursorStore cursorStore(cursorsPath);
+    QCOMPARE(cursorStore.mailCursor(QStringLiteral("sub-1"), QStringLiteral("INBOX")), QStringLiteral("4242"));
+
+    LocalDataWipe wipe(database, pairingStore, appLockStore, settingsStore, cursorStore, dir.path(), dbPath, {});
+    const LocalDataWipeResult result = wipe.wipeEverything();
+
+    QVERIFY(result.syncCursorsCleared);
+    QVERIFY(result.complete());
+
+    // Every cursor, including the notification one reset() deliberately
+    // spares -- a wipe is not a tooOld reconciliation.
+    QVERIFY(cursorStore.mailCursor(QStringLiteral("sub-1"), QStringLiteral("INBOX")).isEmpty());
+    QVERIFY(cursorStore.mailCursor(QStringLiteral("sub-1"), QStringLiteral("Work/Legal")).isEmpty());
+    QVERIFY(cursorStore.contactBaseCursor().isEmpty());
+    QCOMPARE(cursorStore.notificationCursor(), qint64(0));
+
+    // And on disk, not just in the QSettings cache: the folder names must not
+    // be readable by anyone who opens the file afterwards.
+    QFile file(cursorsPath);
+    if (file.exists()) {
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        const QByteArray remaining = file.readAll();
+        QVERIFY2(!remaining.contains("Legal"), "a wiped cursors.ini must not still name synced mailboxes");
+        QVERIFY2(!remaining.contains("sub-1"), "a wiped cursors.ini must not still name the subscriber");
+        QVERIFY2(!remaining.contains("4242"), "a wiped cursors.ini must not still hold a cursor value");
+    }
 }
 
 QTEST_GUILESS_MAIN(LocalDataWipeTest)

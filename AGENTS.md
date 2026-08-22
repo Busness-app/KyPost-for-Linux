@@ -30,7 +30,7 @@ app/        — main.cpp, push/ (KUnifiedPush glue, Qt6-only), platform/ (Secure
 tests/      — QtTest, stubbed HttpClient; ctest-driven
 packaging/  — flatpak/ (Flatpak manifest + desktop file), dbus/ (session D-Bus activation .service), and click/ (Clickable manifest + apparmor)
 po/         — gettext catalogs
-docs/       — local tooling/setup notes (see docs/SETUP.md)
+docs/       — local tooling/setup notes (see docs/SETUP.md); docs/PARITY.md is the authoritative Android-parity matrix
 ```
 
 ## 3. Build instructions
@@ -71,14 +71,48 @@ Carried forward verbatim (in substance) from `Linux_QT_Client_Plan.md`'s own
 - **StandardFolder wire names**: `INBOX`, `Drafts`, `Junk`, `Sent`, `Trash`,
   `Archive`; display name splits on both `/` and `.`.
 - **90-second foreground refresh cadence.**
-  **Corrected 2026-07-25:** this entry used to read "Full-snapshot refresh
-  (`since=0`); delta/cursor mail sync stays v2." Both halves were wrong.
-  Delta/cursor sync *is* implemented (`MailRepository::refreshFolder` reads
-  `CursorStore::mailCursor()` and handles `isDelta`/`removed`/`cursor`), and
-  `since=0` does **not** mean full snapshot — per the wire contract, `since`
-  present *at all*, even `0`, puts the endpoint into delta mode. A full
-  snapshot requires omitting `since` entirely, which is what
-  `forceFullResync` does.
+  **Corrected again 2026-08-22 — read this one, the 2026-07-25 correction
+  was itself wrong and cost this client delta sync entirely.**
+
+  `since` is **always sent**. `since=0` means "I have no cursor: send the
+  whole window and tell me where it ends", and it is what `forceFullResync`
+  now does. The authority is `kypost-server`'s
+  `backend/internal/api/server_inbox.go`:
+
+  ```go
+  cursorSync := strings.TrimSpace(r.URL.Query().Get("since")) != ""
+  ...
+  "delta":   since > 0,
+  "cursor":  result.Cursor,
+  ```
+
+  Sending `since` at all selects the **cursor protocol**; its **value**
+  decides whether the window comes back partial. `cursor` is returned *only*
+  on that path.
+
+  The 2026-07-25 entry said the opposite — that a full snapshot required
+  omitting `since`, because "`since` present at all, even `0`, puts the
+  endpoint into delta mode". `planRefresh` was written to match, so it
+  omitted `since` both on a forced resync **and on every cold start with no
+  stored cursor**. That took the classic path, which returns no cursor, so
+  nothing was ever persisted, so the next refresh had no cursor and omitted
+  `since` again. The client never once entered delta mode: it re-downloaded
+  the full 500-message window, bodies included, every 90 seconds, for the
+  life of the profile. `server_inbox.go:290` names this exact conflation as a
+  bug the backend had already fixed on its own side, and `kypost-android` has
+  always sent `since=0` (`RelayMailSource.kt`'s `sinceValue()`).
+
+  Two things follow, both now enforced by tests:
+  - The returned cursor is persisted on **both** branches, not just when
+    `delta` is true. A full window is the only way a first sync acquires a
+    cursor at all.
+  - Mail cursors are keyed per **(subscriberId, folder)**, matching Android's
+    `MailCheckpoint`. The relay diffs a window per mailbox, so one global
+    cursor asked Archive for a diff against a window only INBOX ever had.
+
+  Do not "simplify" this back into an omitted `since`. Two rounds of this
+  entry have now been wrong in opposite directions; the Go source above is
+  the tiebreaker, not this file.
 - **License: GPL-3.0-only** (fine with Qt LGPL / KDE).
 - **Qt5/Ubuntu Touch (Clickable) support is dropped, not merely paused.**
   Qt5 is EOL upstream, so this codebase now hard-requires Qt6 and has no
@@ -337,6 +371,99 @@ applied to the *instance* that was reported rather than to the *class*.
   deleting it again. The legacy paths are now hoisted into `legacyDbPaths` and
   every wipe path names them.
 
+## 6e. Rules added by the 2026-08-22 mail-sync correctness pass
+
+Same standard as 6b–6d. The theme of this round is that a *documented*
+contract was wrong, and every piece of code and every test faithfully
+implemented the wrong thing — so the tests all passed while delta sync had
+never once run.
+
+- **A wire contract is settled by reading the server, not by reading this
+  file.** §4's `since` entry had been "corrected" once already and was still
+  wrong, in the opposite direction. Three layers agreed with it —
+  `planRefresh`, `RelayMailSource`'s struct comment, and two tests that
+  asserted `since` was absent — which made the wrong answer look
+  triple-confirmed. `kypost-server`'s `server_inbox.go` settles it. When an
+  entry here describes someone else's protocol, go and check.
+
+- **A sync cursor is a promise that everything up to it was applied.** Never
+  advance one past a write you did not confirm landed. `applyRefresh`
+  discarded the `bool` from `insertOrReplace`/`deleteById`/
+  `replaceFolderSnapshot` and then stored the cursor unconditionally: a
+  failed write meant the relay would never mention those messages again, so
+  they were gone from the device permanently, silently. It now returns
+  `MailRepositoryOutcome::CacheWriteFailed` and leaves the cursor where it
+  was. (This is 6b's "never discard a `bool`" rule, and here is what
+  discarding one actually costs.)
+
+- **A cursor is scoped to whatever the server scopes it to.** The relay diffs
+  a window per mailbox, so one global `mailCursor()` asked Archive for a diff
+  against a window only INBOX ever had. Keys are `(subscriberId, folder)`,
+  percent-encoded — QSettings reads `/` as a group separator and IMAP folder
+  paths contain it by design.
+
+- **Finish a `QSqlQuery` before any DDL that touches what it read.** Qt keeps
+  the `sqlite3_stmt` open after `exec()`, and SQLite answers `SQLITE_LOCKED`
+  to a `DROP`/`ALTER` while a cursor is live on the same connection. A
+  `PRAGMA user_version` left unfinished for the whole of `Database::open()`
+  made migration 006's `DROP TABLE emails` fail — which `qFatal`s the app on
+  every launch. `Database::open()` now finishes each migration statement, and
+  the pragma queries, before the loop.
+
+- **`QString()` binds as SQL NULL, not `''`.** `folder` became `NOT NULL` and
+  half the PRIMARY KEY in migration 006, so a default-constructed
+  `Email::folder` turned into a constraint violation — a silently dropped
+  message, because most callers don't inspect the returned `bool`. Coalesce
+  at the bind, and remember that `WHERE col = :x` with a null `QString`
+  matches nothing, ever. A test that "passed" against a NULL folder was
+  passing vacuously.
+
+- **A test that asserts on a file must prove the file was written.** The
+  first version of `wipeEverythingErasesTheSyncCursors` read `cursors.ini`
+  after wiping and found none of the secrets it was looking for — because
+  QSettings had not flushed it yet and the file did not exist at all. Seed
+  through an object you then destroy, and assert the pre-state.
+
+- **Anything with its own file has its own wipe path.** `cursors.ini`
+  survived every wipe: `CursorStore::reset()` existed and had no caller
+  anywhere in the app. It named the subscriber and every synced mailbox.
+  `LocalDataWipeResult` gained a field for it, because a wipe that reports
+  success while leaving a file behind is the failure mode that class exists
+  to prevent.
+
+## 6f. Rules added by the 2026-08-22 keychain-hang fix
+
+- **A nested `QEventLoop` needs an exit that does not depend on the thing you
+  are waiting for.** `SecureStoreKeychain::runBlocking` had exactly one:
+  `QKeychain::Job::finished`. QKeychain does not emit that signal when its
+  underlying D-Bus call gives up (measured, not assumed), so the loop had
+  nothing left to quit it and the application hung forever at startup, before
+  any window existed and with nothing in the journal. Every other nested loop
+  in this repo was already guarded — `HttpClient` by `transferTimeoutMs`,
+  `PgpQrTargetValidator` by its own `QTimer` — so this was the last one.
+  Adding a new one without a timer is a regression.
+
+- **Measure where a block actually is before claiming to have fixed it.** The
+  first diagnosis of the above was "add a timeout and it is bounded". Timing
+  `start()` and `exec()` separately showed the first ~25 s are spent inside a
+  *synchronous* D-Bus call (Qt's default 25000 ms) with the thread not
+  processing events, so no `QEventLoop` timer is delivered until it returns.
+  The timer guarantees termination; it does not and cannot make this fast.
+  A fix described in terms of the wrong mechanism would have had the next
+  person tuning the timeout down and wondering why nothing improved.
+
+- **Startup code that touches the secret store stops at the first failure.**
+  Each blocked call costs ~25 s and `main()` runs before any window exists.
+  The canary used to push on through `set` → `get` → `remove` → `contains`,
+  paying that floor repeatedly to re-learn an answer it already had.
+
+- **When forcing a timing path in a test, verify the forcing is
+  deterministic.** `timeoutMs=1` looked like it would force the timeout and
+  was in fact racy — 20 runs gave 15 `Absent` and 5 `Failed`, which would
+  have been a flaky test asserting a security-critical mapping.
+  `timeoutMs=0` was 20/20. Run the experiment; do not reason about which
+  millisecond wins.
+
 ## 7. DOX framework
 
 ### Core Contract
@@ -382,5 +509,45 @@ applied to the *instance* that was reported rather than to the *class*.
   live yet. Verify the relevant backend commits are actually deployed to
   `mail.urlxl.com` before running any live end-to-end test — this has
   previously produced a "committed but 404s live" window.
+- **The Flatpak pipeline was red from its first run (2026-07-26) until
+  2026-08-22 — 40 consecutive failures, never once green.** Four independent
+  faults, stacked, each only reachable once the one above it was fixed:
+  1. `appstreamcli compose` could not read the scalable icon, because
+     ubuntu-24.04's appstream 1.0.2 decodes via gdk-pixbuf and the runner had
+     no librsvg loader. Fixed by installing `librsvg2-common`.
+  2. `flatpak build-finish` rejected `--socket=pipewire`; that socket type
+     needs flatpak 1.15.4 and the runner has 1.14.6. Now spelled
+     `--filesystem=xdg-run/pipewire-0`, which is the same grant and works on
+     every version.
+  3. **A real defect in the shipped artifact**: qtkeychain and zxing-cpp
+     resolved `CMAKE_INSTALL_LIBDIR` to `lib64`, but a flatpak's linker path
+     is `/app/lib`. Any bundle this workflow had published would have failed
+     to launch anywhere. Both modules now pass `-DCMAKE_INSTALL_LIBDIR=lib`.
+  4. The launch smoke test had no D-Bus session bus, which
+     `KDBusService(Unique)` requires. Now wrapped in `dbus-run-session`.
+
+  Two lessons worth more than the four fixes. **A permanently-red job hides
+  everything behind it**: the smoke test that caught fault 3 — a bug in what
+  users would have installed — had never executed once. And **when a tool
+  reports an issue name with no detail, make it talk before theorising**:
+  `appstreamcli compose` is invoked by flatpak-builder without
+  `--print-report`, so for a month the log said `file-read-error` and nothing
+  else. A failure-only diagnostic step that re-runs compose with
+  `--print-report=full` now lives in the workflow; it named the icon in one
+  run. Do not delete it.
+
+  Still outstanding: `FLATPAK_GPG_PRIVATE_KEY` is not configured, so
+  `steps.mode.outputs.publish` is false and nothing is published even now that
+  the build is green. Green build != shipped app; see docs/DISTRIBUTION.md.
+
+- **The Secret Service costs ~25 s on its first call when a collection is
+  locked.** Measured on a live gnome-keyring, 2026-08-22: `QKeychain::Job`
+  `start()` returns instantly, the first `QEventLoop::exec()` blocks for
+  ~25.0 s (Qt's default D-Bus call timeout), and `finished` is then never
+  emitted at all. Later calls in the same process are instant. Two
+  consequences worth remembering: a first-run test against a real keyring
+  legitimately takes ~25 s and is not hung, and no `QEventLoop` timer can
+  shorten that window because the thread is not processing events during it.
+  `SecureStoreKeychain` bounds it; see AGENTS.md §6f.
 - **CI Pipline Failes** Before commiting any change check the CI pipline code.
   EVERY Push to main not ment to fix the CI pipeline has broken the CI pipeline.
