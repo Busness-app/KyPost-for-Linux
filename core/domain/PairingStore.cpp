@@ -57,6 +57,11 @@ PairingStore::PairingStore(SecureStore& secureStore)
 
 std::optional<DevicePairing> PairingStore::load() const
 {
+    return loadChecked().pairing;
+}
+
+PairingStore::LoadResult PairingStore::loadChecked() const
+{
     // Served from the cache when one is current.
     //
     // Every field below is a separate SecureStore::get(), and in production
@@ -75,14 +80,21 @@ std::optional<DevicePairing> PairingStore::load() const
     // clear(), and the seal/unseal/lock transitions that change what
     // deviceSecret resolves to.
     if (m_cache.has_value())
-        return m_cache;
+        return { LoadStatus::Loaded, m_cache };
 
-    const std::optional<QString> subscriberId = m_secureStore.get(QLatin1String(kSubscriberIdKey));
-    if (!subscriberId.has_value())
-        return std::nullopt;
+    // read(), not get(): "sub" is the key that decides paired-vs-not, so it
+    // is the one place the absent/unreadable distinction has to survive. The
+    // seven fields below stay on get() deliberately -- they are only reached
+    // once "sub" has answered Found, and an individually missing one has
+    // always been treated as empty rather than as a failure.
+    const SecureStore::ReadResult subscriberId = m_secureStore.read(QLatin1String(kSubscriberIdKey));
+    if (subscriberId.failed())
+        return { LoadStatus::Unreadable, std::nullopt };
+    if (subscriberId.status != SecureStore::ReadStatus::Found)
+        return { LoadStatus::Absent, std::nullopt };
 
     DevicePairing pairing;
-    pairing.subscriberId = *subscriberId;
+    pairing.subscriberId = subscriberId.value;
     pairing.serverBaseUrl = valueOrEmpty(m_secureStore.get(QLatin1String(kServerBaseUrlKey)));
     pairing.registrationUrl = valueOrEmpty(m_secureStore.get(QLatin1String(kRegistrationUrlKey)));
     pairing.pairingToken = valueOrEmpty(m_secureStore.get(QLatin1String(kPairingTokenKey)));
@@ -97,7 +109,7 @@ std::optional<DevicePairing> PairingStore::load() const
         pairing.deviceSecret = m_unsealedDeviceSecret;
     pairing.certificateSpkiSha256 = valueOrEmpty(m_secureStore.get(QLatin1String(kCertificatePinKey)));
     m_cache = pairing;
-    return pairing;
+    return { LoadStatus::Loaded, pairing };
 }
 
 bool PairingStore::credentialGateEnabled() const
@@ -270,10 +282,13 @@ PairingIdentity PairingStore::currentIdentity() const
 bool PairingStore::stillCurrent(const PairingIdentity& identity) const
 {
     const PairingIdentity current = currentIdentity();
-    // Both empty is NOT a match. An unpaired store reached that state either
-    // by an unpair or by a failed replacement that cleared a half-written
-    // record, and in both cases the right answer for an in-flight reply is
-    // "throw it away", not "no pairing changed, go ahead".
+    // Both empty is NOT a match. An unpaired store reached that state by an
+    // unpair, by a failed replacement that cleared a half-written record, or
+    // by not being readable at all -- and for every one of those the right
+    // answer for an in-flight reply is "throw it away", not "no pairing
+    // changed, go ahead". The unreadable case is why this cannot be written
+    // as `current == identity`: that would compare two empty identities and
+    // let the write through exactly when the store cannot be checked.
     if (current.isEmpty())
         return false;
     return current == identity;

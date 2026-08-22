@@ -17,6 +17,43 @@ class PairingStore
 public:
     explicit PairingStore(SecureStore& secureStore);
 
+    // Why a three-state load exists alongside load().
+    //
+    // load() returns std::optional, which collapses "this device has never
+    // been paired" and "the secret store could not be consulted" into the
+    // same nullopt -- the exact conflation SecureStore::read() exists to
+    // undo (see SecureStore.h). For most callers the distinction is
+    // cosmetic: an unreadable store renders as "Not paired" and the next
+    // attempt retries.
+    //
+    // For account replacement it is not cosmetic. PairingController captures
+    // the current account before a registration to decide whether the new
+    // one REPLACES it, and a replacement is what triggers the purge of the
+    // previous account's cached mail, contacts and folders. An unreadable
+    // store reading as "never paired" means no replacement is detected, so
+    // no purge runs -- and the previous account's mail stays in a database
+    // the new account is about to be handed. The keyring being briefly
+    // unreachable (kwallet prompting, a D-Bus timeout -- see AGENTS.md 6f
+    // for the measured 25 s floor) is enough to arrange it.
+    //
+    // Anything making a security decision from "is this device paired" must
+    // use loadChecked() and treat Unreadable as its own answer, never as
+    // Absent.
+    enum class LoadStatus
+    {
+        Loaded,     // paired; `pairing` holds it
+        Absent,     // the store answered, and this device is not paired
+        Unreadable, // the store could not be consulted at all
+    };
+
+    struct LoadResult
+    {
+        LoadStatus status = LoadStatus::Unreadable;
+        std::optional<DevicePairing> pairing; // set only when Loaded
+    };
+
+    LoadResult loadChecked() const;
+
     // nullopt when never paired -- specifically, when "sub" is absent.
     // Other fields default to empty QString if individually missing
     // (defensive; save() always writes all eight keys together so this

@@ -54,6 +54,7 @@ private slots:
     void pairingTheSameAccountAgainPurgesNothing();
     void aFailedRegistrationDestroysNothing();
     void aFailedPurgeRefusesTheNewPairingAndEscalates();
+    void anUnreadableSecretStoreRefusesToPairRatherThanSkipThePurge();
 
     // Behaviour that only exists once the registration is asynchronous.
     void confirmPendingPairReturnsWithoutBlocking();
@@ -1325,12 +1326,24 @@ namespace {
 
 // Builds a controller wired to recording replacement handlers, with `pairing`
 // pre-seeded as the account already on the device.
+// Reads FAIL here; they do not answer "absent". That difference is the whole
+// point -- see PairingStore::loadChecked().
+class UnreachableSecureStore : public SecureStore
+{
+public:
+    ReadResult read(const QString&) const override { return ReadResult{ ReadStatus::Failed, QString() }; }
+    bool set(const QString&, const QString&) override { return false; }
+    std::optional<QString> get(const QString&) const override { return std::nullopt; }
+    bool remove(const QString&) override { return false; }
+    bool contains(const QString&) const override { return false; }
+};
+
 struct ReplacementFixture
 {
     FakeRelayServer fake;
     QTemporaryDir secureDir;
     QTemporaryDir settingsDir;
-    std::unique_ptr<SecureStoreFile> secureStore;
+    std::unique_ptr<SecureStore> secureStore;
     std::unique_ptr<PairingStore> pairingStore;
     std::unique_ptr<SettingsStore> settingsStore;
     QNetworkAccessManager manager;
@@ -1344,6 +1357,9 @@ struct ReplacementFixture
     int purgeCalls = 0;
     int escalateCalls = 0;
     bool purgeSucceeds = true;
+    // Swaps SecureStoreFile for a store whose reads FAIL rather than answer
+    // "absent" -- a locked wallet, no Secret Service, a D-Bus timeout.
+    bool storeUnreadable = false;
 
     explicit ReplacementFixture(QByteArray response)
         : fake(std::move(response))
@@ -1354,7 +1370,10 @@ struct ReplacementFixture
     {
         if (!secureDir.isValid() || !settingsDir.isValid())
             return false;
-        secureStore = std::make_unique<SecureStoreFile>(secureDir.path());
+        if (storeUnreadable)
+            secureStore = std::make_unique<UnreachableSecureStore>();
+        else
+            secureStore = std::make_unique<SecureStoreFile>(secureDir.path());
         pairingStore = std::make_unique<PairingStore>(*secureStore);
 
         if (!seededSubscriberId.isEmpty()) {
@@ -1475,6 +1494,46 @@ void PairingControllerTest::aFailedPurgeRefusesTheNewPairingAndEscalates()
     if (after.has_value())
         QVERIFY2(after->subscriberId != QStringLiteral("sub-new"),
                  "a refused replacement must not leave the new account paired");
+}
+
+// The store cannot be read, so KyPost cannot tell whether this pairing would
+// REPLACE an existing account -- and a replacement is what triggers the purge
+// of the previous account's cached mail.
+//
+// MEASURED, because the first version of this comment claimed more than was
+// true: without the loadChecked() guard the pairing is refused ANYWAY, before
+// the request, by credentialGateEnabled() failing closed on the unreadable
+// read and beginPair() then being unable to reseal. So the purge is not
+// actually skipped today, and there is no live leak here.
+//
+// What the guard changes is which reason wins, and the old one was
+// "Unlock KyPost first, then try again." -- addressed to a user who has no
+// lock to unlock and whose keyring is what is actually broken. It also stops
+// the protection being emergent: "an unreadable store cannot skip the purge"
+// is now something this code says, rather than something that happens to fall
+// out of an unrelated fail-closed check two layers down.
+void PairingControllerTest::anUnreadableSecretStoreRefusesToPairRatherThanSkipThePurge()
+{
+    ReplacementFixture f(httpResponse(200, "OK", kRegisterOk));
+    f.storeUnreadable = true;
+    QVERIFY(f.build(QString())); // nothing can be seeded: this store takes no writes
+
+    QVERIFY(f.controller->pairFromDeepLink(QUrl(f.linkFor(QStringLiteral("sub-new")))));
+    f.controller->confirmPendingPair();
+    QTRY_COMPARE_WITH_TIMEOUT(f.controller->pairingState(), QStringLiteral("failed"), 5000);
+
+    // Refused BEFORE the request: no registration was minted server-side, so
+    // there is no burnt one-shot device secret to explain to anyone.
+    QVERIFY2(f.fake.receivedRequest().isEmpty(),
+             "the registration request went out before the store had been read");
+
+    // And it did not quietly take the "first pairing on this device" path.
+    QCOMPARE(f.purgeCalls, 0);
+    QCOMPARE(f.escalateCalls, 0);
+
+    // The failure says which system component is at fault, not "pairing
+    // failed" -- the user can act on a keyring that is not running.
+    QVERIFY(f.controller->pairingError().contains(QStringLiteral("secret store")));
 }
 
 QTEST_GUILESS_MAIN(PairingControllerTest)
