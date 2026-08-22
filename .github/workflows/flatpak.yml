@@ -99,8 +99,35 @@ jobs:
           # qtkeychain, long before anything KyPost-specific is reached.
           # Not pulled in by flatpak-builder's own dependencies, and not
           # present on ubuntu-24.04 runners by default.
+          # librsvg2-common supplies gdk-pixbuf's SVG loader
+          # (libpixbufloader-svg.so), and without it this job could never
+          # succeed -- it failed 36/36 runs from 2026-07-26 for exactly this.
+          #
+          # flatpak-builder runs `appstreamcli compose` at export. ubuntu-24.04
+          # ships appstream 1.0.2, which decodes images through gdk-pixbuf;
+          # gdk-pixbuf cannot read SVG at all unless librsvg's loader is
+          # installed, and `appstream` does not depend on it. So compose hit
+          # the app's scalable icon and reported:
+          #
+          #   E: file-read-error
+          #      Unable to read data from file
+          #      `//share/icons/hicolor/scalable/apps/com.urlxl.mail.svg`:
+          #      Unrecognized image file format
+          #
+          # ...followed by `filters-but-no-output`, because the component was
+          # then dropped and the --components filter matched nothing. Neither
+          # message names the icon: flatpak-builder invokes compose without
+          # --print-report, so for a month the log showed only the issue names.
+          # The "Diagnose appstreamcli compose failure" step below is what
+          # surfaced the text above, which is why it stays.
+          #
+          # Verified rather than assumed: gdk-pixbuf WITH librsvg loads this
+          # exact file (1024x1024), and appstream 1.1.6 composes it fine
+          # because 1.1.x decodes via glycin instead of gdk-pixbuf -- which is
+          # why it reproduced locally as a success and only ever failed here.
           sudo apt-get install -y --no-install-recommends \
-            flatpak flatpak-builder ostree appstream desktop-file-utils elfutils
+            flatpak flatpak-builder ostree appstream desktop-file-utils elfutils \
+            librsvg2-common
           # Added to both installations deliberately: flatpak-builder runs
           # with --user below, but the pre-existing system-wide remote is
           # what the nightly job has been resolving --install-deps-from
@@ -228,8 +255,11 @@ jobs:
       # ships appstream 1.0.2, and the local reproduction used 1.1.6.
       #
       # This step re-runs compose on the tree flatpak-builder left behind,
-      # with --print-report=full, so the next run says what is actually
-      # wrong instead of that something is. Remove it once this job is green.
+      # with --print-report=full, so a failing run says what is actually
+      # wrong instead of merely that something is. It is what identified the
+      # missing librsvg2-common above, after a month of logs that named the
+      # issue but never its cause. It stays: it is `if: failure()`, so it
+      # costs a passing run nothing.
       - name: Diagnose appstreamcli compose failure
         if: failure()
         run: |
