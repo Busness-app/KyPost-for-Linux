@@ -889,7 +889,18 @@ Kirigami.ApplicationWindow {
     // Persistent warnings for an expired pairing / undecryptable credentials
     // -- see components/StatusBanner.qml. Declared before the lock overlay so
     // it paints underneath it: a locked app must not leak account state.
-    StatusBanner {}
+    StatusBanner {
+        onCertificateReviewRequested: certificateChangeDialog.open()
+    }
+
+    // Hosted here rather than inside StatusBanner: it fills the window, and
+    // the banner is only as tall as its own text. Declared before the lock
+    // overlay for the same reason the banner is -- it is an Item, not a
+    // Popup, so z-order alone keeps it under the lock gate.
+    CertificateChangeDialog {
+        id: certificateChangeDialog
+        onReconnectRequested: Pairing.reconnectToServer()
+    }
 
     // Same component the desktop root and its pop-out windows use, so there
     // is one definition of "what the lock screen covers" rather than two

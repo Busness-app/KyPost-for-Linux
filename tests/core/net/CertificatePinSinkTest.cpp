@@ -105,7 +105,7 @@ void CertificatePinSinkTest::fanOutInstallsTheMismatchHandlerEverywhere()
     FanOutCertificatePinSink fanOut({ &sinkA, &executorSink });
 
     std::atomic<int> fired{ 0 };
-    fanOut.setMismatchHandler([&fired]() { ++fired; });
+    fanOut.setMismatchHandler([&fired](const QByteArray&) { ++fired; });
 
     // Same defect, different field: a mismatch on a path whose client has no
     // handler aborts the request and tells the user nothing at all. Checked

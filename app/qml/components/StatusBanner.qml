@@ -17,6 +17,12 @@ import com.urlxl.mail 1.0
 Item {
     id: root
 
+    // Raised when the user asks to review a certificate change. The root
+    // hosts CertificateChangeDialog and connects this: the dialog is
+    // full-window and this banner is only as tall as its own text, so it
+    // cannot host one itself.
+    signal certificateReviewRequested()
+
     anchors.top: parent ? parent.top : undefined
     anchors.left: parent ? parent.left : undefined
     anchors.right: parent ? parent.right : undefined
@@ -41,21 +47,37 @@ Item {
                     // stops literally everything, and because without it the
                     // app looks simply broken: the per-request error is a
                     // generic "Refresh failed" and there is no other clue.
-                    // Re-pairing is the only recovery -- it is what captures
-                    // a new pin.
+                    // Re-pairing is NO LONGER the only recovery: the action
+                    // below re-anchors the pin without deregistering the
+                    // device or costing the user a fresh pairing link. The
+                    // decision itself still belongs in a dialog that names
+                    // both fingerprints -- see CertificateChangeDialog.qml.
                     active: Pairing.certificateMismatch,
                     message: i18n("KyPost stopped trusting this server: its security certificate "
                                    + "changed since this device was paired, so no requests are "
-                                   + "being sent. If your server's certificate was renewed, remove "
-                                   + "this pairing in Settings and pair again. If you did not "
-                                   + "expect this, do not pair again until you know why it changed.")
+                                   + "being sent. Review the change before deciding — if you did "
+                                   + "not expect it, do not reconnect until you know why."),
+                    actionLabel: i18n("Review certificate change…")
                 },
                 {
+                    // The relay verifies the pairing token before anything
+                    // else on the registration route and 401s without a valid
+                    // one (server_notifications.go), and this client has no
+                    // way to mint one. So unlike the certificate case there
+                    // is genuinely no in-app recovery -- say what stopped,
+                    // and what the user has to go and do, rather than leaving
+                    // them to infer it from "pair again".
                     active: Pairing.reregistrationRejected,
-                    message: i18n("This device's pairing has expired, so new mail notifications "
-                                   + "have stopped arriving. Open Settings and pair this device again.")
+                    message: i18n("This device's pairing token is no longer accepted by the server, "
+                                   + "so new-mail notifications have stopped. Cached mail is "
+                                   + "unaffected and stays readable. To restore notifications you "
+                                   + "need a new pairing link: sign in to KyPost on the web, open "
+                                   + "the pairing screen there, then pair this device again in "
+                                   + "Settings."),
+                    actionLabel: ""
                 },
                 {
+                    actionLabel: "",
                     active: AppLock.credentialsUnavailable,
                     message: i18n("KyPost could not decrypt this device's stored credentials, so "
                                    + "the server will reject its requests. Check that your system "
@@ -73,17 +95,29 @@ Item {
                 border.width: 1
                 border.color: Theme.dangerColor
 
-                Text {
+                RowLayout {
                     id: bannerLabel
                     anchors.fill: parent
                     anchors.margins: 8
-                    textFormat: Text.PlainText
-                    text: modelData.message
-                    color: Theme.dangerColor
-                    font.family: Theme.fontUi
-                    font.pixelSize: 12
-                    wrapMode: Text.WordWrap
-                    verticalAlignment: Text.AlignVCenter
+                    spacing: 8
+
+                    Text {
+                        Layout.fillWidth: true
+                        textFormat: Text.PlainText
+                        text: modelData.message
+                        color: Theme.dangerColor
+                        font.family: Theme.fontUi
+                        font.pixelSize: 12
+                        wrapMode: Text.WordWrap
+                        verticalAlignment: Text.AlignVCenter
+                    }
+
+                    GhostButton {
+                        visible: modelData.actionLabel.length > 0
+                        text: modelData.actionLabel
+                        // Only the certificate row carries an action today.
+                        onClicked: root.certificateReviewRequested()
+                    }
                 }
             }
         }

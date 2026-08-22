@@ -885,11 +885,19 @@ int main(int argc, char* argv[])
     // QObject touch is marshalled rather than called inline: from the
     // executor thread, setCertificateMismatch() would be writing QML-bound
     // state from the wrong thread.
-    certificatePinSink.setMismatchHandler([&pairingController]() {
-        qCritical("main: TLS certificate pin mismatch -- refusing to send credentials to this "
-                  "server; the device must be paired again to trust a new certificate");
+    certificatePinSink.setMismatchHandler([&pairingController](const QByteArray& observedSpki) {
+        qCritical("main: TLS certificate pin mismatch -- refusing to send credentials to this server");
+        // Queued because the handler runs on whichever thread made the
+        // request, which is the executor's worker for every converted
+        // controller (CertificatePinSink.h says so explicitly).
+        //
+        // observedSpki is carried through rather than only the boolean: the
+        // recovery dialog shows the expected and the presented fingerprint
+        // side by side, and asking a user to approve a certificate it cannot
+        // name is a confirmation they have no way to reason about.
         QMetaObject::invokeMethod(
-            &pairingController, [&pairingController]() { pairingController.setCertificateMismatch(true); },
+            &pairingController,
+            [&pairingController, observedSpki]() { pairingController.setCertificateMismatch(true, observedSpki); },
             Qt::QueuedConnection);
     });
 
