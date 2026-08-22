@@ -34,6 +34,16 @@ enum class NetworkError
     // every log line, as the same value. The relay emits no redirects at
     // all, so this firing is a security event, not a hiccup.
     RedirectRefused,
+    // The response exceeded the byte ceiling the caller allowed, either by
+    // declaring too large a Content-Length or by simply sending more than it
+    // declared. The reply is aborted; no partial body is returned.
+    //
+    // Its own value rather than Transport because it is the one failure here
+    // that is a defence rather than a fault: nothing about the network went
+    // wrong, this client refused to keep allocating. A caller may reasonably
+    // retry a Transport error and must not retry this one -- the same
+    // response will be just as large next time.
+    ResponseTooLarge,
     Decoding,           // JSON parse failure; produced by each Task 14-18
                         // client's own decode step, never by HttpClient
 };

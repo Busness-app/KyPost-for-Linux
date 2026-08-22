@@ -26,6 +26,10 @@ private slots:
     void getFollowsRedirectWhenValidatorApprovesTarget();
     void getDoesNotFollowRedirectWhenValidatorRejectsTarget();
     void crossOriginRedirectIsRefusedByDefault();
+    void refusesAResponseLargerThanTheLimit();
+    void refusesAChunkedResponseThatDeclaresNoLength();
+    void acceptsAResponseExactlyAtTheLimit();
+    void perCallLimitOverridesTheClientDefault();
 };
 
 void HttpClientTest::getSuccessReturnsBodyUnmodifiedAndPreservesExistingQuery()
@@ -271,6 +275,103 @@ void HttpClientTest::crossOriginRedirectIsRefusedByDefault()
     QVERIFY(!finalServer.receivedRequest().contains("top-secret"));
     QVERIFY(result.error.has_value());
     QCOMPARE(*result.error, NetworkError::RedirectRefused);
+}
+
+
+// A relay is inside this app's threat model everywhere else, so "the relay
+// would never send that much" is not a bound. QNetworkReply buffers the whole
+// body in memory and readAll() handed over whatever arrived, with nothing
+// anywhere saying no -- one hostile response was an unbounded allocation.
+void HttpClientTest::refusesAResponseLargerThanTheLimit()
+{
+    const QByteArray body(4096, 'x');
+    FakeRelayServer fake(httpResponse(200, "OK", body));
+
+    QNetworkAccessManager manager;
+    HttpClient client(manager, 5000, /*maxResponseBytes=*/1024);
+
+    const HttpClient::HttpResult result =
+        client.get(QUrl(QStringLiteral("http://127.0.0.1:%1/big").arg(fake.port())), {});
+
+    QVERIFY(result.error.has_value());
+    QCOMPARE(*result.error, NetworkError::ResponseTooLarge);
+    // The partial body must NOT come back: half a JSON document is not a
+    // smaller JSON document, and returning one is how a size guard becomes a
+    // silent data-corruption bug.
+    QVERIFY(result.body.isEmpty());
+}
+
+// Content-Length is the cheap check and cannot be the only one: it is
+// OPTIONAL. A chunked response declares no length at all, so the header guard
+// has nothing to look at and the running byte count is the sole defence.
+//
+// (An under-declared Content-Length is not the gap it looks like -- measured:
+// Qt stops reading at the declared length and discards the rest, so a server
+// claiming 8 bytes and sending 8192 cannot make this client allocate 8192.
+// The first version of this test asserted exactly that and failed, correctly.
+// Over-declaring IS caught, at the headers, before any body arrives.)
+void HttpClientTest::refusesAChunkedResponseThatDeclaresNoLength()
+{
+    QByteArray response = "HTTP/1.1 200 OK\r\n";
+    response += "Content-Type: application/json\r\n";
+    response += "Transfer-Encoding: chunked\r\n";
+    response += "Connection: close\r\n\r\n";
+    // 16 chunks of 512 bytes = 8192, well past the 1024 ceiling, with no
+    // total ever declared.
+    for (int i = 0; i < 16; ++i) {
+        response += QByteArray::number(512, 16) + "\r\n";
+        response += QByteArray(512, 'x') + "\r\n";
+    }
+    response += "0\r\n\r\n";
+
+    FakeRelayServer fake(response);
+
+    QNetworkAccessManager manager;
+    HttpClient client(manager, 5000, /*maxResponseBytes=*/1024);
+
+    const HttpClient::HttpResult result =
+        client.get(QUrl(QStringLiteral("http://127.0.0.1:%1/chunked").arg(fake.port())), {});
+
+    QVERIFY(result.error.has_value());
+    QCOMPARE(*result.error, NetworkError::ResponseTooLarge);
+    QVERIFY(result.body.isEmpty());
+}
+
+// The boundary is inclusive: a response exactly at the ceiling is legitimate.
+// Pinned because an off-by-one here rejects real mail rather than an attack,
+// which is the failure mode nobody notices until a user cannot sync.
+void HttpClientTest::acceptsAResponseExactlyAtTheLimit()
+{
+    const QByteArray body(1024, 'x');
+    FakeRelayServer fake(httpResponse(200, "OK", body));
+
+    QNetworkAccessManager manager;
+    HttpClient client(manager, 5000, /*maxResponseBytes=*/1024);
+
+    const HttpClient::HttpResult result =
+        client.get(QUrl(QStringLiteral("http://127.0.0.1:%1/exact").arg(fake.port())), {});
+
+    QVERIFY(!result.error.has_value());
+    QCOMPARE(result.body.size(), 1024);
+}
+
+// The inbox window and an attachment download legitimately dwarf the default,
+// and say so at their own call sites (RelayMailSource). Everything else keeps
+// the tight ceiling.
+void HttpClientTest::perCallLimitOverridesTheClientDefault()
+{
+    const QByteArray body(4096, 'x');
+    FakeRelayServer fake(httpResponse(200, "OK", body));
+
+    QNetworkAccessManager manager;
+    HttpClient client(manager, 5000, /*maxResponseBytes=*/1024);
+
+    const HttpClient::HttpResult result =
+        client.get(QUrl(QStringLiteral("http://127.0.0.1:%1/inbox").arg(fake.port())), {}, {}, {},
+                    /*maxResponseBytes=*/8192);
+
+    QVERIFY(!result.error.has_value());
+    QCOMPARE(result.body.size(), 4096);
 }
 
 QTEST_GUILESS_MAIN(HttpClientTest)

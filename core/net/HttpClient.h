@@ -97,15 +97,44 @@ public:
         QByteArray peerSpkiSha256;
     };
 
+    // Byte ceilings for a response body. A relay is inside this app's threat
+    // model everywhere else, so "the relay would never send that much" is not
+    // a bound -- QNetworkReply buffers the whole body in memory and
+    // readAll() used to hand over whatever arrived, with nothing anywhere
+    // saying no. One hostile or compromised response was an unbounded
+    // allocation.
+    //
+    // The shape is kypost-android's (MemoryBudget.kt): a tight default that
+    // every route inherits, plus named exceptions for the two that
+    // legitimately dwarf it. The VALUES are not Android's, deliberately.
+    // Android asks the relay for `limit=50`; this client sends no limit at
+    // all, so it gets the server default of 500 (maxInboxLimit in
+    // server_inbox.go), and the relay does not truncate bodies -- warmBody()
+    // stores them whole. A full window here is therefore up to ~10x the one
+    // Android's 8 MB was measured against, and copying that number would
+    // have broken first sync on any substantial mailbox.
+    //
+    // If the inbox window is ever given an explicit `limit`, revisit
+    // kMaxInboxResponseBytes with it -- the two numbers are one decision.
+    static constexpr qint64 kMaxResponseBytes = 8LL * 1024 * 1024;
+    // The full-window inbox fetch: 500 messages with complete HTML bodies.
+    static constexpr qint64 kMaxInboxResponseBytes = 64LL * 1024 * 1024;
+    // One attachment. Matches the relay's own 25 MB cap, so a response above
+    // this is already outside what the server will knowingly serve.
+    static constexpr qint64 kMaxAttachmentResponseBytes = 25LL * 1024 * 1024;
+
     // transferTimeoutMs guards waitForReply()'s QEventLoop against a
     // hung/silent server that never emits QNetworkReply::finished (no
     // response, no error) -- without it, the calling thread blocks forever.
     // Only applied to the injected manager if it doesn't already have a
     // transfer timeout configured (manager.transferTimeout() == 0), so a
-    // caller's own configuration is never clobbered. Exposed as a
-    // constructor parameter (rather than hardcoded) so tests can pass a
-    // short override instead of waiting out the real default.
-    explicit HttpClient(QNetworkAccessManager& manager, int transferTimeoutMs = 30000);
+    // caller's own configuration is never clobbered.
+    //
+    // maxResponseBytes bounds what any single reply may allocate. Both are
+    // constructor parameters rather than hardcoded so tests can drive them
+    // without waiting out, or generating, real megabytes.
+    explicit HttpClient(QNetworkAccessManager& manager, int transferTimeoutMs = 30000,
+                         qint64 maxResponseBytes = kMaxResponseBytes);
 
     // Called with each redirect target get() is offered, when non-empty.
     // Returning false stops the redirect from being followed -- the caller
@@ -130,9 +159,17 @@ public:
     // registration POST is the subscriber id, the pairing token and the
     // UnifiedPush endpoint. The relay itself emits no redirects, so nothing
     // legitimate is lost by refusing them.
+    //
+    // maxResponseBytes overrides this client's default ceiling for this one
+    // call. Only get() takes it: the two routes that need more than the
+    // default -- the inbox window and an attachment download -- are both
+    // GETs, and every POST/PUT/DELETE response on this API is a small status
+    // object. A route that needs the exception says so at its call site,
+    // which is where the reason is legible.
     HttpResult get(const QUrl& url, const QList<QPair<QString, QString>>& query,
                    const QList<QPair<QString, QString>>& headers = {},
-                   const RedirectValidator& redirectValidator = {});
+                   const RedirectValidator& redirectValidator = {},
+                   std::optional<qint64> maxResponseBytes = std::nullopt);
 
     // Sets Content-Type: application/json.
     HttpResult post(const QUrl& url, const QList<QPair<QString, QString>>& query,
@@ -254,7 +291,11 @@ private:
     // already has — mirrors the Swift URL.appending(queryOrThrow:) extension.
     QUrl urlWithQuery(const QUrl& url, const QList<QPair<QString, QString>>& query) const;
 
-    HttpResult waitForReply(QNetworkReply* reply, const RedirectValidator& redirectValidator) const;
+    // maxResponseBytes is passed explicitly rather than read from
+    // m_maxResponseBytes so the per-call override on get() has one place to
+    // take effect, and so no verb can silently forget to apply a ceiling.
+    HttpResult waitForReply(QNetworkReply* reply, const RedirectValidator& redirectValidator,
+                             qint64 maxResponseBytes) const;
 
     // Returns redirectValidator when the caller supplied one, otherwise a
     // same-origin-as-requestUrl validator. Never returns empty, so every
@@ -263,6 +304,7 @@ private:
                                                         const RedirectValidator& redirectValidator);
 
     QNetworkAccessManager& m_manager;
+    qint64 m_maxResponseBytes;
 };
 
 // scheme+host+port equality. Shared by HttpClient's redirect default, the

@@ -61,9 +61,10 @@ void HttpClient::assertOwningThread(const char* where) const
     Q_ASSERT_X(false, where, "HttpClient used from the wrong thread");
 }
 
-HttpClient::HttpClient(QNetworkAccessManager& manager, int transferTimeoutMs)
+HttpClient::HttpClient(QNetworkAccessManager& manager, int transferTimeoutMs, qint64 maxResponseBytes)
     : m_owningThread(QThread::currentThread())
     , m_manager(manager)
+    , m_maxResponseBytes(maxResponseBytes)
 {
     // A manager with no transfer timeout configured (the Qt default) leaves
     // waitForReply()'s QEventLoop waiting on ::finished forever if a server
@@ -128,7 +129,8 @@ void HttpClient::setCertificateMismatchHandler(CertificateMismatchHandler handle
 
 HttpClient::HttpResult HttpClient::get(const QUrl& url, const QList<QPair<QString, QString>>& query,
                                         const QList<QPair<QString, QString>>& headers,
-                                        const RedirectValidator& redirectValidator)
+                                        const RedirectValidator& redirectValidator,
+                                        std::optional<qint64> maxResponseBytes)
 {
     assertOwningThread("HttpClient::get");
     const QUrl requestUrl = urlWithQuery(url, query);
@@ -148,7 +150,8 @@ HttpClient::HttpResult HttpClient::get(const QUrl& url, const QList<QPair<QStrin
     // validator gets the same-origin default rather than Qt's blind follow.
     request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::UserVerifiedRedirectPolicy);
 
-    return waitForReply(m_manager.get(request), effectiveRedirectValidator(requestUrl, redirectValidator));
+    return waitForReply(m_manager.get(request), effectiveRedirectValidator(requestUrl, redirectValidator),
+                         maxResponseBytes.value_or(m_maxResponseBytes));
 }
 
 HttpClient::HttpResult HttpClient::post(const QUrl& url, const QList<QPair<QString, QString>>& query,
@@ -166,7 +169,7 @@ HttpClient::HttpResult HttpClient::post(const QUrl& url, const QList<QPair<QStri
     request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::UserVerifiedRedirectPolicy);
 
     return waitForReply(m_manager.post(request, QJsonDocument(jsonBody).toJson(QJsonDocument::Compact)),
-                        effectiveRedirectValidator(requestUrl, redirectValidator));
+                        effectiveRedirectValidator(requestUrl, redirectValidator), m_maxResponseBytes);
 }
 
 HttpClient::HttpResult HttpClient::put(const QUrl& url, const QList<QPair<QString, QString>>& query,
@@ -184,7 +187,7 @@ HttpClient::HttpResult HttpClient::put(const QUrl& url, const QList<QPair<QStrin
     request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::UserVerifiedRedirectPolicy);
 
     return waitForReply(m_manager.put(request, QJsonDocument(jsonBody).toJson(QJsonDocument::Compact)),
-                        effectiveRedirectValidator(requestUrl, redirectValidator));
+                        effectiveRedirectValidator(requestUrl, redirectValidator), m_maxResponseBytes);
 }
 
 HttpClient::HttpResult HttpClient::del(const QUrl& url, const QList<QPair<QString, QString>>& query,
@@ -201,7 +204,7 @@ HttpClient::HttpResult HttpClient::del(const QUrl& url, const QList<QPair<QStrin
     request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::UserVerifiedRedirectPolicy);
 
     return waitForReply(m_manager.deleteResource(request),
-                        effectiveRedirectValidator(requestUrl, redirectValidator));
+                        effectiveRedirectValidator(requestUrl, redirectValidator), m_maxResponseBytes);
 }
 
 bool sameUrlOrigin(const QUrl& a, const QUrl& b)
@@ -223,10 +226,42 @@ QUrl HttpClient::urlWithQuery(const QUrl& url, const QList<QPair<QString, QStrin
     return result;
 }
 
-HttpClient::HttpResult HttpClient::waitForReply(QNetworkReply* reply, const RedirectValidator& redirectValidator) const
+HttpClient::HttpResult HttpClient::waitForReply(QNetworkReply* reply, const RedirectValidator& redirectValidator,
+                                                 qint64 maxResponseBytes) const
 {
     QEventLoop loop;
     QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+
+    // Response size ceiling, enforced on two separate facts because a hostile
+    // server controls both and neither alone is sufficient:
+    //
+    //   * what it CLAIMS -- Content-Length, checked as soon as the headers
+    //     arrive, so an outsized body is refused before a single byte of it
+    //     is buffered. This is the cheap path and the common one.
+    //   * what it SENDS -- downloadProgress, because Content-Length is
+    //     optional (chunked transfer omits it) and, more to the point, a
+    //     server that means harm can simply lie. Without this a declared
+    //     1 KB followed by a gigabyte would sail through.
+    //
+    // QNetworkReply buffers the whole body in memory, so aborting is what
+    // actually bounds the allocation; there is no streaming consumer here to
+    // apply backpressure instead.
+    bool tooLarge = false;
+    const auto refuseIfOversized = [reply, maxResponseBytes, &tooLarge](qint64 bytes) {
+        if (tooLarge || bytes <= maxResponseBytes)
+            return;
+        tooLarge = true;
+        qWarning("HttpClient: refusing a response of %lld bytes; the limit for this request is %lld",
+                  static_cast<long long>(bytes), static_cast<long long>(maxResponseBytes));
+        reply->abort();
+    };
+    QObject::connect(reply, &QNetworkReply::metaDataChanged, reply, [reply, refuseIfOversized]() {
+        const QVariant declared = reply->header(QNetworkRequest::ContentLengthHeader);
+        if (declared.isValid())
+            refuseIfOversized(declared.toLongLong());
+    });
+    QObject::connect(reply, &QNetworkReply::downloadProgress, reply,
+                      [refuseIfOversized](qint64 received, qint64 /*total*/) { refuseIfOversized(received); });
 
     // TOFU pinning. ::encrypted fires after the handshake completes but
     // before any request body is written, so aborting here means a
@@ -330,7 +365,17 @@ HttpClient::HttpResult HttpClient::waitForReply(QNetworkReply* reply, const Redi
     // Checked before the status code: an aborted handshake yields no status,
     // and even if it somehow did, "wrong server" outranks whatever that
     // server said.
-    if (pinMismatch) {
+    if (tooLarge) {
+        // Ranked above the status code for the same reason pinMismatch and
+        // redirectRefused are: abort() leaves whatever status had arrived,
+        // and "we stopped reading because it was too big" is the fact the
+        // caller needs -- not a 200 with a truncated body, which is exactly
+        // how a size guard turns into a silent data-corruption bug.
+        // Deliberately discards the partial body: half a JSON document is
+        // not a smaller JSON document.
+        result.error = NetworkError::ResponseTooLarge;
+        result.body.clear();
+    } else if (pinMismatch) {
         result.error = NetworkError::CertificateMismatch;
         // No `detail` string. This used to carry an English sentence, which
         // then travelled all the way to the UI as a user-facing message --
