@@ -464,6 +464,47 @@ never once run.
   `timeoutMs=0` was 20/20. Run the experiment; do not reason about which
   millisecond wins.
 
+## 6g. Rules added by the 2026-08-22 stale-reply pass
+
+- **A reply may outlive the pairing that authorised it, and every write must
+  assume it did.** No table in this schema has a subscriber column: `emails`,
+  `contacts`, `groups` and `push_notifications` are per-DEVICE. Pairing a
+  different account purges them (`LocalDataWipe::wipeCachedAccountData`), but
+  a request already in flight completes *after* that purge and writes its rows
+  back in behind it — the previous account's mail, in the new account's inbox,
+  readable by whoever is now holding the machine. So an apply step compares
+  `PairingStore::stillCurrent(identity)` against the identity its plan
+  captured, and writes nothing when it has moved. Done for
+  `MailRepository::applyRefresh` and `PushRepository::pullOnce`; NOT yet done
+  for `FolderRepository`, `GroupsRepository`, `ContactSyncRepository`,
+  attachment downloads or the cached PGP compose state (`docs/PARITY.md`).
+
+- **The identity is (subscriberId, deviceId) — never the device secret.** The
+  credential gate re-saves the pairing on every lock and unlock, so keying on
+  `deviceSecret` would discard every legitimate reply that spanned one. It
+  includes `deviceId` because re-registering the *same* account mints a fresh
+  registration, and the previous one's replies have no claim on it.
+
+- **An unpaired store is not "unchanged".** `stillCurrent()` returns false
+  when nothing is paired, even if the identity handed to it is also empty.
+  There is no account to file a reply under, so the only correct action is to
+  throw it away.
+
+- **Re-reading a store to COMPARE is not the TOCTOU that re-reading it to USE
+  is.** `MailRepositoryTest` previously asserted `applyRefresh` performed no
+  store reads at all, which conflated the two. Every value the apply step
+  *uses* — the cursor's owner especially — still comes from the plan. The one
+  read added here exists solely to answer "is this still ours", which the plan
+  by construction cannot answer about itself.
+
+- **Discarding a stale reply is not an error to report.** `PairingChanged` is
+  its own outcome and `MailController` shows nothing for it. "Refresh failed"
+  would be a lie shown to someone who has just paired successfully.
+
+- **Prove the guard by removing it.** All four tests added here were run
+  against the un-guarded code first and confirmed to fail. A concurrency test
+  that has never been seen to fail is not a test.
+
 ## 7. DOX framework
 
 ### Core Contract

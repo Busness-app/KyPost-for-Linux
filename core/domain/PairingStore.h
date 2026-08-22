@@ -50,6 +50,18 @@ public:
 
     bool isPaired() const; // load().has_value()
 
+    // Which account+registration this store holds right now; empty when
+    // unpaired. See PairingIdentity in DevicePairing.h for what an apply step
+    // is supposed to do with it.
+    PairingIdentity currentIdentity() const;
+
+    // "Is a reply authorised by `identity` still ours to persist?"
+    //
+    // False for an unpaired store even when `identity` is itself empty: no
+    // pairing means no account to file anything under, so there is no reply
+    // whose cache write is correct here.
+    bool stillCurrent(const PairingIdentity& identity) const;
+
     // --- credential PIN gate -------------------------------------------
     // Backs Settings > Security's "Require unlock to receive push/MFA".
     //

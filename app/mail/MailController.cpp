@@ -263,6 +263,13 @@ void MailController::finishRefresh(const MailRefreshPlan& plan, const InboxFetch
         // held back, so this really will be retried rather than skipped.
         setLastError(i18n("Downloaded mail could not be saved to this device. "
                            "Check free disk space; the next refresh will try again."));
+    } else if (outcome.outcome == MailRepositoryOutcome::PairingChanged) {
+        // Silent, and not an error: this reply belonged to the account that
+        // was paired when the request went out, and the repository discarded
+        // it rather than write it into the account paired now. "Refresh
+        // failed" would be a lie about a refresh that worked, shown to
+        // someone who has just successfully paired.
+        setLastError(QString());
     } else if (outcome.outcome != MailRepositoryOutcome::Success) {
         setLastError(outcome.detail.isEmpty() ? i18n("Refresh failed") : outcome.detail);
     } else {

@@ -20,7 +20,21 @@ class CursorStore;
 // advanced, so the same window is fetched again) and because what the user
 // can do about it -- free disk space, check the profile -- has nothing to do
 // with the network.
-enum class MailRepositoryOutcome { Success, NotPaired, Unauthorized, ServiceUnavailable, Retry, CacheWriteFailed };
+//
+// PairingChanged means the reply was authorised by a pairing this device no
+// longer has -- it arrived after an unpair or after a different account was
+// paired -- so nothing was written. Not an error: the request did what it was
+// told, the answer is simply no longer ours to keep. Distinct from NotPaired,
+// which is "there was nothing to ask with in the first place".
+enum class MailRepositoryOutcome {
+    Success,
+    NotPaired,
+    Unauthorized,
+    ServiceUnavailable,
+    Retry,
+    CacheWriteFailed,
+    PairingChanged
+};
 
 struct MailFetchOutcome
 {
