@@ -38,8 +38,9 @@ private slots:
     void refreshFolderUpdatedDeltaDoesNotTurnDecryptedMailIntoClientProtected();
     void refreshFolderNewDeltaWithNoBodyStaysClientProtected();
     void planRefreshReturnsNothingWhenUnpairedAndCarriesTheStoredCursorOtherwise();
-    void applyRefreshPersistsTheSameRowsWithNoNetworkAndNoStoreReads();
+    void applyRefreshPersistsTheSameRowsWithNoNetwork();
     void applyRefreshHoldsTheCursorBackWhenTheCacheWriteFails();
+    void applyRefreshDiscardsAReplyTheCurrentPairingDidNotAuthorise();
 
 private:
     static void savePairing(PairingStore& pairingStore, quint16 port);
@@ -711,10 +712,18 @@ void MailRepositoryTest::planRefreshReturnsNothingWhenUnpairedAndCarriesTheStore
 }
 
 // Phase 3 does the delta merge and every database write. Proving it needs no
-// network and no pairing is what makes it safe to run from a completion
-// handler: the reply is already in hand, and re-reading a store that may have
-// changed while the request was out (the app locking, say) would be a TOCTOU.
-void MailRepositoryTest::applyRefreshPersistsTheSameRowsWithNoNetworkAndNoStoreReads()
+// NETWORK is what makes it safe to run from a completion handler: the reply is
+// already in hand.
+//
+// It does read PairingStore, once, and this test used to assert that it did
+// not. That assertion conflated two different reads. Re-reading the store for
+// a VALUE to use -- the cursor's owner, say -- is the TOCTOU it was written
+// against, and the plan still carries every such value. Reading it to COMPARE
+// against the identity the plan captured is the opposite: it is the only way
+// to notice that the account these rows belong to is no longer the account
+// this device is paired to. See applyRefreshDiscardsAReplyTheCurrentPairing-
+// DidNotAuthorise below.
+void MailRepositoryTest::applyRefreshPersistsTheSameRowsWithNoNetwork()
 {
     Database db;
     QVERIFY(db.open(QStringLiteral(":memory:")));
@@ -723,7 +732,8 @@ void MailRepositoryTest::applyRefreshPersistsTheSameRowsWithNoNetworkAndNoStoreR
     QTemporaryDir secureDir;
     QVERIFY(secureDir.isValid());
     SecureStoreFile secureStore(secureDir.path());
-    PairingStore pairingStore(secureStore); // never saved -- deliberately unpaired
+    PairingStore pairingStore(secureStore);
+    savePairing(pairingStore, 1); // port is irrelevant -- nothing is sent in this test
 
     QTemporaryDir cursorDir;
     QVERIFY(cursorDir.isValid());
@@ -750,10 +760,14 @@ void MailRepositoryTest::applyRefreshPersistsTheSameRowsWithNoNetworkAndNoStoreR
     MailRefreshPlan plan;
     plan.folder = QStringLiteral("INBOX");
     // The plan names the cursor's owner. applyRefresh files the returned
-    // cursor under it rather than re-reading PairingStore -- which this test
-    // deliberately leaves unpaired, so a re-read would find nothing and drop
-    // the cursor on the floor.
+    // cursor under it rather than re-reading PairingStore, which can be
+    // cleared while the request is in flight -- a cursor written under an
+    // empty subscriber id is one that is never found again.
     plan.subscriberId = QStringLiteral("sub-1");
+    // Together with subscriberId this is the identity that authorised the
+    // request, and it matches what savePairing() stored, so the reply is
+    // still ours and gets written.
+    plan.endpoint.auth.deviceId = QStringLiteral("dev-1");
 
     QCOMPARE(repository.applyRefresh(plan, result).outcome, MailRepositoryOutcome::Success);
 
@@ -949,6 +963,7 @@ void MailRepositoryTest::applyRefreshHoldsTheCursorBackWhenTheCacheWriteFails()
     QVERIFY(secureDir.isValid());
     SecureStoreFile secureStore(secureDir.path());
     PairingStore pairingStore(secureStore);
+    savePairing(pairingStore, 1); // still paired -- the cache write is what fails here
 
     QTemporaryDir cursorDir;
     QVERIFY(cursorDir.isValid());
@@ -981,6 +996,7 @@ void MailRepositoryTest::applyRefreshHoldsTheCursorBackWhenTheCacheWriteFails()
     MailRefreshPlan plan;
     plan.folder = QStringLiteral("INBOX");
     plan.subscriberId = QStringLiteral("sub-1");
+    plan.endpoint.auth.deviceId = QStringLiteral("dev-1");
 
     const MailFetchOutcome outcome = repository.applyRefresh(plan, result);
     QCOMPARE(outcome.outcome, MailRepositoryOutcome::CacheWriteFailed);
@@ -999,6 +1015,109 @@ void MailRepositoryTest::applyRefreshHoldsTheCursorBackWhenTheCacheWriteFails()
     QCOMPARE(repository.applyRefresh(plan, fullWindow).outcome, MailRepositoryOutcome::CacheWriteFailed);
     QCOMPARE(cursorStore.mailCursor(QStringLiteral("sub-1"), QStringLiteral("INBOX")),
              QStringLiteral("10"));
+}
+
+// The reply outlives the pairing that asked for it.
+//
+// Nothing in this schema records WHICH account a cached row belongs to -- the
+// emails table is per-device, keyed (folder, message_id). So a refresh that
+// was authorised by account A and lands after the device has been re-paired
+// to account B writes A's mail into B's inbox, where B reads it. Pairing a
+// replacement account purges the caches, but the purge happens on the
+// registration reply and this write happens on the refresh reply; whichever
+// order they arrive in, the purge cannot clean up a write that comes after it.
+//
+// Three ways for the identity to move, all of which must discard:
+// a different subscriber, the same subscriber re-registered, and no pairing
+// at all.
+void MailRepositoryTest::applyRefreshDiscardsAReplyTheCurrentPairingDidNotAuthorise()
+{
+    Database db;
+    QVERIFY(db.open(QStringLiteral(":memory:")));
+    EmailDao emailDao(db.handle());
+
+    QTemporaryDir secureDir;
+    QVERIFY(secureDir.isValid());
+    SecureStoreFile secureStore(secureDir.path());
+    PairingStore pairingStore(secureStore);
+
+    QTemporaryDir cursorDir;
+    QVERIFY(cursorDir.isValid());
+    CursorStore cursorStore(cursorDir.filePath(QStringLiteral("cursor.ini")));
+
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    RelayMailSource source(http);
+    MailRepository repository(source, emailDao, pairingStore, cursorStore);
+
+    // The reply account A's refresh got back, with a body: exactly what must
+    // not become readable to whoever pairs next.
+    Email confidential;
+    confidential.messageId = QStringLiteral("m-private");
+    confidential.folder = QStringLiteral("INBOX");
+    confidential.subject = QStringLiteral("Salary review");
+    confidential.body = QStringLiteral("Do not show this to the next user.");
+    confidential.atUtc = QStringLiteral("2026-07-01T00:00:00Z");
+
+    InboxFetchResult result;
+    result.tabs = QStringList{ QStringLiteral("Uncategorized") };
+    result.byTab[QStringLiteral("Uncategorized")] =
+        QVector<InboxEmailItem>{ InboxEmailItem{ confidential, QString(), std::nullopt } };
+    result.isDelta = true;
+    result.cursor = 777;
+
+    // The plan account A built before its request went out.
+    MailRefreshPlan plan;
+    plan.folder = QStringLiteral("INBOX");
+    plan.subscriberId = QStringLiteral("sub-1");
+    plan.endpoint.auth.deviceId = QStringLiteral("dev-1");
+
+    const auto assertDiscarded = [&](const char* what) {
+        const MailFetchOutcome outcome = repository.applyRefresh(plan, result);
+        QCOMPARE(outcome.outcome, MailRepositoryOutcome::PairingChanged);
+        // core/ owns the value, app/ owns the wording (AGENTS.md 6c).
+        QVERIFY(outcome.detail.isEmpty());
+        QVERIFY2(!emailDao.findById(QStringLiteral("INBOX"), QStringLiteral("m-private")).has_value(), what);
+        // The cursor is account A's too. Filing it would make the NEW
+        // account's first sync ask for a delta against a window it never had.
+        QVERIFY(cursorStore.mailCursor(QStringLiteral("sub-1"), QStringLiteral("INBOX")).isEmpty());
+    };
+
+    // 1. A different account was paired while the request was out.
+    DevicePairing replacement;
+    replacement.subscriberId = QStringLiteral("sub-2");
+    replacement.deviceId = QStringLiteral("dev-2");
+    replacement.deviceSecret = QStringLiteral("secret-2");
+    replacement.serverBaseUrl = QStringLiteral("http://127.0.0.1:1");
+    QVERIFY(pairingStore.save(replacement));
+    assertDiscarded("a different account's mail was written into the new account's inbox");
+
+    // 2. The SAME account, re-registered. A fresh registration mints a new
+    // deviceId, and the previous registration's reply has no claim on it.
+    DevicePairing reregistered;
+    reregistered.subscriberId = QStringLiteral("sub-1");
+    reregistered.deviceId = QStringLiteral("dev-1-new");
+    reregistered.deviceSecret = QStringLiteral("secret-3");
+    reregistered.serverBaseUrl = QStringLiteral("http://127.0.0.1:1");
+    QVERIFY(pairingStore.save(reregistered));
+    assertDiscarded("a superseded registration's reply was still written");
+
+    // 3. Unpaired outright. There is no account to file anything under.
+    QVERIFY(pairingStore.clear());
+    assertDiscarded("a reply was written into an unpaired profile");
+
+    // And the control: restore the identity the plan named, and the very same
+    // reply is applied. Without this the three assertions above would pass on
+    // a repository that had simply stopped writing anything.
+    DevicePairing original;
+    original.subscriberId = QStringLiteral("sub-1");
+    original.deviceId = QStringLiteral("dev-1");
+    original.deviceSecret = QStringLiteral("secret-1");
+    original.serverBaseUrl = QStringLiteral("http://127.0.0.1:1");
+    QVERIFY(pairingStore.save(original));
+    QCOMPARE(repository.applyRefresh(plan, result).outcome, MailRepositoryOutcome::Success);
+    QVERIFY(emailDao.findById(QStringLiteral("INBOX"), QStringLiteral("m-private")).has_value());
+    QCOMPARE(cursorStore.mailCursor(QStringLiteral("sub-1"), QStringLiteral("INBOX")), QStringLiteral("777"));
 }
 
 QTEST_GUILESS_MAIN(MailRepositoryTest)

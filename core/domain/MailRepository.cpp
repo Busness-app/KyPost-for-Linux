@@ -101,6 +101,23 @@ InboxFetchResult MailRepository::fetchWith(HttpClient& httpClient, const MailRef
 MailFetchOutcome MailRepository::applyRefresh(const MailRefreshPlan& plan, const InboxFetchResult& result)
 {
     const QString& folder = plan.folder;
+
+    // Before anything is written, and before the network outcome is even
+    // consulted: is this reply still ours?
+    //
+    // The plan was built from the pairing that authorised the request, and
+    // the request is long since gone by the time we get here. Pairing a
+    // different account in the meantime purges the mail tables -- and this
+    // reply, written after that purge, would put the PREVIOUS account's mail
+    // into the new account's inbox, where the new user reads it. The emails
+    // table has no subscriber column to tell them apart afterwards.
+    //
+    // Checked here rather than in MailController because it is a property of
+    // the write, not of the UI: refreshFolder() below applies the same plan
+    // synchronously and gets the same protection for free.
+    if (!m_pairingStore.stillCurrent({ plan.subscriberId, plan.endpoint.auth.deviceId }))
+        return { MailRepositoryOutcome::PairingChanged, QString() };
+
     if (result.error.has_value())
         return { outcomeFromNetworkError(*result.error), result.detail };
 

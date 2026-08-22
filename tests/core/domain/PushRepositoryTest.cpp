@@ -16,6 +16,7 @@
 #include <QNetworkAccessManager>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QTimer>
 
 class PushRepositoryTest : public QObject
 {
@@ -28,6 +29,7 @@ private slots:
     void storedPullEndpointOverridesDerivedOne();
     void unsetPullEndpointIsDerivedFromServerBaseUrl();
     void pullWithoutPairingReturnsEmptyAndMakesNoRequest();
+    void pullDiscardsAReplyTheCurrentPairingDidNotAuthorise();
     void historyReturnsMostRecentFirstUpToLimit();
     void markReadDelegatesToPushDao();
 
@@ -284,6 +286,80 @@ void PushRepositoryTest::pullWithoutPairingReturnsEmptyAndMakesNoRequest()
     const QVector<PushNotification> delivered = repository.pullOnce();
     QVERIFY(delivered.isEmpty());
     QCOMPARE(cursorStore.notificationCursor(), qint64(0));
+}
+
+// The account is replaced while the poll is in flight.
+//
+// This is the polling tier's own path and it needs no unusual timing to hit:
+// pullOnce() still blocks the GUI thread on a nested event loop, so anything
+// queued to that thread -- including the executor completion that purges the
+// previous account's data and stores the replacement pairing -- is delivered
+// DURING the request. The singleShot(0) below is not a contrivance; it is
+// exactly how the real re-pair arrives.
+//
+// Two things must not happen afterwards: the previous account's notifications
+// must not be written into the emptied table, and the notification cursor
+// must not be advanced to the previous account's position -- the cursor is a
+// single global value, so moving it makes the NEW account's next poll ask for
+// everything AFTER that sequence number and silently skip its own backlog.
+void PushRepositoryTest::pullDiscardsAReplyTheCurrentPairingDidNotAuthorise()
+{
+    FakeRelayServer fake(httpResponse(200, "OK", R"({
+      "deliveryMode": "pull",
+      "cursor": 42,
+      "notifications": [
+        { "seq": 41, "messageId": "msg-previous-account", "sender": "hr@example.com",
+          "subject": "Salary review", "title": "HR", "body": "Confidential" }
+      ]
+    })"));
+
+    Database db;
+    QVERIFY(db.open(QStringLiteral(":memory:")));
+    PushDao pushDao(db.handle());
+
+    QTemporaryDir cursorDir;
+    QVERIFY(cursorDir.isValid());
+    CursorStore cursorStore(cursorDir.filePath(QStringLiteral("cursors.ini")));
+    cursorStore.setNotificationCursor(7);
+
+    QTemporaryDir secureDir;
+    QVERIFY(secureDir.isValid());
+    SecureStoreFile secureStore(secureDir.path());
+    PairingStore pairingStore(secureStore);
+    savePairing(pairingStore, QStringLiteral("http://127.0.0.1:%1").arg(fake.port()));
+
+    QTemporaryDir settingsDir;
+    QVERIFY(settingsDir.isValid());
+    SettingsStore settingsStore(settingsDir.filePath(QStringLiteral("settings.ini")));
+
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    PushNotificationClient client(http);
+
+    PushRepository repository(pushDao, cursorStore, client, pairingStore, settingsStore);
+
+    // Fires inside the nested event loop pullOnce() is blocked on, between
+    // the request going out and the reply being applied.
+    bool replaced = false;
+    QTimer::singleShot(0, [&]() {
+        DevicePairing replacement;
+        replacement.subscriberId = QStringLiteral("sub-2");
+        replacement.deviceId = QStringLiteral("device-2");
+        replacement.deviceSecret = QStringLiteral("secret-2");
+        replacement.serverBaseUrl = QStringLiteral("http://127.0.0.1:%1").arg(fake.port());
+        replaced = pairingStore.save(replacement);
+    });
+
+    const QVector<PushNotification> delivered = repository.pullOnce();
+
+    // Asserted, not assumed: if the timer had not run inside the pull, every
+    // assertion below would pass for the wrong reason.
+    QVERIFY2(replaced, "the re-pair did not happen during the request -- this test proved nothing");
+
+    QVERIFY(delivered.isEmpty());
+    QVERIFY2(!pushDao.findById(QStringLiteral("msg-previous-account")).has_value(),
+             "the previous account's notification was written into the new account's history");
+    QCOMPARE(cursorStore.notificationCursor(), qint64(7));
 }
 
 void PushRepositoryTest::historyReturnsMostRecentFirstUpToLimit()

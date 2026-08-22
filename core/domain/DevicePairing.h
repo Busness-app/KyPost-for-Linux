@@ -32,3 +32,40 @@ struct DevicePairing
 
     bool operator==(const DevicePairing&) const = default;
 };
+
+// Which account+registration a request was authorised by, and nothing else.
+//
+// A reply is written into a local cache that has no subscriber column: the
+// emails, contacts, groups and push tables are per-DEVICE, so a reply that
+// arrives after the device has been re-paired to a different account lands in
+// that account's mailbox and is readable by whoever is now using it. Pairing
+// a replacement account purges the caches (LocalDataWipe::wipeCachedAccountData),
+// but a request already in flight completes AFTER the purge and writes its
+// rows back in behind it.
+//
+// So every apply step compares the identity that authorised its request --
+// captured before the request, carried across the thread hop -- against the
+// identity the store holds now, and writes nothing if they differ.
+//
+// deviceId is part of it, not just subscriberId: re-registering the SAME
+// account mints a fresh device registration, and a reply authorised by the
+// previous one has no claim on the new one's cache either. deviceSecret is
+// deliberately NOT part of it -- the credential gate re-saves the pairing on
+// every lock/unlock, and keying on the secret would discard every legitimate
+// reply that spanned one.
+struct PairingIdentity
+{
+    QString subscriberId;
+    QString deviceId;
+
+    // An unpaired store's identity. Never equal to a real pairing's, so a
+    // reply that outlives an unpair is discarded on the same comparison.
+    bool isEmpty() const { return subscriberId.isEmpty() && deviceId.isEmpty(); }
+
+    bool operator==(const PairingIdentity&) const = default;
+};
+
+inline PairingIdentity identityOf(const DevicePairing& pairing)
+{
+    return { pairing.subscriberId, pairing.deviceId };
+}

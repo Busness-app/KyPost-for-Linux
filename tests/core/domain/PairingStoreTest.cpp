@@ -47,6 +47,8 @@ private slots:
     // Review-finding regression.
     void clearReportsFailureWhenTheStoreCannotRemove();
 
+    void stillCurrentTracksTheAccountAndRegistrationButNotTheSecret();
+
 private:
     static DevicePairing samplePairing();
 };
@@ -160,6 +162,58 @@ void PairingStoreTest::clearReportsFailureWhenTheStoreCannotRemove()
     // And the caller's suspicion is correct: the credential really is still
     // there. This is what main.cpp now shouts about.
     QVERIFY(pairingStore.isPaired());
+}
+
+// The primitive every in-flight reply is judged against.
+//
+// What it must be sensitive to: a different account, and a re-registration of
+// the same account. What it must NOT be sensitive to: the device secret,
+// which the credential gate rewrites on every lock and unlock -- keying on it
+// would throw away every legitimate reply that happened to span one.
+void PairingStoreTest::stillCurrentTracksTheAccountAndRegistrationButNotTheSecret()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    SecureStoreFile secureStore(dir.path());
+    PairingStore pairingStore(secureStore);
+
+    const DevicePairing original = samplePairing();
+    const PairingIdentity identity = identityOf(original);
+
+    // Unpaired: nothing is current, and an empty identity is not a match for
+    // an empty store either. "Both empty" must not read as "unchanged" --
+    // there is no account to file a reply under.
+    QVERIFY(!pairingStore.stillCurrent(identity));
+    QVERIFY(!pairingStore.stillCurrent(PairingIdentity{}));
+    QVERIFY(pairingStore.currentIdentity().isEmpty());
+
+    QVERIFY(pairingStore.save(original));
+    QVERIFY(pairingStore.stillCurrent(identity));
+    QCOMPARE(pairingStore.currentIdentity(), identity);
+
+    // Same account and registration, rotated secret -- as a lock/unlock
+    // leaves it. Still current.
+    DevicePairing rotatedSecret = original;
+    rotatedSecret.deviceSecret = QStringLiteral("a-completely-different-secret");
+    QVERIFY(pairingStore.save(rotatedSecret));
+    QVERIFY(pairingStore.stillCurrent(identity));
+
+    // Same account, re-registered. The previous registration's replies have
+    // no claim on this one.
+    DevicePairing reregistered = original;
+    reregistered.deviceId = QStringLiteral("device-2");
+    QVERIFY(pairingStore.save(reregistered));
+    QVERIFY(!pairingStore.stillCurrent(identity));
+
+    // A different account entirely.
+    DevicePairing otherAccount = original;
+    otherAccount.subscriberId = QStringLiteral("subscriber-999");
+    QVERIFY(pairingStore.save(otherAccount));
+    QVERIFY(!pairingStore.stillCurrent(identity));
+
+    // And unpaired again.
+    QVERIFY(pairingStore.clear());
+    QVERIFY(!pairingStore.stillCurrent(identity));
 }
 
 QTEST_GUILESS_MAIN(PairingStoreTest)

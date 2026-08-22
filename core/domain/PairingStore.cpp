@@ -259,6 +259,26 @@ bool PairingStore::isPaired() const
     return load().has_value();
 }
 
+PairingIdentity PairingStore::currentIdentity() const
+{
+    const std::optional<DevicePairing> pairing = load();
+    if (!pairing.has_value())
+        return {};
+    return identityOf(*pairing);
+}
+
+bool PairingStore::stillCurrent(const PairingIdentity& identity) const
+{
+    const PairingIdentity current = currentIdentity();
+    // Both empty is NOT a match. An unpaired store reached that state either
+    // by an unpair or by a failed replacement that cleared a half-written
+    // record, and in both cases the right answer for an in-flight reply is
+    // "throw it away", not "no pairing changed, go ahead".
+    if (current.isEmpty())
+        return false;
+    return current == identity;
+}
+
 bool PairingStore::sealDeviceSecret(const QString& pin)
 {
     const CacheInvalidation invalidate(*this);

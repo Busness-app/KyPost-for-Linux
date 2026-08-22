@@ -59,10 +59,23 @@ QVector<PushNotification> PushRepository::pullOnce()
     const QUrl endpoint(resolvePullEndpoint(pairing->serverBaseUrl));
     const RelayAuth auth{ pairing->deviceId, pairing->deviceSecret };
     const qint64 lastCursor = m_cursorStore.notificationCursor();
+    // Captured before the call, compared after it. This is the poll timer's
+    // path: it runs unattended every 90 seconds and, because the pull still
+    // blocks the GUI thread on a nested event loop, the executor's completion
+    // handlers -- including the one that purges the previous account's data
+    // and stores a replacement pairing -- are delivered DURING it. Without
+    // the comparison below, the previous account's notifications are written
+    // back into the emptied table and the notification cursor is advanced to
+    // its position, so the new account then silently skips every push up to
+    // that sequence number.
+    const PairingIdentity requestedBy = identityOf(*pairing);
     const PullResult result = m_client.pull(endpoint, auth, lastCursor);
 
     if (result.error.has_value())
         return {}; // silent -- matches this method's documented no-outcome-type contract
+
+    if (!m_pairingStore.stillCurrent(requestedBy))
+        return {}; // not ours any more: nothing persisted, cursor left alone
 
     QVector<PushNotification> delivered;
     for (const PullNotificationItem& item : result.notifications) {

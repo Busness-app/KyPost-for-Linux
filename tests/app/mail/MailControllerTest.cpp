@@ -61,6 +61,7 @@ private slots:
     void overlappingRefreshesCollapseToOneFollowUpRequest();
     void aFolderSwitchDuringARefreshIsStillFetched();
     void archiveEmailsReportsCompletionAndDropsTheRowOptimistically();
+    void aRefreshThatOutlivesItsAccountWritesNothingAndReportsNoError();
 
 private:
     static void savePairing(PairingStore& pairingStore, quint16 port);
@@ -1529,6 +1530,104 @@ void MailControllerTest::archiveEmailsReportsCompletionAndDropsTheRowOptimistica
     // off the first one's headers.
     QVERIFY2(fake.receivedRequest().contains("\"archive\""), fake.receivedRequest().constData());
     QVERIFY2(fake.receivedRequest().contains("\"m1\""), fake.receivedRequest().constData());
+}
+
+// End to end on the real path: the account is replaced while a refresh is
+// out on the executor thread.
+//
+// No timing trick is needed to arrange it -- refresh() dispatches and
+// returns, so the save() below genuinely races the request, which is exactly
+// how it happens when someone opens a pairing link with the mail screen open.
+// The reply must not repopulate the inbox with the previous account's mail,
+// and the user -- who has just paired successfully -- must not be shown a
+// refresh error for it.
+void MailControllerTest::aRefreshThatOutlivesItsAccountWritesNothingAndReportsNoError()
+{
+    const QByteArray body = R"(
+    {
+      "tabs": ["Uncategorized"],
+      "byTab": {
+        "Uncategorized": [
+          {
+            "messageId": "m-previous-account",
+            "sender": "hr@example.com",
+            "sentTo": "bob@example.com",
+            "cc": "",
+            "bcc": "",
+            "subject": "Salary review",
+            "status": "unread",
+            "atUtc": "2026-07-02T00:00:00Z",
+            "hasAttachments": false,
+            "label": ""
+          }
+        ]
+      }
+    }
+    )";
+    FakeRelayServer fake(httpResponse(200, "OK", body));
+
+    Database db;
+    QVERIFY(db.open(QStringLiteral(":memory:")));
+    EmailDao emailDao(db.handle());
+
+    QTemporaryDir secureDir;
+    QVERIFY(secureDir.isValid());
+    SecureStoreFile secureStore(secureDir.path());
+    PairingStore pairingStore(secureStore);
+    savePairing(pairingStore, fake.port());
+
+    QTemporaryDir cursorDir;
+    QVERIFY(cursorDir.isValid());
+    CursorStore cursorStore(cursorDir.filePath(QStringLiteral("cursor.ini")));
+
+    QTemporaryDir settingsDir;
+    QVERIFY(settingsDir.isValid());
+    SettingsStore settingsStore(settingsDir.filePath(QStringLiteral("settings.ini")));
+    KeywordRepository keywordRepository(settingsStore);
+
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    RelayMailSource source(http);
+    PgpBootstrapClient bootstrapClient(http);
+    PgpRecipientChecker recipientChecker(http);
+    MailRepository mailRepository(source, emailDao, pairingStore, cursorStore);
+    FolderDao folderDao(db.handle());
+    FolderClient folderClient(http);
+    FolderRepository folderRepository(folderClient, folderDao, pairingStore);
+
+    NetworkExecutor executor(3000);
+    MailController controller(mailRepository, source, keywordRepository, pairingStore, folderRepository,
+                               settingsStore, bootstrapClient, recipientChecker, executor);
+    ExecutorShutdownGuard shutdownGuard{ executor };
+
+    controller.refresh();
+
+    // The request is on the wire, authorised by sub-1/dev-1. Pair a different
+    // account, as PairingController's completion handler does -- including
+    // the cache purge that this reply must not undo.
+    DevicePairing replacement;
+    replacement.subscriberId = QStringLiteral("sub-2");
+    replacement.deviceId = QStringLiteral("dev-2");
+    replacement.deviceSecret = QStringLiteral("secret-2");
+    replacement.serverBaseUrl = QStringLiteral("http://127.0.0.1:%1").arg(fake.port());
+    QVERIFY(pairingStore.save(replacement));
+    QVERIFY(emailDao.deleteAll());
+
+    QTRY_VERIFY_WITH_TIMEOUT(!controller.isBusy(), 5000);
+
+    // The request really was made -- otherwise this test would pass on a
+    // controller that simply never refreshed.
+    QVERIFY(!fake.receivedRequest().isEmpty());
+
+    QVERIFY2(!emailDao.findById(QStringLiteral("INBOX"), QStringLiteral("m-previous-account")).has_value(),
+             "the previous account's mail was written into the new account's cache");
+    auto* model = qobject_cast<EmailListModel*>(controller.emailModel());
+    QVERIFY(model != nullptr);
+    QCOMPARE(model->rowCount(), 0);
+
+    // Nothing failed. Reporting "Refresh failed" here would be a lie told to
+    // someone who just paired successfully.
+    QVERIFY(controller.lastError().isEmpty());
 }
 
 QTEST_GUILESS_MAIN(MailControllerTest)
