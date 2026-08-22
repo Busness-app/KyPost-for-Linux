@@ -525,7 +525,8 @@ void ContactSyncRepositoryTest::tooOldResetsCursorAndCache()
     QVERIFY(cursorDir.isValid());
     CursorStore cursorStore(cursorDir.filePath(QStringLiteral("cursors.ini")));
     cursorStore.setContactBaseCursor(QStringLiteral("99"));
-    cursorStore.setMailCursor(QStringLiteral("12345")); // unrelated -- must survive
+    cursorStore.setMailCursor(QStringLiteral("sub-1"), QStringLiteral("INBOX"),
+                              QStringLiteral("12345")); // unrelated -- must survive
 
     QTemporaryDir secureDir;
     QVERIFY(secureDir.isValid());
@@ -548,7 +549,8 @@ void ContactSyncRepositoryTest::tooOldResetsCursorAndCache()
     QVERIFY(cursorStore.contactBaseCursor().isEmpty());
     // Proves CursorStore::reset() was correctly not used -- a contacts-only
     // tooOld response has nothing to do with mail sync.
-    QCOMPARE(cursorStore.mailCursor(), QStringLiteral("12345"));
+    QCOMPARE(cursorStore.mailCursor(QStringLiteral("sub-1"), QStringLiteral("INBOX")),
+             QStringLiteral("12345"));
 }
 
 void ContactSyncRepositoryTest::findByUidReturnsContactWhenPresent()

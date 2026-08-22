@@ -14,7 +14,13 @@ class HttpClient;
 class PairingStore;
 class CursorStore;
 
-enum class MailRepositoryOutcome { Success, NotPaired, Unauthorized, ServiceUnavailable, Retry };
+// CacheWriteFailed is local, not transport: the relay answered, but writing
+// the rows to SQLite did not land. It is its own value rather than folded
+// into Retry because the cursor handling differs (it is deliberately NOT
+// advanced, so the same window is fetched again) and because what the user
+// can do about it -- free disk space, check the profile -- has nothing to do
+// with the network.
+enum class MailRepositoryOutcome { Success, NotPaired, Unauthorized, ServiceUnavailable, Retry, CacheWriteFailed };
 
 struct MailFetchOutcome
 {
@@ -29,9 +35,15 @@ struct MailRefreshPlan
 {
     RelayEndpoint endpoint;
     QString folder;
-    // Absent means "full snapshot" -- see refreshFolder()'s note on why an
-    // omitted `since` is not the same as `since=0` on this endpoint.
-    std::optional<qint64> since;
+    // Always sent, never omitted -- see refreshFolder()'s note. 0 means "I
+    // have no cursor, send the whole window and tell me where it ends".
+    qint64 since = 0;
+    // Which cursor slot applyRefresh() writes the response's cursor back to.
+    // Carried on the plan rather than re-read after the request because the
+    // pairing can be cleared while the request is in flight, and a cursor
+    // filed under an empty subscriber id is a cursor that is never found
+    // again.
+    QString subscriberId;
 };
 
 // Sits between RelayMailSource and EmailDao, matching the Domain/
@@ -51,25 +63,47 @@ public:
 
     QVector<Email> cachedEmails(const QString& folder) const;
 
-    // Task 35: looks up a single cached Email by its globally-unique
-    // messageId (message_id is EmailDao's SQLite PRIMARY KEY), independent
-    // of which folder it happens to be cached under -- unlike
-    // cachedEmails(folder) above, a caller navigating straight to a
-    // messageId (e.g. EmailDetail.qml, reached via MailController::
-    // findByMessageId) doesn't need to already know/guess the folder just
-    // to look one email up. Purely a local cache read, no network call.
+    // Looks up one cached Email for a caller that has only a messageId and no
+    // folder -- opening mail from a desktop notification, whose payload
+    // carries no mailbox. Purely a local cache read, no network call.
+    //
+    // messageId stopped being globally unique in migration 006: the PRIMARY
+    // KEY is (folder, message_id), because the relay serves the same id from
+    // every mailbox that holds it. So this returns nullopt when the id is
+    // cached under more than one folder rather than picking one -- opening
+    // the Archive copy of a message the notification announced in INBOX is a
+    // wrong-message bug, and nothing here can break the tie. Callers that DO
+    // know the folder must use cachedEmail(folder, messageId) instead.
     std::optional<Email> findCachedEmail(const QString& messageId) const;
 
-    // forceFullResync omits `since` from the request entirely (std::nullopt)
-    // for a user-initiated manual refresh, which is what triggers a true
-    // full-snapshot response from the backend -- per RelayMailSource's wire
-    // contract, `since` present at all (even literally 0) puts the mail
-    // endpoint into delta mode instead. (This is the opposite convention
-    // from ContactSyncClient, where since=0 really does mean "full sync" --
-    // a deliberate, documented wire-contract difference between the two
-    // endpoints, not a bug on either side.) Otherwise this method sends the
-    // CursorStore-persisted mail cursor (also omitted when empty --
-    // first-ever fetch for this folder is a full snapshot the same way).
+    // The unambiguous form, for every caller that already knows the mailbox.
+    std::optional<Email> cachedEmail(const QString& folder, const QString& messageId) const;
+
+    // forceFullResync sends `since=0`; every other refresh sends the
+    // CursorStore-persisted cursor for this (subscriber, folder), or 0 when
+    // there isn't one yet. `since` is ALWAYS sent.
+    //
+    // This header used to say the opposite -- that a full snapshot required
+    // omitting `since` entirely, because "since present at all, even 0, puts
+    // the endpoint into delta mode". That is not what the relay does, and
+    // believing it cost this client delta sync altogether. From
+    // kypost-server's backend/internal/api/server_inbox.go:
+    //
+    //     cursorSync := strings.TrimSpace(r.URL.Query().Get("since")) != ""
+    //     ...
+    //     "delta":  since > 0,
+    //     "cursor": result.Cursor,
+    //
+    // Sending `since` selects the CURSOR PROTOCOL; the VALUE decides whether
+    // the window comes back partial. `cursor` is returned only on that path.
+    // So omitting `since` took the classic path, which returns no cursor --
+    // so nothing was ever persisted, so the next refresh had no cursor, so it
+    // omitted `since` again. The client never once entered delta mode and
+    // re-fetched the full window, bodies included, every 90 seconds.
+    // server_inbox.go:290 names this exact conflation as a bug it had already
+    // fixed on its own side. kypost-android has always sent since=0
+    // (RelayMailSource.kt's sinceValue()); this is a Linux-only regression
+    // against a contract both siblings already followed.
     MailFetchOutcome refreshFolder(const QString& folder, bool forceFullResync = false);
 
     // ---- three-phase form, for callers that must not block ---------------

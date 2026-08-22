@@ -6,6 +6,14 @@
 > paths throughout. Those are corrected inline below. Ubuntu Touch / Click
 > is a dropped decision, not a pending target — see AGENTS.md §4.
 
+> **Superseded for parity purposes, 2026-08-22.** Feature parity with
+> `kypost-android` is tracked in **`docs/PARITY.md`**, which is the
+> acceptance checklist for parity work. This plan is kept as the original
+> architectural design record; where it disagrees with `docs/PARITY.md` or
+> `AGENTS.md` on what exists today, it is the one that is stale. In
+> particular, its description of mail sync (`since` handling) is wrong —
+> see AGENTS.md §4's 2026-08-22 correction.
+
 Fourth sibling after Android (`~/git/kypost-android`) and SwiftUI macOS/iOS
 (`~/git/kypost-for-Mac`). **This plan supersedes both `Kirigami_llama_mail.md` (2026-07-11 draft,
 pre-rename filename) and the short-lived `KDE_Client_Plan.md`.** One Qt codebase, two packages,

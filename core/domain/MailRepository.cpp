@@ -50,7 +50,12 @@ QVector<Email> MailRepository::cachedEmails(const QString& folder) const
 
 std::optional<Email> MailRepository::findCachedEmail(const QString& messageId) const
 {
-    return m_emailDao.findById(messageId);
+    return m_emailDao.findUniqueById(messageId);
+}
+
+std::optional<Email> MailRepository::cachedEmail(const QString& folder, const QString& messageId) const
+{
+    return m_emailDao.findById(folder, messageId);
 }
 
 std::optional<MailRefreshPlan> MailRepository::planRefresh(const QString& folder, bool forceFullResync) const
@@ -63,17 +68,22 @@ std::optional<MailRefreshPlan> MailRepository::planRefresh(const QString& folder
     plan.endpoint = RelayEndpoint{ QUrl(pairing->serverBaseUrl),
                                     RelayAuth{ pairing->deviceId, pairing->deviceSecret } };
     plan.folder = folder;
+    plan.subscriberId = pairing->subscriberId;
 
-    // forceFullResync must leave `since` as std::nullopt (omitted from the
-    // request) rather than std::optional<qint64>(0) -- per RelayMailSource's
-    // wire contract, `since` present at all (even 0) puts the mail endpoint
-    // into delta mode, not full-snapshot mode. Only an omitted `since`
-    // triggers the full-snapshot response that routes through
-    // replaceFolderSnapshot in applyRefresh().
+    // `since` is always sent -- that is what selects the relay's cursor
+    // protocol and makes it return a cursor at all. See refreshFolder()'s
+    // header comment for what omitting it used to cost. 0 is the correct
+    // full-window request, both for a forced resync and for a folder this
+    // subscriber has no cursor for yet.
     if (!forceFullResync) {
-        const QString storedCursor = m_cursorStore.mailCursor();
-        if (!storedCursor.isEmpty())
-            plan.since = storedCursor.toLongLong();
+        bool ok = false;
+        const qint64 stored = m_cursorStore.mailCursor(plan.subscriberId, folder).toLongLong(&ok);
+        // A non-numeric or negative leftover is treated as "no cursor" rather
+        // than passed through: the relay parses `since` with
+        // parseNonNegativeInt64Query, so a bad value silently becomes 0 there
+        // anyway, and doing it here keeps the request self-consistent.
+        if (ok && stored > 0)
+            plan.since = stored;
     }
     return plan;
 }
@@ -84,7 +94,8 @@ InboxFetchResult MailRepository::fetchWith(HttpClient& httpClient, const MailRef
     // stateless wrapper over an HttpClient reference, and on the async path
     // that HttpClient belongs to the executor thread.
     RelayMailSource source(httpClient);
-    return source.fetchInbox(plan.endpoint.serverBaseUrl, plan.endpoint.auth, std::nullopt, plan.folder, plan.since);
+    return source.fetchInbox(plan.endpoint.serverBaseUrl, plan.endpoint.auth, std::nullopt, plan.folder,
+                              plan.since);
 }
 
 MailFetchOutcome MailRepository::applyRefresh(const MailRefreshPlan& plan, const InboxFetchResult& result)
@@ -136,8 +147,20 @@ MailFetchOutcome MailRepository::applyRefresh(const MailRefreshPlan& plan, const
         emails.append(email);
     }
 
+    // Every DAO call below reports whether it landed, and the cursor at the
+    // end is advanced only if they all did. This is not tidiness: the cursor
+    // is a promise that everything up to it has been applied, so advancing it
+    // past rows that failed to write makes those messages unrequestable
+    // forever -- the relay will never mention them again. Failing the whole
+    // refresh instead just costs a retry.
+    bool persisted = true;
+
     if (!result.isDelta) {
-        m_emailDao.replaceFolderSnapshot(folder, emails);
+        // A full window: every row the relay says this folder has, bodies
+        // included. replaceFolderSnapshot wipes the folder first, which is
+        // what prunes rows removed while this client was not listening --
+        // the one repair a delta cannot express.
+        persisted = m_emailDao.replaceFolderSnapshot(folder, emails);
     } else {
         // insertOrReplace is upsert-by-messageId, but it must not be handed
         // the row verbatim on an "updated" delta. The backend documents
@@ -163,19 +186,42 @@ MailFetchOutcome MailRepository::applyRefresh(const MailRefreshPlan& plan, const
             Email toStore = email;
             const bool incomingHasBody = toStore.body.has_value() && !toStore.body->isEmpty();
             if (!incomingHasBody && updatedIds.contains(toStore.messageId)) {
-                const std::optional<Email> cached = m_emailDao.findById(toStore.messageId);
+                const std::optional<Email> cached = m_emailDao.findById(folder, toStore.messageId);
                 if (cached.has_value() && cached->body.has_value() && !cached->body->isEmpty()) {
                     toStore.body = cached->body;
                     if (toStore.preview.isEmpty())
                         toStore.preview = cached->preview;
                 }
             }
-            m_emailDao.insertOrReplace(toStore);
+            persisted = m_emailDao.insertOrReplace(toStore) && persisted;
         }
+        // Folder-scoped: `removed` is the diff for the mailbox this request
+        // named, so an unscoped DELETE evicted the copy of the same messageId
+        // cached under every other folder too.
         for (const QString& id : result.removed)
-            m_emailDao.deleteById(id);
-        m_cursorStore.setMailCursor(QString::number(result.cursor));
+            persisted = m_emailDao.deleteById(folder, id) && persisted;
     }
+
+    // No `detail` string: core owns the error VALUE, app/ owns its wording
+    // (AGENTS.md 6c). MailController::setLastError shows `detail` verbatim
+    // when it is non-empty, so an English sentence written here would reach
+    // the UI untranslated.
+    if (!persisted)
+        return { MailRepositoryOutcome::CacheWriteFailed, QString() };
+
+    // The cursor is written on BOTH branches, not just the delta one.
+    // `since` is always sent now, so the relay always answers on its cursor
+    // path and always returns a cursor -- including for a full window, where
+    // it is the whole point: that is the only way a first sync ever acquires
+    // one. Persisting it only under `isDelta` meant a full window advanced
+    // nothing, so the next refresh asked for a full window again, forever.
+    //
+    // Guarded on > 0 because a relay that answered on the classic path (an
+    // older deployment, or a proxy that dropped the query string) reports 0,
+    // and storing that would be indistinguishable from having no cursor
+    // while still claiming to have one.
+    if (result.cursor > 0)
+        m_cursorStore.setMailCursor(plan.subscriberId, folder, QString::number(result.cursor));
 
     return { MailRepositoryOutcome::Success, QString() };
 }

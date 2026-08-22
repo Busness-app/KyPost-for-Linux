@@ -4,6 +4,7 @@
 
 #include <QAtomicInteger>
 #include <QRegularExpression>
+#include <QSqlError>
 #include <QSqlQuery>
 #include <QStringList>
 #include <QVariant>
@@ -143,6 +144,14 @@ bool Database::open(const QString& path)
     if (!versionQuery.exec(QStringLiteral("PRAGMA user_version")) || !versionQuery.next())
         return false;
     const int version = versionQuery.value(0).toInt();
+    // Released before the migration loop, not at end of scope. A PRAGMA
+    // leaves an open read cursor over the schema, and SQLite answers
+    // SQLITE_LOCKED to any DROP/ALTER on the same connection while one is
+    // live -- so a table-rebuild migration failed on its DROP with "database
+    // table is locked" while this query sat unfinished for the whole
+    // function.
+    versionQuery.finish();
+    foreignKeysQuery.finish();
     // Bounded on BOTH sides before it is used as an array index and a loop
     // bound. Negative values indexed kKyPostMigrationSql before its start and
     // CALLED whatever function pointer sat there -- a torn write or a
@@ -176,9 +185,26 @@ bool Database::open(const QString& path)
         for (const QString& statement : statements) {
             QSqlQuery schemaQuery(m_db);
             if (!schemaQuery.exec(statement)) {
+                // Say WHICH statement and WHY. main() turns a failed open()
+                // into qFatal, so this used to be a hard abort whose only
+                // clue was the exit code -- and the whole point of the
+                // rollback above is that the profile is still recoverable,
+                // which nobody can act on without knowing what failed.
+                qWarning("Database: migration %d failed: %s\n  statement: %s", nextVersion,
+                          qUtf8Printable(schemaQuery.lastError().text()), qUtf8Printable(statement));
                 m_db.rollback();
                 return false;
             }
+            // QSqlQuery holds the sqlite3_stmt open after exec(), and a
+            // statement that read a table keeps a cursor on it: SQLite then
+            // refuses to DROP or ALTER that table ("database table is
+            // locked"). Relying on the QSqlQuery destructor is not enough --
+            // it runs at the end of this iteration, which is already too late
+            // for a migration whose next statement drops what the previous
+            // one read. Migration 006 (INSERT ... SELECT FROM emails; DROP
+            // TABLE emails) is the first to do that; finishing here means the
+            // next one doesn't have to rediscover it.
+            schemaQuery.finish();
         }
 
         // Inside the same transaction as the statements above: a bumped

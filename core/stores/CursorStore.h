@@ -13,8 +13,16 @@ class CursorStore
 public:
     explicit CursorStore(const QString& filePath);
 
-    QString mailCursor() const;
-    void setMailCursor(const QString& cursor);
+    // Scoped to (subscriberId, folder), matching kypost-android's
+    // MailCheckpoint. One global mail cursor was wrong twice over: the relay
+    // diffs a window per mailbox, so INBOX's cursor applied to Archive asks
+    // for a diff against a window Archive never had; and nothing wipes
+    // cursors.ini on unpair, so re-pairing a different account inherited the
+    // previous account's cursor and got a delta against a cache it did not
+    // own. Keying by subscriber makes the second case miss the lookup and
+    // fall back to since=0, which is the correct answer by construction.
+    QString mailCursor(const QString& subscriberId, const QString& folder) const;
+    void setMailCursor(const QString& subscriberId, const QString& folder, const QString& cursor);
 
     QString contactBaseCursor() const;
     void setContactBaseCursor(const QString& cursor);
@@ -27,9 +35,17 @@ public:
     qint64 notificationCursor() const; // 0 if never set
     void setNotificationCursor(qint64 cursor);
 
-    // Clears both cursors back to empty/absent. Storage primitive for a
-    // future ContactSyncRepository's tooOld-response reconciliation.
+    // Clears every mail cursor and the contact cursor back to empty/absent,
+    // leaving the notification cursor alone. Storage primitive for
+    // ContactSyncRepository's tooOld-response reconciliation, which is a
+    // contacts-only event.
     void reset();
+
+    // Everything, notification cursor included, for the wipe paths. Reports
+    // whether the file actually took the change: QSettings swallows a failed
+    // write (read-only file, full disk) and reports it only through status(),
+    // and a wipe that silently left cursors.ini intact is a wipe that lied.
+    bool wipeAll();
 
 private:
     QSettings m_settings;

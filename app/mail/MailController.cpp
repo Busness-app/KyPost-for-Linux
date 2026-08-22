@@ -256,10 +256,18 @@ void MailController::finishRefresh(const MailRefreshPlan& plan, const InboxFetch
     // whose QSqlDatabase connection was opened here and may not be touched
     // anywhere else.
     const MailFetchOutcome outcome = m_mailRepository.applyRefresh(plan, result);
-    if (outcome.outcome != MailRepositoryOutcome::Success)
+    if (outcome.outcome == MailRepositoryOutcome::CacheWriteFailed) {
+        // Worded here, not in core/ (AGENTS.md 6c). Named separately from the
+        // generic failure because the relay answered fine -- the local cache
+        // is what refused -- and because the sync cursor was deliberately
+        // held back, so this really will be retried rather than skipped.
+        setLastError(i18n("Downloaded mail could not be saved to this device. "
+                           "Check free disk space; the next refresh will try again."));
+    } else if (outcome.outcome != MailRepositoryOutcome::Success) {
         setLastError(outcome.detail.isEmpty() ? i18n("Refresh failed") : outcome.detail);
-    else
+    } else {
         setLastError(QString());
+    }
 
     // m_currentFolder, deliberately -- NOT plan.folder. The user can switch
     // folders while the request is out, and the reply for the folder they
@@ -1204,6 +1212,22 @@ void MailController::clearEphemeralAttachments()
 
 QVariantMap MailController::findByMessageId(const QString& messageId) const
 {
+    // An empty map now means one of TWO things: the id isn't cached, or it is
+    // cached under more than one folder and there is no way to tell which
+    // copy the caller meant. The second case is not hypothetical -- the
+    // UnifiedPush envelope carries no mailbox at all (see
+    // PushPayloadParser.h's verified wire shape), so a message sitting in
+    // both INBOX and Archive has no tie-breaker. Returning either copy would
+    // silently open the wrong one, so MailRepository::findCachedEmail
+    // refuses; see its header.
+    //
+    // ponytail: both roots render the empty result as a blank detail page,
+    // which is right for "not synced yet" and unhelpful for "ambiguous" --
+    // the user clicks View and gets nothing, with no way to act. Upgrade
+    // path: return the ambiguity as a distinct value (or expose a
+    // folder-taking overload) and have MobileRoot/DesktopRoot show the
+    // folder chooser instead of the blank page. Left out of the sync
+    // correctness pass because it is UI work, not a data-layer fix.
     const std::optional<Email> email = m_mailRepository.findCachedEmail(messageId);
     if (!email.has_value())
         return {};

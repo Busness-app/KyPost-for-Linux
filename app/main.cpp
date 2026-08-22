@@ -699,8 +699,8 @@ int main(int argc, char* argv[])
     // AND to the Hostile Location Protection one, so both reported success
     // while a full plaintext copy of the same mail and contacts stayed on
     // disk. This handler is now the journal reporting only.
-    LocalDataWipe localDataWipe(database, pairingStore, appLockStore, settingsStore, dataDir, newDbPath,
-                                 legacyDbPaths);
+    LocalDataWipe localDataWipe(database, pairingStore, appLockStore, settingsStore, cursorStore, dataDir,
+                                 newDbPath, legacyDbPaths);
 
     QObject::connect(&appLockManager, &AppLockManager::wipeRequested, &appLockManager,
                       [&localDataWipe]() {
@@ -726,6 +726,9 @@ int main(int argc, char* argv[])
                               qCritical("App lock: WIPE INCOMPLETE -- the stored PIN material could not be removed");
                           if (!wiped.legacyDatabasesRemoved)
                               qCritical("App lock: WIPE INCOMPLETE -- a pre-rename database could not be erased");
+                          if (!wiped.syncCursorsCleared)
+                              qCritical("App lock: WIPE INCOMPLETE -- the sync cursors could not be erased; "
+                                        "cursors.ini still names the subscriber and every synced mailbox");
                           // Relaunch regardless of the above: leaving a
                           // running window holding the pre-wipe view of the
                           // world in front of whoever just failed ten PIN

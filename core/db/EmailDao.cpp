@@ -73,7 +73,13 @@ bool EmailDao::insertOrReplace(const Email& email)
         ":label, :keywords_json, :status, :at_utc, :has_attachments, :source_mode, "
         ":pgp_encrypted, :pgp_decrypt_error)"));
     query.bindValue(QStringLiteral(":message_id"), email.messageId);
-    query.bindValue(QStringLiteral(":folder"), email.folder);
+    // A default-constructed QString is NULL to Qt's SQL layer, not ''. Since
+    // migration 006 `folder` is NOT NULL and half of the PRIMARY KEY, so
+    // binding it raw turned an Email with no folder set into a constraint
+    // violation -- a silently dropped message, because most callers of this
+    // method don't inspect the bool. Coalescing matches what the migration
+    // did to the pre-006 rows, so old and new rows key the same way.
+    query.bindValue(QStringLiteral(":folder"), email.folder.isNull() ? QString::fromLatin1("") : email.folder);
     query.bindValue(QStringLiteral(":sender"), email.sender);
     query.bindValue(QStringLiteral(":sent_to"), email.sentTo);
     query.bindValue(QStringLiteral(":cc"), email.cc);
@@ -92,14 +98,30 @@ bool EmailDao::insertOrReplace(const Email& email)
     return query.exec();
 }
 
-std::optional<Email> EmailDao::findById(const QString& messageId) const
+std::optional<Email> EmailDao::findById(const QString& folder, const QString& messageId) const
 {
     QSqlQuery query(m_db);
-    query.prepare(QStringLiteral("SELECT * FROM emails WHERE message_id = :message_id"));
+    query.prepare(QStringLiteral("SELECT * FROM emails WHERE folder = :folder AND message_id = :message_id"));
+    query.bindValue(QStringLiteral(":folder"), folder);
     query.bindValue(QStringLiteral(":message_id"), messageId);
     if (!query.exec() || !query.next())
         return std::nullopt;
     return emailFromQuery(query);
+}
+
+std::optional<Email> EmailDao::findUniqueById(const QString& messageId) const
+{
+    QSqlQuery query(m_db);
+    // LIMIT 2, not 1: the question is "is this id ambiguous?", and one row is
+    // the only answer that lets the caller act on it.
+    query.prepare(QStringLiteral("SELECT * FROM emails WHERE message_id = :message_id LIMIT 2"));
+    query.bindValue(QStringLiteral(":message_id"), messageId);
+    if (!query.exec() || !query.next())
+        return std::nullopt;
+    const Email first = emailFromQuery(query);
+    if (query.next())
+        return std::nullopt;
+    return first;
 }
 
 QVector<Email> EmailDao::findByFolder(const QString& folder) const
@@ -120,10 +142,11 @@ QVector<Email> EmailDao::findAll() const
     return collect(query);
 }
 
-bool EmailDao::deleteById(const QString& messageId)
+bool EmailDao::deleteById(const QString& folder, const QString& messageId)
 {
     QSqlQuery query(m_db);
-    query.prepare(QStringLiteral("DELETE FROM emails WHERE message_id = :message_id"));
+    query.prepare(QStringLiteral("DELETE FROM emails WHERE folder = :folder AND message_id = :message_id"));
+    query.bindValue(QStringLiteral(":folder"), folder);
     query.bindValue(QStringLiteral(":message_id"), messageId);
     return query.exec();
 }
