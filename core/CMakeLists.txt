@@ -69,6 +69,7 @@ add_library(kypostcore STATIC
   security/CredentialCipher.cpp
   security/CredentialCipher.h
   db/ProfileDatabase.cpp
+  pgp/OpenPgpDecryptor.cpp
   security/DatabaseKeyStore.cpp
   security/LockoutPolicy.cpp
   security/WipeTripwire.cpp
@@ -190,7 +191,9 @@ target_link_libraries(kypostcore PUBLIC
   Qt6::Sql
 )
 
-target_link_libraries(kypostcore PRIVATE OpenSSL::Crypto PkgConfig::ARGON2)
+find_package(Gpgmepp REQUIRED)
+
+target_link_libraries(kypostcore PRIVATE OpenSSL::Crypto PkgConfig::ARGON2 Gpgmepp)
 
 # SQLCipher, when a prefix was given.
 #

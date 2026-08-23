@@ -52,6 +52,7 @@ kypost_add_test(PinPolicyTest core/security/PinPolicyTest.cpp)
 
 kypost_add_test(DatabaseTest core/db/DatabaseTest.cpp)
 kypost_add_test(DatabaseEncryptionTest core/db/DatabaseEncryptionTest.cpp)
+kypost_add_test(OpenPgpDecryptorTest core/pgp/OpenPgpDecryptorTest.cpp)
 kypost_add_test(ProfileDatabaseTest core/db/ProfileDatabaseTest.cpp)
 kypost_add_test(SecurityWipeTest core/db/SecurityWipeTest.cpp)
 kypost_add_test(EmailDaoTest core/db/EmailDaoTest.cpp)
