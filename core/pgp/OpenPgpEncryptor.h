@@ -80,3 +80,11 @@ struct PgpEncryptResult
 PgpEncryptResult signAndEncrypt(const QByteArray& plaintext, const QString& signerAddress,
                                  const QStringList& recipientFingerprints,
                                  const QString& homeDirectory = QString());
+
+// The fingerprint of the user's OWN key -- the one gpg would sign with for
+// this address.
+//
+// Needed for the Sent copy, which is encrypted to the sender themselves.
+// Empty when there is no secret key for the address, which the caller reports
+// as "no copy will be filed" rather than as a failed send.
+QString ownKeyFingerprint(const QString& address, const QString& homeDirectory = QString());

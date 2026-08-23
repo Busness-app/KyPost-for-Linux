@@ -14,7 +14,12 @@
 #include "net/NetworkExecutor.h"
 #include "net/PgpBootstrapClient.h"
 #include "net/PgpPayloadClient.h"
+#include "net/PgpResolveClient.h"
+#include "net/PgpSendClient.h"
+#include "pgp/PgpSendPlanner.h"
 #include "pgp/EncryptedMessageReader.h"
+#include "pgp/OpenPgpEncryptor.h"
+#include "pgp/OpenPgpKeyImporter.h"
 #include "pgp/MimeBodyReader.h"
 #include "pgp/OpenPgpDecryptor.h"
 #include "net/PgpRecipientChecker.h"
@@ -29,6 +34,7 @@
 #include <QDir>
 #include <QFile>
 #include <QHash>
+#include <QDateTime>
 #include <QTimer>
 #include <QFileInfo>
 #include <QMimeDatabase>
@@ -1391,6 +1397,257 @@ QVariantMap MailController::findByMessageId(const QString& messageId) const
     map[QStringLiteral("canDecryptHere")] =
         pgpState == PgpMessageState::ClientProtected && openPgpEngineAvailable();
     return map;
+}
+
+bool MailController::pgpCanSendFromThisDevice() const
+{
+    // Both halves matter. A client-custody account on a machine with no gpg
+    // still needs the webmail hand-off, and offering a Send button that
+    // cannot work would be worse than not offering one.
+    return m_pgpHandoffToWebmail && openPgpEngineAvailable();
+}
+
+// Everything a client-encrypted send does, on the executor thread.
+//
+// Split out as a free function because it must touch nothing owned by the GUI
+// thread: no DAO, no PairingStore, no member of this controller. The endpoint
+// and the composed message are copied in; one value comes back.
+namespace {
+
+MailController::ClientEncryptedOutcome runClientEncryptedSend(
+    HttpClient& http, const RelayEndpoint& endpoint, const QString& to, const QString& cc,
+    const QString& bcc, const QString& subject, const QString& body, const QString& date)
+{
+    using Failure = MailController::ClientEncryptedOutcome::Failure;
+    MailController::ClientEncryptedOutcome outcome;
+
+    const auto split = [](const QString& list) {
+        QStringList out;
+        for (const QString& piece : list.split(QLatin1Char(','), Qt::SkipEmptyParts)) {
+            const QString trimmed = piece.trimmed();
+            if (!trimmed.isEmpty())
+                out.append(trimmed);
+        }
+        return out;
+    };
+    const QStringList toList = split(to);
+    const QStringList ccList = split(cc);
+    const QStringList bccList = split(bcc);
+
+    // The account's own address, which nothing else in this app knows: the
+    // pairing carries a subscriber id, not a mailbox. Fetched per send rather
+    // than cached, because the relay binds every delivery's From to it and a
+    // stale value fails the whole send at the last step.
+    const PgpBootstrapClient bootstrap(http);
+    const PgpBootstrapResult identity = bootstrap.fetch(endpoint.serverBaseUrl, endpoint.auth);
+    if (!identity.ok || identity.primaryAddress.isEmpty()) {
+        outcome.failure = Failure::NotConfigured;
+        outcome.detail = identity.detail;
+        return outcome;
+    }
+
+    QStringList everyone = toList;
+    everyone.append(ccList);
+    everyone.append(bccList);
+    if (everyone.isEmpty()) {
+        outcome.failure = Failure::RecipientWithoutKey;
+        return outcome;
+    }
+
+    const PgpResolveClient resolver(http);
+    const PgpResolveResult resolved = resolver.resolve(endpoint.serverBaseUrl, endpoint.auth, everyone);
+    if (resolved.status == PgpResolveStatus::ServerEncryptsInstead) {
+        outcome.failure = Failure::ServerEncryptsInstead;
+        return outcome;
+    }
+    if (resolved.status != PgpResolveStatus::Resolved) {
+        outcome.failure = Failure::SendFailed;
+        outcome.detail = resolved.detail;
+        return outcome;
+    }
+
+    // Unusable is unusable. There is no downgrade here on purpose: the
+    // relay's own plaintext fallback works by storing the message on the
+    // relay, which is the thing this mode exists to prevent.
+    QHash<QString, QString> fingerprints;
+    for (const ResolvedRecipientKey& key : resolved.keys) {
+        if (!key.usable || key.publicKey.isEmpty()) {
+            outcome.namedRecipients.append(key.address);
+            continue;
+        }
+        // Into the user's own keyring, so gpg owns the record -- AGENTS.md 4b.
+        const PgpImportResult imported =
+            importPublicKey(key.publicKey.toUtf8(), key.fingerprint, QString());
+        if (imported.status != PgpImportStatus::Imported
+            && imported.status != PgpImportStatus::Unchanged) {
+            // A key whose fingerprint disagrees with what the relay claimed
+            // about it is not one to encrypt to.
+            outcome.namedRecipients.append(key.address);
+            outcome.detail = imported.detail;
+            continue;
+        }
+        fingerprints.insert(key.address, imported.fingerprint);
+    }
+    if (!outcome.namedRecipients.isEmpty()) {
+        outcome.failure = Failure::RecipientWithoutKey;
+        return outcome;
+    }
+
+    OutgoingMessage message;
+    message.from = identity.primaryAddress;
+    message.to = toList;
+    message.cc = ccList;
+    message.subject = subject;
+    message.body = body;
+    message.mode = QStringLiteral("plain");
+    message.date = date;
+
+    const PgpSendPlan plan = buildPgpSendPlan(message, bccList, fingerprints,
+                                               ownKeyFingerprint(identity.primaryAddress));
+    switch (plan.status) {
+    case PgpSendPlanStatus::Built:
+        break;
+    case PgpSendPlanStatus::RecipientWithoutKey:
+        outcome.failure = Failure::RecipientWithoutKey;
+        outcome.namedRecipients = plan.recipientsWithoutKeys;
+        return outcome;
+    case PgpSendPlanStatus::SigningUnavailable:
+        outcome.failure = Failure::NoSigningKey;
+        return outcome;
+    case PgpSendPlanStatus::EngineUnavailable:
+        outcome.failure = Failure::EngineUnavailable;
+        return outcome;
+    case PgpSendPlanStatus::EncryptionFailed:
+        outcome.failure = Failure::EncryptionFailed;
+        outcome.detail = plan.detail;
+        return outcome;
+    }
+
+    const PgpSendClient sender(http);
+    const PgpSendResult sent = sender.send(endpoint.serverBaseUrl, endpoint.auth,
+                                            identity.primaryAddress, plan, toList, ccList, bccList,
+                                            QStringLiteral("plain"));
+    if (!sent.ok) {
+        outcome.failure = Failure::SendFailed;
+        outcome.detail = sent.detail;
+        return outcome;
+    }
+
+    outcome.ok = true;
+    // Either the planner never built a copy, or the relay did not file it.
+    outcome.missingSentCopy = plan.sentCopyUnavailable || !sent.sentSaved;
+    return outcome;
+}
+
+} // namespace
+
+quint64 MailController::sendClientEncrypted(const QString& to, const QString& cc, const QString& bcc,
+                                             const QString& subject, const QString& body,
+                                             const QStringList& attachmentFilePaths)
+{
+    m_pendingSend = {};
+    m_lastSendMissingSentCopy = false;
+
+    // Enforced here, not only in Compose.qml. Sending the message without the
+    // files and reporting success is a data loss the sender never sees, and a
+    // QML-side check is one a future caller can simply not write.
+    if (!attachmentFilePaths.isEmpty()) {
+        setLastError(i18n("Attachments cannot be sent on an end-to-end encrypted message yet. "
+                           "Remove them, or continue in webmail."));
+        return 0;
+    }
+
+    const std::optional<DevicePairing> pairing = m_pairingStore.load();
+    if (!pairing.has_value()) {
+        setLastError(i18n("Not paired"));
+        return 0;
+    }
+
+    const RelayEndpoint endpoint{ QUrl(pairing->serverBaseUrl),
+                                   RelayAuth{ pairing->deviceId, pairing->deviceSecret } };
+    const PairingIdentity identity = identityOf(*pairing);
+    const quint64 sendToken = m_nextPendingSendToken++;
+    // Stamped here, on the thread that knows when the user pressed Send --
+    // not inside the worker, where pinentry may have been open for minutes.
+    const QString date = QDateTime::currentDateTime().toString(Qt::RFC2822Date);
+
+    pushBusy();
+    m_executor.run(
+        this,
+        [endpoint, to, cc, bcc, subject, body, date](HttpClient& http) {
+            return runClientEncryptedSend(http, endpoint, to, cc, bcc, subject, body, date);
+        },
+        [this, sendToken, identity](const ClientEncryptedOutcome& outcome) {
+            popBusy();
+            // The account may have been replaced while pinentry was open.
+            // Reporting this send's outcome into the new account's compose
+            // screen would be the stale-reply defect again, on a screen where
+            // it reads as "your message was sent".
+            if (!m_pairingStore.stillCurrent(identity)) {
+                setLastError(QString());
+                emit sendCompleted(sendToken, false);
+                return;
+            }
+            finishClientEncryptedSend(sendToken, outcome);
+        });
+    return sendToken;
+}
+
+void MailController::finishClientEncryptedSend(quint64 token, const ClientEncryptedOutcome& outcome)
+{
+    using Failure = ClientEncryptedOutcome::Failure;
+
+    if (outcome.ok) {
+        m_lastSendMissingSentCopy = outcome.missingSentCopy;
+        setLastError(QString());
+        emit pgpComposeStateChanged();
+        emit sendCompleted(token, true);
+        return;
+    }
+
+    switch (outcome.failure) {
+    case Failure::None:
+    case Failure::SendFailed:
+        setLastError(i18n("The message could not be sent. Try again."));
+        break;
+    case Failure::NotConfigured:
+        setLastError(i18n("This account has no mail configuration, so there is no address to send "
+                           "from."));
+        break;
+    case Failure::RecipientWithoutKey:
+        // Named, so the user can act. Never a downgrade offer: sending this
+        // message unencrypted is not something to suggest on an account whose
+        // key the server deliberately does not hold.
+        setLastError(outcome.namedRecipients.isEmpty()
+                          ? i18n("A recipient has no usable encryption key, so this message was not "
+                                  "sent.")
+                          : i18n("No usable encryption key for %1, so this message was not sent.",
+                                  outcome.namedRecipients.join(QStringLiteral(", "))));
+        break;
+    case Failure::NoSigningKey:
+        setLastError(i18n("Your own OpenPGP key is not available, so this message could not be "
+                           "signed. It was not sent unsigned."));
+        break;
+    case Failure::Cancelled:
+        setLastError(i18n("Unlocking your key was cancelled, so the message was not sent."));
+        break;
+    case Failure::KeyImportRefused:
+        setLastError(i18n("A recipient's key did not match what the server said about it, so this "
+                           "message was not sent."));
+        break;
+    case Failure::EncryptionFailed:
+        setLastError(i18n("The message could not be encrypted, so it was not sent."));
+        break;
+    case Failure::EngineUnavailable:
+        setLastError(i18n("GnuPG is not available on this computer, so this message cannot be "
+                           "encrypted here."));
+        break;
+    case Failure::ServerEncryptsInstead:
+        setLastError(i18n("This account's key is held by the server, which encrypts on its own. "
+                           "Send it the usual way."));
+        break;
+    }
+    emit sendCompleted(token, false);
 }
 
 void MailController::forgetDecrypted()

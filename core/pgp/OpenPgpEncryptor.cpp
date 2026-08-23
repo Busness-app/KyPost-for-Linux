@@ -223,3 +223,32 @@ PgpEncryptResult signAndEncrypt(const QByteArray& plaintext, const QString& sign
     out.status = PgpEncryptStatus::Encrypted;
     return out;
 }
+
+QString ownKeyFingerprint(const QString& address, const QString& homeDirectory)
+{
+    initialiseGpgme();
+
+    ContextHandle context;
+    if (gpgme_err_code(gpgme_new(&context.handle)) != GPG_ERR_NO_ERROR || context.handle == nullptr)
+        return {};
+
+    const QByteArray home = homeDirectory.toUtf8();
+    if (!home.isEmpty()
+        && gpgme_err_code(gpgme_ctx_set_engine_info(context.handle, GPGME_PROTOCOL_OpenPGP, nullptr,
+                                                      home.constData()))
+            != GPG_ERR_NO_ERROR) {
+        return {};
+    }
+
+    gpgme_key_t key = nullptr;
+    // secret=1: the Sent copy is only worth encrypting to a key this user can
+    // actually open it with.
+    if (gpgme_err_code(gpgme_get_key(context.handle, address.toUtf8().constData(), &key, /*secret=*/1))
+            != GPG_ERR_NO_ERROR
+        || key == nullptr) {
+        return {};
+    }
+    const QString fingerprint = key->fpr != nullptr ? QString::fromLatin1(key->fpr) : QString();
+    gpgme_key_unref(key);
+    return fingerprint;
+}
