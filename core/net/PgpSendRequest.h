@@ -10,7 +10,7 @@
 //
 // Separated from send() so the exact bytes this client would put on the wire
 // can be handed to the RELAY'S OWN decoder and validators without standing up
-// a socket -- see scripts/verify-pgp-send-request.sh. A wire format verified
+// a socket -- see scripts/verify-pgp-against-relay.sh. A wire format verified
 // against a second opinion written here is worth much less than one verified
 // against the code that will actually read it.
 QJsonObject pgpSendRequestBody(const QString& from, const PgpSendPlan& plan, const QStringList& to,
