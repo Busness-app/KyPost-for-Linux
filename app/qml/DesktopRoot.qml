@@ -230,11 +230,22 @@ Kirigami.ApplicationWindow {
     Connections {
         target: MailApp
         function onOpenEmailRequested(messageId) {
-            const email = MailApp.findByMessageId(messageId)
+            // Handed to C++ rather than hydrated from the cache here: a push
+            // is generated the instant mail arrives and this client may not
+            // have synced it yet, which used to select a message that was not
+            // there and show an empty detail pane. openFromNotification()
+            // refreshes first and answers on onNotificationEmailResolved.
             root.currentSection = "mail"
-            root.selectEmail(messageId, email.folder || "")
+            MailApp.openFromNotification(messageId)
             root.raise()
             root.requestActivate()
+        }
+        function onNotificationEmailResolved(messageId, folder) {
+            // Empty folder: not found even after a refresh. MailController
+            // has set lastError, and selecting nothing leaves that visible
+            // instead of covering it with an empty pane.
+            if (folder.length > 0)
+                root.selectEmail(messageId, folder)
         }
 
         // The mail list's context-menu Delete dispatches and returns, so the

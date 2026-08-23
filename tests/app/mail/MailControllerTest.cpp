@@ -66,6 +66,11 @@ private slots:
     void aPgpComposeAnswerThatOutlivesItsAccountIsNotCached();
     void aRecipientPreflightThatOutlivesItsAccountShowsNothing();
 
+    // Notification tap-through (phase 4).
+    void aNotificationForUncachedMailRefreshesBeforeAnsweringIt();
+    void aNotificationForCachedMailAnswersWithoutARequest();
+    void aNotificationForMailThatCannotBeFoundSaysSoRatherThanOpeningNothing();
+
 private:
     static void savePairing(PairingStore& pairingStore, quint16 port);
     // downloadAttachment() dispatches and returns; the answer arrives as
@@ -1824,6 +1829,202 @@ void MailControllerTest::aRecipientPreflightThatOutlivesItsAccountShowsNothing()
     QTest::qWait(500); // let any (wrong) apply land before asserting it did not
     QVERIFY(controller.pgpKeylessRecipients().isEmpty());
     executor.shutdown();
+}
+
+// THE CASE THIS EXISTS FOR, and it is the common one rather than the edge.
+//
+// A push notification is generated server-side the instant mail arrives; this
+// client only learns of the message on its next sync, up to 90 seconds later
+// on the polling tier. So "the user tapped View" almost always means a
+// message this device has never seen. Both roots used to hydrate it from the
+// cache, miss, and show a blank detail page -- with the mail one refresh away
+// and nothing on screen saying so.
+void MailControllerTest::aNotificationForUncachedMailRefreshesBeforeAnsweringIt()
+{
+    const QByteArray body = R"(
+    {
+      "tabs": ["Uncategorized"],
+      "byTab": {
+        "Uncategorized": [
+          {
+            "messageId": "m-just-arrived",
+            "sender": "alice@example.com",
+            "sentTo": "bob@example.com",
+            "cc": "",
+            "bcc": "",
+            "subject": "Just arrived",
+            "status": "unread",
+            "atUtc": "2026-07-02T00:00:00Z",
+            "hasAttachments": false,
+            "label": ""
+          }
+        ]
+      }
+    }
+    )";
+    FakeRelayServer fake(httpResponse(200, "OK", body));
+
+    Database db;
+    QVERIFY(db.open(QStringLiteral(":memory:")));
+    EmailDao emailDao(db.handle());
+
+    QTemporaryDir secureDir;
+    QVERIFY(secureDir.isValid());
+    SecureStoreFile secureStore(secureDir.path());
+    PairingStore pairingStore(secureStore);
+    savePairing(pairingStore, fake.port());
+
+    QTemporaryDir cursorDir;
+    QVERIFY(cursorDir.isValid());
+    CursorStore cursorStore(cursorDir.filePath(QStringLiteral("cursor.ini")));
+
+    QTemporaryDir settingsDir;
+    QVERIFY(settingsDir.isValid());
+    SettingsStore settingsStore(settingsDir.filePath(QStringLiteral("settings.ini")));
+    KeywordRepository keywordRepository(settingsStore);
+
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    RelayMailSource source(http);
+    PgpBootstrapClient bootstrapClient(http);
+    PgpRecipientChecker recipientChecker(http);
+    MailRepository mailRepository(source, emailDao, pairingStore, cursorStore);
+    FolderDao folderDao(db.handle());
+    FolderClient folderClient(http);
+    FolderRepository folderRepository(folderClient, folderDao, pairingStore);
+
+    NetworkExecutor executor(3000);
+    MailController controller(mailRepository, source, keywordRepository, pairingStore, folderRepository,
+                               settingsStore, bootstrapClient, recipientChecker, executor);
+    ExecutorShutdownGuard shutdownGuard{ executor };
+
+    // Nothing cached: exactly the state a fresh push arrives in.
+    QVERIFY(!emailDao.findById(QStringLiteral("INBOX"), QStringLiteral("m-just-arrived")).has_value());
+
+    QSignalSpy resolvedSpy(&controller, &MailController::notificationEmailResolved);
+    controller.openFromNotification(QStringLiteral("m-just-arrived"));
+
+    QVERIFY(resolvedSpy.wait(10000) || resolvedSpy.count() > 0);
+    executor.shutdown();
+
+    QCOMPARE(resolvedSpy.count(), 1);
+    QCOMPARE(resolvedSpy.at(0).at(0).toString(), QStringLiteral("m-just-arrived"));
+    // A real folder, so the roots open the message rather than a blank page.
+    QCOMPARE(resolvedSpy.at(0).at(1).toString(), QStringLiteral("INBOX"));
+    QVERIFY2(!fake.receivedRequest().isEmpty(), "no refresh was made for a message that was not cached");
+    QVERIFY(controller.lastError().isEmpty());
+}
+
+// Already cached: answered straight away. The point is the ABSENCE of a
+// request -- refreshing to learn what is already known would put a network
+// round trip in front of every notification tap.
+void MailControllerTest::aNotificationForCachedMailAnswersWithoutARequest()
+{
+    Database db;
+    QVERIFY(db.open(QStringLiteral(":memory:")));
+    EmailDao emailDao(db.handle());
+
+    Email cached;
+    cached.messageId = QStringLiteral("m-known");
+    cached.folder = QStringLiteral("Archive");
+    cached.subject = QStringLiteral("Already here");
+    cached.atUtc = QStringLiteral("2026-07-01T00:00:00Z");
+    QVERIFY(emailDao.insertOrReplace(cached));
+
+    FakeRelayServer fake(httpResponse(200, "OK", R"({"tabs":[],"byTab":{}})"));
+
+    QTemporaryDir secureDir;
+    QVERIFY(secureDir.isValid());
+    SecureStoreFile secureStore(secureDir.path());
+    PairingStore pairingStore(secureStore);
+    savePairing(pairingStore, fake.port());
+
+    QTemporaryDir cursorDir;
+    QVERIFY(cursorDir.isValid());
+    CursorStore cursorStore(cursorDir.filePath(QStringLiteral("cursor.ini")));
+
+    QTemporaryDir settingsDir;
+    QVERIFY(settingsDir.isValid());
+    SettingsStore settingsStore(settingsDir.filePath(QStringLiteral("settings.ini")));
+    KeywordRepository keywordRepository(settingsStore);
+
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    RelayMailSource source(http);
+    PgpBootstrapClient bootstrapClient(http);
+    PgpRecipientChecker recipientChecker(http);
+    MailRepository mailRepository(source, emailDao, pairingStore, cursorStore);
+    FolderDao folderDao(db.handle());
+    FolderClient folderClient(http);
+    FolderRepository folderRepository(folderClient, folderDao, pairingStore);
+
+    NetworkExecutor executor(3000);
+    MailController controller(mailRepository, source, keywordRepository, pairingStore, folderRepository,
+                               settingsStore, bootstrapClient, recipientChecker, executor);
+    ExecutorShutdownGuard shutdownGuard{ executor };
+
+    QSignalSpy resolvedSpy(&controller, &MailController::notificationEmailResolved);
+    controller.openFromNotification(QStringLiteral("m-known"));
+
+    // Synchronous: no event loop was spun between the call and this line.
+    QCOMPARE(resolvedSpy.count(), 1);
+    QCOMPARE(resolvedSpy.at(0).at(1).toString(), QStringLiteral("Archive"));
+    QVERIFY2(fake.receivedRequest().isEmpty(), "a cached message still cost a network round trip");
+    executor.shutdown();
+}
+
+// The refresh happens and the message still is not there -- filed elsewhere
+// by a server-side rule, or deleted from another client between the
+// notification and the tap. Saying so beats the blank page they got before.
+void MailControllerTest::aNotificationForMailThatCannotBeFoundSaysSoRatherThanOpeningNothing()
+{
+    FakeRelayServer fake(httpResponse(200, "OK", R"({"tabs":[],"byTab":{}})"));
+
+    Database db;
+    QVERIFY(db.open(QStringLiteral(":memory:")));
+    EmailDao emailDao(db.handle());
+
+    QTemporaryDir secureDir;
+    QVERIFY(secureDir.isValid());
+    SecureStoreFile secureStore(secureDir.path());
+    PairingStore pairingStore(secureStore);
+    savePairing(pairingStore, fake.port());
+
+    QTemporaryDir cursorDir;
+    QVERIFY(cursorDir.isValid());
+    CursorStore cursorStore(cursorDir.filePath(QStringLiteral("cursor.ini")));
+
+    QTemporaryDir settingsDir;
+    QVERIFY(settingsDir.isValid());
+    SettingsStore settingsStore(settingsDir.filePath(QStringLiteral("settings.ini")));
+    KeywordRepository keywordRepository(settingsStore);
+
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    RelayMailSource source(http);
+    PgpBootstrapClient bootstrapClient(http);
+    PgpRecipientChecker recipientChecker(http);
+    MailRepository mailRepository(source, emailDao, pairingStore, cursorStore);
+    FolderDao folderDao(db.handle());
+    FolderClient folderClient(http);
+    FolderRepository folderRepository(folderClient, folderDao, pairingStore);
+
+    NetworkExecutor executor(3000);
+    MailController controller(mailRepository, source, keywordRepository, pairingStore, folderRepository,
+                               settingsStore, bootstrapClient, recipientChecker, executor);
+    ExecutorShutdownGuard shutdownGuard{ executor };
+
+    QSignalSpy resolvedSpy(&controller, &MailController::notificationEmailResolved);
+    controller.openFromNotification(QStringLiteral("m-vanished"));
+
+    QVERIFY(resolvedSpy.wait(10000) || resolvedSpy.count() > 0);
+    executor.shutdown();
+
+    QCOMPARE(resolvedSpy.count(), 1);
+    // Empty folder is the "do not open anything" answer both roots act on.
+    QVERIFY(resolvedSpy.at(0).at(1).toString().isEmpty());
+    QVERIFY2(!controller.lastError().isEmpty(),
+             "a message that could not be found was reported as nothing at all");
 }
 
 QTEST_GUILESS_MAIN(MailControllerTest)

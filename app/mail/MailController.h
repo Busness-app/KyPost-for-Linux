@@ -141,6 +141,20 @@ public slots:
     // isn't cached locally -- this is a pure local-cache read (no network
     // call), so a miss just means "not fetched/cached yet", not an error.
     Q_INVOKABLE QVariantMap findByMessageId(const QString& messageId) const;
+
+    // The notification tap-through entry point.
+    //
+    // A push notification is generated server-side the instant mail arrives,
+    // and this client only learns of the message on its next sync -- up to 90
+    // seconds later on the polling tier. So the overwhelmingly common case
+    // for "the user tapped View" is a message this device has never seen:
+    // both roots used to hydrate it from the cache, miss, and push a blank
+    // detail page. The mail was one refresh away and nothing said so.
+    //
+    // Answers immediately when the message is already cached; otherwise
+    // selects the Inbox, refreshes, and answers when that lands. Either way
+    // the answer arrives as notificationEmailResolved().
+    Q_INVOKABLE void openFromNotification(const QString& messageId);
     // Task 39: Settings > Keywords pane. Wraps keywordRepository.allSettings()
     // over the Inbox's cached emails specifically (m_mailRepository.
     // cachedEmails("INBOX")), NOT m_currentFolderEmails/whatever folder is
@@ -341,6 +355,17 @@ signals:
     // raise/focus.
     void openEmailRequested(const QString& messageId);
 
+    // The answer to openFromNotification(): which mailbox `messageId` turned
+    // out to be in, or an EMPTY folder when it could not be found even after
+    // a refresh.
+    //
+    // A separate signal from openEmailRequested above rather than a return
+    // value, because the answer may only arrive after a network round trip.
+    // The roots open the detail page on a non-empty folder and stay put on an
+    // empty one -- pushing a blank detail page for a message that is not
+    // there is what this whole path exists to stop.
+    void notificationEmailResolved(const QString& messageId, const QString& folder);
+
 private:
     void applyFilter(); // recomputes m_model from m_currentFolderEmails + m_selectedKeyword
     // Re-reads the current folder's cache into the model. Shared by
@@ -483,6 +508,9 @@ private:
     // full resync into a background delta refresh would silently downgrade
     // the one request the user explicitly asked for.
     bool m_refreshPendingFullResync = false;
+    // Set by openFromNotification() while it waits for a refresh to land.
+    // Empty when no tap-through is outstanding.
+    QString m_pendingNotificationMessageId;
     QString m_lastError;
     bool m_pgpCanEncrypt = false;
     bool m_pgpCanSign = false;

@@ -107,10 +107,21 @@ Kirigami.ApplicationWindow {
     Connections {
         target: MailApp
         function onOpenEmailRequested(messageId) {
-            const email = MailApp.findByMessageId(messageId)
-            root.openEmailDetail(messageId, email.folder || "")
+            // Hand it to C++ rather than hydrating from the cache here. A
+            // push is generated the instant mail arrives and this client may
+            // not have synced it yet, which used to mean a blank detail page;
+            // openFromNotification() refreshes first and answers on
+            // onNotificationEmailResolved below.
+            MailApp.openFromNotification(messageId)
             root.raise()
             root.requestActivate()
+        }
+        function onNotificationEmailResolved(messageId, folder) {
+            // An empty folder means it could not be found even after a
+            // refresh. MailController has already set lastError; pushing a
+            // blank detail page on top of that would just hide it.
+            if (folder.length > 0)
+                root.openEmailDetail(messageId, folder)
         }
     }
 
