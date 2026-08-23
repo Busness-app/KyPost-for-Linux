@@ -191,7 +191,9 @@ jobs:
             qtkeychain-qt6-dev \
             kunifiedpush-dev \
             libssl-dev \
-            libargon2-dev
+            libargon2-dev \
+            libgpgme-dev \
+            gnupg
 
       # ZXing (zxing-cpp) backs the PGP QR key exchange feature's
       # encode/decode (app/pgp/PgpQrController.cpp, app/pgp/PgpQrScanner.cpp
