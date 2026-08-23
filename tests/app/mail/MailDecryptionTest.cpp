@@ -386,5 +386,9 @@ void MailDecryptionTest::aReplyForAReplacedAccountIsNeverShown()
     QCOMPARE(harness.controller->decryptedHtml(), QString());
 }
 
-QTEST_MAIN(MailDecryptionTest)
+// GUILESS, like MailControllerTest over the same sources. Nothing here draws
+// anything, and QTEST_MAIN builds a QApplication that aborts on a headless
+// runner before QtTest prints a single line -- which is exactly how this
+// arrived in CI: "Subprocess aborted" with no output to read.
+QTEST_GUILESS_MAIN(MailDecryptionTest)
 #include "MailDecryptionTest.moc"
