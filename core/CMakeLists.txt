@@ -71,6 +71,7 @@ add_library(kypostcore STATIC
   db/DatabaseEncryptionMigration.cpp
   db/ProfileDatabase.cpp
   pgp/OpenPgpDecryptor.cpp
+  pgp/MimeBodyReader.cpp
   pgp/EncryptedMessageReader.cpp
   security/DatabaseKeyStore.cpp
   security/LockoutPolicy.cpp
