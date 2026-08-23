@@ -97,8 +97,15 @@ function emailContentSecurityPolicy(imagesLoaded) {
 // The full document handed to WebEngineView.loadHtml(). `style` is the
 // caller's already-resolved theme CSS (colours come from a QML singleton
 // this module deliberately does not import).
-function renderedEmailHtml(body, imagesLoaded, style) {
-    var inner = looksLikeHtmlDocument(body)
+// forcePlainText skips the is-this-HTML sniff and always escapes.
+//
+// For a client-decrypted OpenPGP message the MIME Content-Type says which
+// form the body is, and knowing beats guessing: a plain-text message that
+// happens to contain "<html>" would otherwise be rendered as markup by a
+// heuristic, when the sender's own headers said it was text. Existing
+// callers pass three arguments and are unaffected.
+function renderedEmailHtml(body, imagesLoaded, style, forcePlainText) {
+    var inner = (!forcePlainText && looksLikeHtmlDocument(body))
         ? String(body === undefined || body === null ? "" : body)
         : ("<pre>" + escapeHtml(body) + "</pre>")
     return "<html><head>"
@@ -110,6 +117,35 @@ function renderedEmailHtml(body, imagesLoaded, style) {
         + "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />"
         + "<style>" + style + "</style>"
         + "</head><body>" + inner + "</body></html>"
+}
+
+// Which decrypted OpenPGP body, if any, belongs to the message on screen.
+//
+// The id comparison is the security control, not a tidiness check. MailApp is
+// a singleton holding at most one plaintext, so without it a decrypted
+// message would render under the NEXT message's headers the moment the reader
+// moved on -- the same class of mistake as showing a stale reply, except the
+// content is the one thing in the app the sender encrypted end to end.
+//
+// isHtml comes from which field the C++ side populated, which it took from
+// the part's MIME Content-Type. Never sniffed from the characters: a
+// plain-text message that happens to contain "<html>" is still plain text,
+// and the sender's own headers said so.
+//
+// Lives here rather than inside EmailDetail.qml for the same reason
+// isExternallyOpenableUrl does -- so it is testable without standing up the
+// whole singleton graph that file needs.
+function decryptedBodyFor(messageId, decryptedMessageId, html, plain) {
+    const id = String(messageId === undefined || messageId === null ? "" : messageId)
+    const heldId = String(decryptedMessageId === undefined || decryptedMessageId === null
+                          ? "" : decryptedMessageId)
+    if (id === "" || id !== heldId)
+        return { body: "", isHtml: false }
+
+    const asHtml = String(html === undefined || html === null ? "" : html)
+    if (asHtml !== "")
+        return { body: asHtml, isHtml: true }
+    return { body: String(plain === undefined || plain === null ? "" : plain), isHtml: false }
 }
 
 // Schemes a URL taken from message content may be handed to

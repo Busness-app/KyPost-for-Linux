@@ -34,6 +34,39 @@ QString pgpRowMarkerAccessibleName(PgpMessageState state)
     return {};
 }
 
+QString pgpReadFailureMessage(PgpReadStatus status)
+{
+    switch (status) {
+    case PgpReadStatus::Decrypted:
+        return {};
+    case PgpReadStatus::NoCiphertext:
+        return i18n("This message carries no encrypted content to open.");
+    case PgpReadStatus::ServerCustody:
+        return i18n("This account's key is still held by the server. Finish moving it to this "
+                     "device in webmail, and encrypted mail will open here.");
+    case PgpReadStatus::TooLarge:
+        return i18n("This message is too large to open here. Read it in webmail.");
+    case PgpReadStatus::FetchFailed:
+        return i18n("Could not reach the server to fetch this message. Try again.");
+    case PgpReadStatus::NoSecretKey:
+        return i18n("This message was encrypted to a key this computer does not have. Open it "
+                     "where you keep that key.");
+    case PgpReadStatus::CancelledOrWrongPassphrase:
+        return i18n("Unlocking your key was cancelled, or the passphrase was wrong.");
+    case PgpReadStatus::Malformed:
+        return i18n("This message is not readable OpenPGP data.");
+    case PgpReadStatus::EngineUnavailable:
+        return i18n("GnuPG is not available on this computer, so encrypted mail cannot be opened "
+                     "here.");
+    }
+    return {};
+}
+
+bool pgpReadIsRetryable(PgpReadStatus status)
+{
+    return status == PgpReadStatus::FetchFailed;
+}
+
 QString pgpBannerTitle(PgpMessageState state)
 {
     switch (state) {

@@ -40,6 +40,20 @@ finish-args:
   - --socket=fallback-x11
   - --share=network
 
+  # Client-side OpenPGP decryption (core/pgp/OpenPgpDecryptor.cpp) delegates
+  # to the user's own gpg-agent through GPGME, so this app holds no key
+  # material and never sees a passphrase -- which is also why hardware tokens
+  # and smartcards work here with no code. That delegation is a socket into
+  # the host: without this grant the sandboxed gpgme finds no agent, every
+  # encrypted message reports "GnuPG is not available", and the feature is
+  # simply absent in the Flatpak while working everywhere else.
+  #
+  # Narrower than it looks. It exposes the AGENT, not the keyring: the agent
+  # performs operations with keys it holds and does not hand them out, and
+  # the user still approves each unlock through their own pinentry, outside
+  # this sandbox.
+  - --socket=gpg-agent
+
   # KDBusService(KDBusService::Unique) in app/main.cpp claims this
   # well-known bus name for duplicate-launch detection and D-Bus
   # activation (packaging/dbus/com.urlxl.mail.service, wired by

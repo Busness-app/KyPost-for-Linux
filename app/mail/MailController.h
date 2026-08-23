@@ -5,6 +5,7 @@
 #include "mail/EmailListModel.h"
 #include "models/Email.h"
 #include "net/RelayMailSource.h" // MailAttachmentUpload -- held by value in PendingSend below
+#include "pgp/EncryptedMessageReader.h" // PgpReadResult/PgpReadStatus -- carried across the hop
 
 #include <QObject>
 #include <QString>
@@ -55,6 +56,30 @@ class MailController : public QObject
     Q_PROPERTY(QString selectedKeyword READ selectedKeyword NOTIFY selectedKeywordChanged)
     Q_PROPERTY(QVariantList keywordTabs READ keywordTabs NOTIFY keywordTabsChanged)
     Q_PROPERTY(bool isBusy READ isBusy NOTIFY isBusyChanged)
+
+    // --- Client-side OpenPGP decryption ---------------------------------
+    //
+    // The decrypted message lives in these members and NOWHERE ELSE. It is
+    // never written to the cache and never reaches disk: the sender chose
+    // end-to-end encryption, and the database key sits in the platform
+    // secret store rather than behind their OpenPGP passphrase, so caching
+    // the plaintext would quietly demote the message to the protection level
+    // of every other mail in the app. Enforced by
+    // MailControllerTest::aDecryptedMessageNeverReachesTheDatabase.
+    //
+    // Only one message is held at a time, and forgetDecrypted() drops it.
+    Q_PROPERTY(bool decryptBusy READ decryptBusy NOTIFY decryptedChanged)
+    // Which message the plaintext below belongs to; empty when none is held.
+    // The view MUST check this against the message it is showing -- holding
+    // the id with the body is what stops one message's plaintext appearing
+    // under another's headers after the reader moves on.
+    Q_PROPERTY(QString decryptedMessageId READ decryptedMessageId NOTIFY decryptedChanged)
+    Q_PROPERTY(QString decryptedHtml READ decryptedHtml NOTIFY decryptedChanged)
+    Q_PROPERTY(QString decryptedPlain READ decryptedPlain NOTIFY decryptedChanged)
+    // Localized sentence for the last failed decryption, or empty. Paired
+    // with decryptRetryable so the UI knows whether a Retry button can help.
+    Q_PROPERTY(QString decryptFailure READ decryptFailure NOTIFY decryptedChanged)
+    Q_PROPERTY(bool decryptRetryable READ decryptRetryable NOTIFY decryptedChanged)
     Q_PROPERTY(QString lastError READ lastError NOTIFY lastErrorChanged)
     Q_PROPERTY(bool pgpCanEncrypt READ pgpCanEncrypt NOTIFY pgpComposeStateChanged)
     Q_PROPERTY(bool pgpCanSign READ pgpCanSign NOTIFY pgpComposeStateChanged)
@@ -74,6 +99,12 @@ public:
     QVariantList keywordTabs() const; // [{name, count}, ...] -- "All" NOT included, see Task 38
     bool isBusy() const;
     QString lastError() const; // "" when none
+    bool decryptBusy() const { return m_decryptInFlight; }
+    QString decryptedMessageId() const { return m_decryptedMessageId; }
+    QString decryptedHtml() const { return m_decryptedHtml; }
+    QString decryptedPlain() const { return m_decryptedPlain; }
+    QString decryptFailure() const { return m_decryptFailure; }
+    bool decryptRetryable() const { return m_decryptRetryable; }
     bool pgpCanEncrypt() const;
     bool pgpCanSign() const;
     bool pgpHandoffToWebmail() const;
@@ -141,6 +172,21 @@ public slots:
     // isn't cached locally -- this is a pure local-cache read (no network
     // call), so a miss just means "not fetched/cached yet", not an error.
     Q_INVOKABLE QVariantMap findByMessageId(const QString& messageId) const;
+
+    // Fetches this message's ciphertext and decrypts it with the user's own
+    // gpg-agent. Dispatches and returns; the result arrives on the
+    // decrypted* properties.
+    //
+    // Deliberately NOT automatic on opening a message. Decryption prompts
+    // pinentry, which for a hardware token means the user has to physically
+    // touch it -- so it happens when they ask for it, not when a list
+    // selection changes.
+    Q_INVOKABLE void decryptMessage(const QString& messageId);
+
+    // Drops the held plaintext. Called when the reader moves on, and wired
+    // to the app lock in main.cpp: a locked app must not still be holding a
+    // decrypted message for whoever picks the machine up next.
+    Q_INVOKABLE void forgetDecrypted();
 
     // The notification tap-through entry point.
     //
@@ -269,6 +315,7 @@ signals:
     void keywordTabsChanged();
     void isBusyChanged();
     void lastErrorChanged();
+    void decryptedChanged();
     void foldersChanged();
     // Outcome of archiveEmails/deleteEmails/markSpam/moveEmails. `action` is
     // the wire verb ("archive"/"delete"/"spam"/"move") and `messageIds` is
@@ -382,6 +429,11 @@ private:
     // Completion of the asynchronous refresh, on this object's own thread.
     void finishRefresh(const MailRefreshPlan& plan, const InboxFetchResult& result);
     void setLastError(const QString& error);
+    // Runs on the GUI thread once the reader has answered. Takes the
+    // identity the request was planned against so a reply for a replaced
+    // account can be discarded rather than displayed.
+    void applyDecryptResult(const PairingIdentity& identity, const QString& messageId,
+                             const PgpReadResult& result);
     // Loads pairing state via m_pairingStore.load() into serverBaseUrl/auth.
     // Returns false (and sets lastError to "Not paired") without touching
     // either out-param when there is no saved pairing -- every network-
@@ -526,4 +578,13 @@ private:
     // already out.
     bool m_preflightInFlight = false;
     bool m_pgpBootstrapInFlight = false;
+
+    // The held plaintext. See the decrypt* properties above for why it lives
+    // here and not in the cache.
+    QString m_decryptedMessageId;
+    QString m_decryptedHtml;
+    QString m_decryptedPlain;
+    QString m_decryptFailure;
+    bool m_decryptRetryable = false;
+    bool m_decryptInFlight = false;
 };

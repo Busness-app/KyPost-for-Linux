@@ -184,6 +184,18 @@ kypost_add_app_test(MailControllerTest
   LIBS KF6::I18n Qt6::Gui
 )
 
+# The client-side decryption path, end to end: a real database, a real
+# pairing, a real gpg keyring and a fake relay. Separate binary from
+# MailControllerTest so its GNUPGHOME override cannot reach any other test.
+kypost_add_app_test(MailDecryptionTest
+  SOURCES
+    app/mail/MailDecryptionTest.cpp
+    ${CMAKE_SOURCE_DIR}/app/mail/EmailListModel.cpp
+    ${CMAKE_SOURCE_DIR}/app/mail/MailController.cpp
+    ${CMAKE_SOURCE_DIR}/app/mail/PgpMessagePresentation.cpp
+  LIBS KF6::I18n Qt6::Gui Qt6::Sql
+)
+
 # RemoteContentInterceptor (VibeSec fix): covers shouldBlockRemoteContentRequest(),
 # the pure decision logic behind interceptRequest() -- see
 # RemoteContentInterceptorTest.cpp's own comment for why interceptRequest()
