@@ -71,6 +71,12 @@ class AppLockManager : public QObject
     // it is not.
     Q_PROPERTY(bool wipeIncomplete READ wipeIncomplete NOTIFY wipeIncompleteChanged)
 
+    // How many consecutive failed attempts erase this device, or
+    // LockoutPolicy::kWipeNever for "do not erase". Settings binds this to
+    // its erase-after control; the range and the meaning of 0 come from
+    // core/security/LockoutPolicy.h.
+    Q_PROPERTY(int wipeAfterAttempts READ wipeAfterAttempts NOTIFY lockStateChanged)
+
 public:
     AppLockManager(AppLockStore& store, SettingsStore& settingsStore, CredentialSealer& sealer,
                    QObject* parent = nullptr);
@@ -135,6 +141,15 @@ public:
     // Re-locks immediately. Called by the host's lock triggers; a no-op when
     // the lock is disabled.
     Q_INVOKABLE void lockNow();
+
+    int wipeAfterAttempts() const;
+
+    // Requires the current PIN whenever a lock is set, checked through the
+    // same rate-limited path every other PIN prompt uses. Returns false if
+    // the PIN is wrong, if a backoff is in force, or if the store refused the
+    // write -- in which case the policy is unchanged and the caller must not
+    // report success. `attempts` is clamped to LockoutPolicy's range.
+    Q_INVOKABLE bool setWipeAfterAttempts(int attempts, const QString& currentPin);
 
     bool wipeIncomplete() const;
     // Host-set, at startup, from the interrupted-wipe recovery attempt. Not

@@ -170,6 +170,11 @@ private slots:
     void settingsPromptsHonourTheSessionFloorToo();
     void anUnreachableSecretStoreLeavesTheAppLocked();
     void aFailedPinRecordWriteMovesTheSecretBack();
+
+    // Configurable erase-after threshold (phase 5).
+    void switchingTheEraseOffKeepsTheRateLimit();
+    void aLoweredEraseThresholdWipesEarlier();
+    void changingTheEraseThresholdRequiresTheCurrentPin();
 };
 
 void AppLockManagerTest::startsUnlockedWhenLockDisabled()
@@ -284,7 +289,7 @@ void AppLockManagerTest::wipeRequestedAtThreshold()
     NullCredentialSealer sealer;
     QVERIFY(store.setPin(kGoodPin));
     // One short of the threshold, with no backoff in the way.
-    QVERIFY(store.setFailedAttemptCount(LockoutPolicy::kWipeThreshold - 1));
+    QVERIFY(store.setFailedAttemptCount(LockoutPolicy::kDefaultWipeThreshold - 1));
     QVERIFY(store.setLockoutUntilEpochMs(0));
 
     AppLockManager manager(store, settingsStore, sealer);
@@ -644,7 +649,7 @@ void AppLockManagerTest::sessionCounterCapsGuessingWhenClockIsMovedForward()
     AppLockManager manager(store, settingsStore, sealer);
     QSignalSpy wipeSpy(&manager, &AppLockManager::wipeRequested);
 
-    for (int i = 0; i < LockoutPolicy::kWipeThreshold; ++i) {
+    for (int i = 0; i < LockoutPolicy::kDefaultWipeThreshold; ++i) {
         manager.tryUnlock(kWrongPin);
         // Simulate the attacker clearing the backoff between guesses, which
         // moving the system clock forward achieves.
@@ -674,7 +679,7 @@ void AppLockManagerTest::staleAttemptCounterCannotTriggerAWipeAfterASuccessfulUn
     QSignalSpy wipeSpy(&manager, &AppLockManager::wipeRequested);
 
     // Walk the persisted counter up to one short of the threshold.
-    for (int i = 0; i < LockoutPolicy::kWipeThreshold - 1; ++i) {
+    for (int i = 0; i < LockoutPolicy::kDefaultWipeThreshold - 1; ++i) {
         manager.tryUnlock(kWrongPin);
         store.setLockoutUntilEpochMs(0); // skip the backoff, as above
     }
@@ -724,7 +729,7 @@ void AppLockManagerTest::settingsPromptsHonourTheSessionFloorToo()
 
     // Burn the session floor on the unlock screen, clearing the backoff
     // between guesses the way a forward clock jump does.
-    for (int i = 0; i < LockoutPolicy::kWipeThreshold; ++i) {
+    for (int i = 0; i < LockoutPolicy::kDefaultWipeThreshold; ++i) {
         manager.tryUnlock(kWrongPin);
         store.setLockoutUntilEpochMs(0);
     }
@@ -811,6 +816,102 @@ void AppLockManagerTest::anUnreachableSecretStoreLeavesTheAppLocked()
     // is not.
     QVERIFY(!manager.tryUnlock(kGoodPin));
     QVERIFY(manager.locked());
+}
+
+// THE TRADE THAT WAS NEVER ON OFFER.
+//
+// The wipe threshold and the per-process refusal floor used to be the same
+// constant. Making the threshold configurable without splitting them would
+// have meant a user who switched off "erase this device" also switched off
+// the only limit an attacker cannot defeat by moving the system clock
+// forward -- turning the unlock screen back into the unmetered guessing
+// oracle this class refuses to serve.
+void AppLockManagerTest::switchingTheEraseOffKeepsTheRateLimit()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    FlakySecureStore secureStore;
+    AppLockStore store(secureStore);
+    SettingsStore settingsStore(dir.filePath(QStringLiteral("settings.ini")));
+    NullCredentialSealer sealer;
+    QVERIFY(store.setPin(kGoodPin));
+    QVERIFY(store.setWipeAfterAttempts(LockoutPolicy::kWipeNever));
+
+    AppLockManager manager(store, settingsStore, sealer);
+    QSignalSpy wipeSpy(&manager, &AppLockManager::wipeRequested);
+
+    // Well past the old threshold, with the backoff cleared between guesses
+    // exactly as a forward clock change would achieve.
+    for (int i = 0; i < LockoutPolicy::kSessionRefuseFloor + 5; ++i) {
+        manager.tryUnlock(kWrongPin);
+        store.setLockoutUntilEpochMs(0);
+    }
+
+    // The user asked not to be erased, and was not.
+    QCOMPARE(wipeSpy.count(), 0);
+
+    // But guesses are refused all the same -- including the CORRECT PIN,
+    // which is the honest consequence of the floor and the reason relaunching
+    // is the documented recovery.
+    QCOMPARE(manager.tryUnlock(kGoodPin), false);
+}
+
+void AppLockManagerTest::aLoweredEraseThresholdWipesEarlier()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    FlakySecureStore secureStore;
+    AppLockStore store(secureStore);
+    SettingsStore settingsStore(dir.filePath(QStringLiteral("settings.ini")));
+    NullCredentialSealer sealer;
+    QVERIFY(store.setPin(kGoodPin));
+    QVERIFY(store.setWipeAfterAttempts(LockoutPolicy::kMinWipeThreshold));
+
+    AppLockManager manager(store, settingsStore, sealer);
+    QCOMPARE(manager.wipeAfterAttempts(), LockoutPolicy::kMinWipeThreshold);
+    QSignalSpy wipeSpy(&manager, &AppLockManager::wipeRequested);
+
+    for (int i = 0; i < LockoutPolicy::kMinWipeThreshold - 1; ++i) {
+        manager.tryUnlock(kWrongPin);
+        store.setLockoutUntilEpochMs(0);
+    }
+    QCOMPARE(wipeSpy.count(), 0);
+
+    manager.tryUnlock(kWrongPin);
+    QVERIFY(wipeSpy.count() >= 1);
+}
+
+// Someone who walks up to an unlocked session must not be able to switch off
+// the erase, any more than they can switch off the lock itself.
+void AppLockManagerTest::changingTheEraseThresholdRequiresTheCurrentPin()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    FlakySecureStore secureStore;
+    AppLockStore store(secureStore);
+    SettingsStore settingsStore(dir.filePath(QStringLiteral("settings.ini")));
+    NullCredentialSealer sealer;
+    QVERIFY(store.setPin(kGoodPin));
+
+    AppLockManager manager(store, settingsStore, sealer);
+    QCOMPARE(manager.wipeAfterAttempts(), LockoutPolicy::kDefaultWipeThreshold);
+
+    QCOMPARE(manager.setWipeAfterAttempts(LockoutPolicy::kWipeNever, kWrongPin), false);
+    QCOMPARE(manager.wipeAfterAttempts(), LockoutPolicy::kDefaultWipeThreshold);
+
+    // The refused attempt counts as a failure, like every other PIN prompt --
+    // otherwise this setter is an unmetered oracle of its own. Cleared here
+    // so the backoff does not refuse the legitimate change below.
+    QVERIFY(store.setFailedAttemptCount(0));
+    QVERIFY(store.setLockoutUntilEpochMs(0));
+
+    QCOMPARE(manager.setWipeAfterAttempts(LockoutPolicy::kWipeNever, kGoodPin), true);
+    QCOMPARE(manager.wipeAfterAttempts(), LockoutPolicy::kWipeNever);
+
+    // Out-of-range values are clamped rather than honoured, so nothing can
+    // arrange to erase the device on the second mistyped digit.
+    QCOMPARE(manager.setWipeAfterAttempts(1, kGoodPin), true);
+    QCOMPARE(manager.wipeAfterAttempts(), LockoutPolicy::kMinWipeThreshold);
 }
 
 QTEST_GUILESS_MAIN(AppLockManagerTest)

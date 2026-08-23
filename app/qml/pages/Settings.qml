@@ -63,6 +63,13 @@ Item {
     // setKeywordVisible() just wrote.
     property var keywordSettings: []
 
+    // Which erase-after value the PIN prompt is about to apply. Held here
+    // rather than passed through securityPrompt.begin() because that helper
+    // takes only a mode and a message, and widening it for one caller would
+    // touch every other prompt in this file. AppLockManager clamps and
+    // re-checks whatever arrives, so this is a convenience, not a control.
+    property int eraseThresholdChoice: 0
+
     function refreshKeywordSettings() {
         root.keywordSettings = MailApp.allKeywordSettings()
     }
@@ -675,6 +682,59 @@ Item {
 
                     Item { Layout.preferredHeight: 4 }
 
+                    SectionLabel { text: i18n("Erase after failed attempts") }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
+                        // Nothing to count failures against without a PIN.
+                        enabled: AppLock.lockEnabled
+                        opacity: enabled ? 1.0 : 0.5
+                        Text {
+                            Layout.fillWidth: true
+                            text: i18n("Erase this device after")
+                            color: Theme.inkStrong
+                            font.family: Theme.fontUi
+                            font.pixelSize: 14
+                        }
+                        Repeater {
+                            model: [0, 5, 10, 20]
+                            delegate: PillTab {
+                                required property int modelData
+                                text: modelData === 0
+                                    ? i18n("Never")
+                                    : i18np("%1 attempt", "%1 attempts", modelData)
+                                selected: AppLock.wipeAfterAttempts === modelData
+                                onClicked: {
+                                    if (AppLock.wipeAfterAttempts === modelData)
+                                        return
+                                    eraseThresholdChoice = modelData
+                                    securityPrompt.begin(
+                                        "eraseAfter",
+                                        modelData === 0
+                                            ? i18n("Enter your PIN to stop KyPost erasing this device after "
+                                                   + "repeated failed attempts.")
+                                            : i18np("Enter your PIN to erase this device after %1 failed attempt.",
+                                                    "Enter your PIN to erase this device after %1 failed attempts.",
+                                                    modelData))
+                                }
+                            }
+                        }
+                    }
+
+                    // Says what "Never" does and does not switch off. It is
+                    // the erase that stops, not the rate limiting -- and
+                    // being explicit here is the difference between an
+                    // informed choice and a surprise.
+                    MutedHint {
+                        Layout.fillWidth: true
+                        text: AppLock.wipeAfterAttempts === 0
+                            ? i18n("KyPost will not erase itself, however many attempts fail. Repeated failures are still slowed down and eventually refused until you restart the app. Anyone who takes this computer can keep guessing.")
+                            : i18n("Cached mail, contacts and this device's pairing are erased after this many consecutive failed attempts. Your mail on the server is not affected.")
+                    }
+
+                    Item { Layout.preferredHeight: 4 }
+
                     SectionLabel { text: i18n("Push and MFA") }
 
                     RowLayout {
@@ -905,6 +965,8 @@ Item {
                 ok = AppLock.setHostileLocationEnabled(true, current)
             else if (securityPrompt.mode === "hlpOff")
                 ok = AppLock.setHostileLocationEnabled(false, current)
+            else if (securityPrompt.mode === "eraseAfter")
+                ok = AppLock.setWipeAfterAttempts(eraseThresholdChoice, current)
 
             if (ok) {
                 securityPrompt.close()

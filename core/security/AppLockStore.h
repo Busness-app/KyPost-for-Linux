@@ -72,6 +72,25 @@ public:
     qint64 lockoutUntilEpochMs() const;
     bool setLockoutUntilEpochMs(qint64 epochMs);
 
+    // How many consecutive failed attempts erase this device, or
+    // LockoutPolicy::kWipeNever for "do not erase".
+    //
+    // Here rather than in SettingsStore for the same reason lockEnabled() is:
+    // settings.ini is a plain text file, so anyone with file access could
+    // switch the erase off by editing it -- which is exactly the access level
+    // this policy exists to survive. It is stored next to the PIN, behind the
+    // same secret store.
+    //
+    // An absent, unparseable or out-of-range value reads as the DEFAULT, not
+    // as "never": the failure direction has to be the protective one, and an
+    // unreadable keyring is not the user asking for the erase to stop.
+    int wipeAfterAttempts() const;
+
+    // Clamped to LockoutPolicy's range before it is written, so nothing
+    // downstream has to defend against a value that would erase the device on
+    // the second mistyped digit.
+    bool setWipeAfterAttempts(int attempts);
+
     // "Require unlock to receive push/MFA": when on, the device secret is
     // stored sealed (see core/security/CredentialCipher.h) and is unusable
     // until the PIN has been entered this session.
