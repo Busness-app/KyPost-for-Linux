@@ -223,8 +223,23 @@ jobs:
           cmake --build /tmp/zxing-cpp/build
           sudo cmake --install /tmp/zxing-cpp/build
 
+      # SQLCipher, for the encrypted-database tests.
+      #
+      # Built from source rather than apt-installed, and that is not the
+      # usual "the packaged version is too old" reason. Debian/Ubuntu ship
+      # SQLCipher RENAMED -- libsqlcipher.so.0, not libsqlite3.so.0 -- and
+      # the rename is what breaks it: Qt's stock SQLite driver plugin has a
+      # DT_NEEDED on libsqlite3.so.0, so a differently-named SQLCipher does
+      # not satisfy it and the loader maps the system SQLite alongside ours.
+      # scripts/build-sqlcipher.sh sets the SONAME the plugin actually asks
+      # for, and checks the result before it exits. See its header comment.
+      - name: Build SQLCipher from source
+        run: ./scripts/build-sqlcipher.sh /tmp/sqlcipher
+
       - name: Configure
-        run: cmake -B build -S . -G Ninja -DCMAKE_BUILD_TYPE=Release
+        run: |
+          cmake -B build -S . -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DKYPOST_SQLCIPHER_ROOT=/tmp/sqlcipher
 
       - name: Build
         run: cmake --build build
@@ -261,7 +276,9 @@ jobs:
       # here. ASan's use-after-free/overflow detection and all of UBSan
       # remain on, which is the part that matters.
       - name: Configure (sanitizers)
-        run: cmake -B build-asan -S . -G Ninja -DCMAKE_BUILD_TYPE=Debug -DKYPOST_SANITIZE=ON
+        run: |
+          cmake -B build-asan -S . -G Ninja -DCMAKE_BUILD_TYPE=Debug -DKYPOST_SANITIZE=ON \
+            -DKYPOST_SQLCIPHER_ROOT=/tmp/sqlcipher
 
       - name: Build (sanitizers)
         run: cmake --build build-asan

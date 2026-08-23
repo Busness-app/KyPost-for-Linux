@@ -129,13 +129,115 @@ Database::~Database()
         QSqlDatabase::removeDatabase(m_connectionName);
 }
 
-bool Database::open(const QString& path)
+// Applies the key and then proves it took. Everything about this function is
+// about not believing the happy path.
+bool Database::applyEncryptionKey(const QByteArray& rawKey)
 {
+    // x'<hex>' is SQLCipher's raw-key form. The key never reaches the SQL
+    // text in any form that needs escaping.
+    QSqlQuery keyQuery(m_db);
+    const bool keyExecuted =
+        keyQuery.exec(QStringLiteral("PRAGMA key = \"x'%1'\"").arg(QString::fromLatin1(rawKey.toHex())));
+    keyQuery.finish();
+    if (!keyExecuted) {
+        qWarning("Database: PRAGMA key failed: %s", qUtf8Printable(keyQuery.lastError().text()));
+        return false;
+    }
+
+    // CHECK 1: is this actually SQLCipher?
+    //
+    // An ordinary SQLite answers `PRAGMA key` with success and does nothing,
+    // so the exec() above proves nothing whatsoever. cipher_version is the
+    // question stock SQLite cannot fake: it is not a pragma it knows, so it
+    // returns no rows.
+    QSqlQuery versionQuery(m_db);
+    const bool haveVersion = versionQuery.exec(QStringLiteral("PRAGMA cipher_version"))
+        && versionQuery.next() && !versionQuery.value(0).toString().trimmed().isEmpty();
+    versionQuery.finish();
+    if (!haveVersion) {
+        qCritical("Database: refusing to open -- PRAGMA key was accepted but this is not SQLCipher, "
+                   "so the database would be written in plaintext");
+        return false;
+    }
+
+    // CHECK 2: is the key the RIGHT one?
+    //
+    // SQLCipher does not verify the key when it is set; it fails at the first
+    // page it has to decrypt. Without this read, open() would succeed under a
+    // wrong key and the failure would surface later as an unrelated-looking
+    // query error, somewhere with no idea what to do about it.
+    QSqlQuery probeQuery(m_db);
+    const bool readable = probeQuery.exec(QStringLiteral("SELECT count(*) FROM sqlite_master")) && probeQuery.next();
+    probeQuery.finish();
+    if (!readable) {
+        qWarning("Database: the encryption key does not open this database");
+        return false;
+    }
+
+    return true;
+}
+
+#ifdef KYPOST_HAVE_SQLCIPHER
+// Declared here rather than by including sqlite3.h: this file needs exactly
+// one thing out of the library, and pulling the whole header in would put a
+// SQLCipher include path in front of every consumer of Database.h.
+extern "C" const char* sqlite3_libversion();
+#endif
+
+bool Database::encryptionAvailable()
+{
+#ifdef KYPOST_HAVE_SQLCIPHER
+    // A real call, and it is load-bearing rather than decorative.
+    //
+    // Linking the library is not enough to make it LOAD. Debian and Ubuntu
+    // pass -Wl,--as-needed by default, and nothing else in this codebase
+    // references a sqlite3 symbol -- every SQL call goes through Qt's driver
+    // plugin, not through us -- so the linker drops the DT_NEEDED entry as
+    // unused. The RUNPATH survives, pointing at a library that is then never
+    // mapped; Qt's plugin resolves its own libsqlite3.so.0 from the system,
+    // and `PRAGMA key` becomes the silent no-op this class exists to catch.
+    //
+    // That is not hypothetical: it is what CI did on the first run of this
+    // feature while the same build passed on a distribution that does not
+    // default to --as-needed. Reproduced by adding the flag locally, then
+    // fixed here. One honest reference to the library keeps it.
+    return sqlite3_libversion() != nullptr;
+#else
+    return false;
+#endif
+}
+
+bool Database::open(const QString& path, const QByteArray& rawKey)
+{
+    if (!rawKey.isEmpty()) {
+        if (!encryptionAvailable()) {
+            // Refused, not downgraded. Opening plaintext because this build
+            // has no SQLCipher would produce exactly the database the caller
+            // asked not to have, and nothing above would know.
+            qWarning("Database: an encrypted database was requested, but this build has no SQLCipher");
+            return false;
+        }
+        if (rawKey.size() != kRawKeyBytes) {
+            // A wrong-length key is not passed on. SQLCipher treats anything
+            // that is not exactly 32 raw bytes in x'' form as a PASSPHRASE
+            // and runs PBKDF2 over it, so a truncated key would still open a
+            // database -- a different one, silently, under a different key.
+            qWarning("Database: refusing a %lld-byte key; exactly %d bytes are required",
+                      static_cast<long long>(rawKey.size()), kRawKeyBytes);
+            return false;
+        }
+    }
+
     m_connectionName = QStringLiteral("kypost_db_%1").arg(g_connectionCounter.fetchAndAddRelaxed(1));
     m_db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), m_connectionName);
     m_db.setDatabaseName(path);
     if (!m_db.open())
         return false;
+
+    if (!rawKey.isEmpty() && !applyEncryptionKey(rawKey)) {
+        m_db.close();
+        return false;
+    }
 
     QSqlQuery foreignKeysQuery(m_db);
     foreignKeysQuery.exec(QStringLiteral("PRAGMA foreign_keys = ON"));

@@ -190,6 +190,50 @@ target_link_libraries(kypostcore PUBLIC
 
 target_link_libraries(kypostcore PRIVATE OpenSSL::Crypto PkgConfig::ARGON2)
 
+# SQLCipher, when a prefix was given.
+#
+# Linked into kypostcore rather than loaded as some separate driver, because
+# there is nothing to load: Qt's own stock QSQLITE plugin drives SQLCipher
+# unchanged. The plugin has a DT_NEEDED on libsqlite3.so.0, and the library
+# scripts/build-sqlcipher.sh produces carries exactly that SONAME -- so by
+# the time Qt dlopens the plugin, its sqlite is already resolved to ours and
+# the system copy is never mapped. Verified with LD_DEBUG=libs: one
+# `calling init` line for libsqlite3, and it is this one.
+#
+# That is also why no vendored Qt driver, no private Qt SQL headers and no
+# custom plugin appear anywhere in this repo. The first design assumed all
+# three were needed.
+if(KYPOST_SQLCIPHER_ROOT)
+  find_library(KYPOST_SQLCIPHER_LIBRARY
+    NAMES sqlite3
+    PATHS "${KYPOST_SQLCIPHER_ROOT}/lib"
+    NO_DEFAULT_PATH  # see the cache variable's comment: the system copy is not a fallback
+    REQUIRED)
+  # Proof, at configure time, that the library really is SQLCipher rather
+  # than an ordinary SQLite that happens to sit at that prefix. sqlite3_key
+  # exists only in SQLCipher. Without this the mistake surfaces at RUNTIME,
+  # as Database::open() refusing to open anything -- correct, but a long way
+  # from the person who pointed KYPOST_SQLCIPHER_ROOT at the wrong place.
+  include(CheckLibraryExists)
+  check_library_exists("${KYPOST_SQLCIPHER_LIBRARY}" sqlite3_key "" KYPOST_SQLCIPHER_HAS_KEY)
+  if(NOT KYPOST_SQLCIPHER_HAS_KEY)
+    message(FATAL_ERROR
+      "${KYPOST_SQLCIPHER_LIBRARY} has no sqlite3_key: this is a plain SQLite, not SQLCipher. "
+      "Build one with scripts/build-sqlcipher.sh and point KYPOST_SQLCIPHER_ROOT at its prefix.")
+  endif()
+
+  target_link_libraries(kypostcore PUBLIC "${KYPOST_SQLCIPHER_LIBRARY}")
+  # So the running binary finds it without LD_LIBRARY_PATH, and finds it
+  # BEFORE the Qt plugin asks for a libsqlite3 of its own.
+  set(CMAKE_BUILD_RPATH "${KYPOST_SQLCIPHER_ROOT}/lib" PARENT_SCOPE)
+  set(CMAKE_INSTALL_RPATH "${KYPOST_SQLCIPHER_ROOT}/lib" PARENT_SCOPE)
+  target_compile_definitions(kypostcore PUBLIC KYPOST_HAVE_SQLCIPHER=1)
+  message(STATUS "SQLCipher: ${KYPOST_SQLCIPHER_LIBRARY}")
+else()
+  message(STATUS "SQLCipher: not configured (KYPOST_SQLCIPHER_ROOT unset) -- "
+                  "encrypted databases unavailable")
+endif()
+
 # Surfaces the root project(VERSION) to C++. PUBLIC so test binaries that
 # link kypostcore see the same value the library was built with.
 target_compile_definitions(kypostcore PUBLIC KYPOST_VERSION="${PROJECT_VERSION}")
