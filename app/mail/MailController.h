@@ -113,9 +113,11 @@ public:
     bool isBusy() const;
     QString lastError() const; // "" when none
     bool decryptBusy() const { return m_decryptInFlight; }
-    QString decryptedMessageId() const { return m_decryptedMessageId; }
-    QString decryptedHtml() const { return m_decryptedHtml; }
-    QString decryptedPlain() const { return m_decryptedPlain; }
+    // All three answer as though nothing is held once the account has been
+    // replaced. See decryptedStillOurs().
+    QString decryptedMessageId() const { return decryptedStillOurs() ? m_decryptedMessageId : QString(); }
+    QString decryptedHtml() const { return decryptedStillOurs() ? m_decryptedHtml : QString(); }
+    QString decryptedPlain() const { return decryptedStillOurs() ? m_decryptedPlain : QString(); }
     QString decryptFailure() const { return m_decryptFailure; }
     QString decryptedSignature() const { return m_decryptedSignature; }
     bool decryptedSignatureIsWarning() const { return m_decryptedSignatureIsWarning; }
@@ -640,6 +642,24 @@ private:
 
     // The held plaintext. See the decrypt* properties above for why it lives
     // here and not in the cache.
+    // Whether what is held still belongs to the account this device is paired
+    // to.
+    //
+    // Enforced on every READ rather than only by clearing on a signal,
+    // because the identifier alone is not evidence of anything:
+    // decryptedMessageId is an IMAP UID, UIDs are per-mailbox rather than
+    // per-account, and "5" exists again in the next account and means
+    // somebody else's message. Everything that decides whether to show the
+    // held body compares that id, so a match after a replacement is a
+    // coincidence and not a permission.
+    //
+    // Clearing on a signal is also done -- main.cpp wires it to
+    // PairingController -- because that actually frees the memory. This is
+    // what makes the property true regardless of whether anyone remembered
+    // to wire it.
+    bool decryptedStillOurs() const;
+
+    PairingIdentity m_decryptedIdentity;
     QString m_decryptedMessageId;
     QString m_decryptedHtml;
     QString m_decryptedPlain;

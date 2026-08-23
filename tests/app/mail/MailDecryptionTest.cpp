@@ -111,6 +111,7 @@ private slots:
     void serverCustodyIsExplainedRatherThanRetried();
     void anOutageIsTheOneRetryableFailure();
     void aReplyForAReplacedAccountIsNeverShown();
+    void aDecryptedMessageIsNotVisibleAfterTheAccountIsReplaced();
 
 private:
     GnupgFixture m_fixture;
@@ -319,5 +320,47 @@ void MailDecryptionTest::aReplyForAReplacedAccountIsNeverShown()
 // anything, and QTEST_MAIN builds a QApplication that aborts on a headless
 // runner before QtTest prints a single line -- which is exactly how this
 // arrived in CI: "Subprocess aborted" with no output to read.
+// The held plaintext must not survive an account replacement.
+//
+// decryptedMessageId is an IMAP UID -- "5" -- and UIDs are per-mailbox, not
+// per-account. So after pairing a different account, UID 5 exists again and
+// means somebody else's message. Everything that decides whether to show the
+// held body compares that id, so a match is not evidence the body belongs to
+// what is on screen.
+//
+// The reader moving on clears it, and so does the app lock, but neither fires
+// when the account changes underneath a message that is already open.
+void MailDecryptionTest::aDecryptedMessageIsNotVisibleAfterTheAccountIsReplaced()
+{
+    const QByteArray entity = QByteArray("Content-Type: text/plain; charset=utf-8\r\n\r\n") + kCanary + "\r\n";
+    const QByteArray armored = m_fixture.encryptToTestKey(entity);
+    QVERIFY(!armored.isEmpty());
+
+    FakeRelayServer fake(httpResponse(200, "OK", inboxWithOneEncryptedMessage()));
+    DecryptHarness harness;
+    QVERIFY(harness.build(fake));
+
+    harness.controller->refresh();
+    QTRY_VERIFY_WITH_TIMEOUT(!harness.controller->isBusy(), 5000);
+    fake.setResponse(payloadResponse(armored));
+    harness.controller->decryptMessage(QStringLiteral("5"));
+    QTRY_VERIFY_WITH_TIMEOUT(!harness.controller->decryptBusy(), 15000);
+    QVERIFY(harness.controller->decryptedPlain().contains(QString::fromUtf8(kCanary)));
+
+    // A different account on this device.
+    DevicePairing replacement;
+    replacement.subscriberId = QStringLiteral("sub-2");
+    replacement.deviceSecret = QStringLiteral("secret-2");
+    replacement.serverBaseUrl = QStringLiteral("http://127.0.0.1:%1").arg(fake.port());
+    replacement.deviceId = QStringLiteral("dev-2");
+    QVERIFY(harness.pairingStore->save(replacement));
+
+    QVERIFY2(harness.controller->decryptedMessageId().isEmpty(),
+             "the previous account's decrypted message is still claimed for this UID");
+    QVERIFY2(!harness.controller->decryptedPlain().contains(QString::fromUtf8(kCanary)),
+             "the previous account's plaintext is still readable");
+    QVERIFY(harness.controller->decryptedHtml().isEmpty());
+}
+
 QTEST_GUILESS_MAIN(MailDecryptionTest)
 #include "MailDecryptionTest.moc"

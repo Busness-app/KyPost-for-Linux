@@ -91,6 +91,30 @@ public:
 
     QString fingerprintOf(const QString& uid) const { return firstFingerprint(m_home.path(), uid); }
 
+    // The same ciphertext with one byte of the encrypted packet flipped, and a
+    // VALID armor checksum.
+    //
+    // Re-armoring matters. Editing the armor text directly trips the CRC, and
+    // a CRC failure is not the property under test -- an attacker recomputes
+    // it. This tampers the binary packet and lets gpg write the armor, which
+    // is what a modified message actually looks like on arrival.
+    QByteArray tamperedCopyOf(const QByteArray& armored) const
+    {
+        QByteArray binary = runWithInput(QStringLiteral("gpg"), { QStringLiteral("--dearmor") }, armored);
+        if (binary.size() < 24)
+            return {};
+        // Well inside the symmetrically-encrypted data packet, near its end.
+        binary[binary.size() - 20] = static_cast<char>(binary.at(binary.size() - 20) ^ 0x01);
+
+        QByteArray rearmored =
+            runWithInput(QStringLiteral("gpg"), { QStringLiteral("--enarmor") }, binary);
+        // --enarmor labels it a generic armored file; the label is what a
+        // reader dispatches on.
+        rearmored.replace("ARMORED FILE", "MESSAGE");
+        return rearmored;
+    }
+
+
     // Adds a user ID to an existing key, so a test has a genuinely NEWER copy
     // of the same key to import over the old one.
     bool addUid(const QString& uid, const QString& extraUid) const
@@ -193,6 +217,21 @@ public:
     }
 
 private:
+    QByteArray runWithInput(const QString& program, const QStringList& args,
+                             const QByteArray& input) const
+    {
+        QProcess process;
+        process.setProcessEnvironment(environment());
+        process.start(program, args);
+        if (!process.waitForStarted(10000))
+            return {};
+        process.write(input);
+        process.closeWriteChannel();
+        if (!process.waitForFinished(30000))
+            return {};
+        return process.readAllStandardOutput();
+    }
+
     QProcessEnvironment environment() const
     {
         QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
