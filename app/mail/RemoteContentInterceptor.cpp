@@ -1,6 +1,8 @@
 #include "mail/RemoteContentInterceptor.h"
 
 #include <QQuickWebEngineProfile>
+
+#include <QtGlobal>
 #include <QWebEngineUrlRequestInfo>
 
 bool shouldBlockRemoteContentRequest(QWebEngineUrlRequestInfo::ResourceType resourceType, bool imagesLoaded)
@@ -41,8 +43,31 @@ void RemoteContentInterceptor::setImagesLoaded(bool loaded)
 
 void RemoteContentInterceptor::installOn(QQuickWebEngineProfile* profile)
 {
-    if (profile)
-        profile->setUrlRequestInterceptor(this);
+    if (profile == nullptr)
+        return;
+
+    // The profile this renders mail in must not persist anything.
+    //
+    // A decrypted OpenPGP message is rendered here, and MailController is
+    // careful never to write it to the database -- which would be beside the
+    // point if the web engine wrote it to a disk cache instead. Measured on
+    // Qt 6.11: a WebEngineProfile declared with no storageName, which is what
+    // EmailDetail.qml declares, comes up off-the-record with a memory-only
+    // HTTP cache and no persistent cookies, and never creates the storage
+    // directory it names.
+    //
+    // Checked here rather than trusted, because the regression is one line of
+    // QML -- a storageName added to enable something -- and nothing else in
+    // this repo would notice. A warning rather than a refusal: declining to
+    // install the interceptor would leave remote content UNBLOCKED, which is
+    // a worse outcome than the one being warned about.
+    if (!profile->isOffTheRecord()) {
+        qWarning("RemoteContentInterceptor: rendering mail in a profile that persists to disk (%s). "
+                  "Decrypted message content can reach the web engine's cache.",
+                  qUtf8Printable(profile->storageName()));
+    }
+
+    profile->setUrlRequestInterceptor(this);
 }
 
 void RemoteContentInterceptor::interceptRequest(QWebEngineUrlRequestInfo& info)
