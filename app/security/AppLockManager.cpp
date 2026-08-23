@@ -366,6 +366,19 @@ bool AppLockManager::setHostileLocationEnabled(bool enabled, const QString& curr
     return true;
 }
 
+bool AppLockManager::wipeIncomplete() const
+{
+    return m_wipeIncomplete;
+}
+
+void AppLockManager::setWipeIncomplete(bool incomplete)
+{
+    if (m_wipeIncomplete == incomplete)
+        return;
+    m_wipeIncomplete = incomplete;
+    emit wipeIncompleteChanged();
+}
+
 void AppLockManager::lockNow()
 {
     if (!m_store.lockEnabled() || m_locked)

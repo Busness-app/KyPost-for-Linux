@@ -33,6 +33,7 @@ add_library(kypostcore STATIC
   domain/GroupsRepository.cpp
   domain/GroupsRepository.h
   domain/LocalDataWipe.cpp
+  domain/TrackedWipe.cpp
   domain/LocalDataWipe.h
   domain/PgpQrRepository.cpp
   domain/PgpQrRepository.h
@@ -68,6 +69,7 @@ add_library(kypostcore STATIC
   security/CredentialCipher.cpp
   security/CredentialCipher.h
   security/LockoutPolicy.cpp
+  security/WipeTripwire.cpp
   security/LockoutPolicy.h
   security/PinPolicy.cpp
   security/PinPolicy.h

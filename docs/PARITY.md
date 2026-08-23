@@ -71,7 +71,7 @@ A row may not sit at **Missing** without an owner phase. A row may not sit at
 | Encrypted database at rest | **Missing** | Phase 3, **its own branch** (decided 2026-08-22). SQLCipher is not in `org.kde.Platform`, so it needs a Flatpak module and a custom Qt SQL driver path. `AppLockStore.h` documents the current honest position; do not weaken that wording before the encryption actually ships. |
 | Configurable background-lock grace period | **Missing** | Phase 5. |
 | Configurable erase-after threshold, incl. "never" | **Missing** | Phase 5. `LockoutPolicy::kWipeThreshold` is a compile-time constant. |
-| Interrupted-wipe tripwire, incomplete-wipe state | **Missing** | Phase 5. |
+| Interrupted-wipe tripwire, incomplete-wipe state | Matched | Added 2026-08-22. `WipeTripwire` records that a wipe STARTED, before the first byte is erased, and is cleared only by a wipe that reported every component gone. `TrackedWipe` owns the arm → wipe → disarm sequence and the startup recovery, out of `main()` where it had no seam a test could reach. A marker found at launch re-runs the wipe **before** `AppLockManager` reads the lock state; if it still cannot finish, `AppLock.wipeIncomplete` drives a `StatusBanner` row, because the one thing worse than a failed wipe is a user who thinks it succeeded. Scoped to the full erase (`wipeEverything`); Hostile Location Protection's `wipeOnDiskDataOnly` is not tracked. |
 | Biometric unlock | **Intentional difference** | No portable Linux equivalent. `AGENTS.md` §4. |
 | Window-content protection (`FLAG_SECURE`) | **Intentional difference** | No Wayland analogue. `AGENTS.md` §4. |
 

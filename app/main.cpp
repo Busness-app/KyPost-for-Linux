@@ -31,11 +31,13 @@
 #include "domain/KeywordRepository.h"
 #include "domain/FolderRepository.h"
 #include "security/AppLockStore.h"
+#include "security/WipeTripwire.h"
 #include "domain/MailRepository.h"
 #include "domain/PairingStore.h"
 #include "domain/PairingStoreCredentialSealer.h"
 #include "domain/PgpQrRepository.h"
 #include "domain/PushRepository.h"
+#include "domain/TrackedWipe.h"
 #include "domain/TransportStateMachine.h"
 #include "models/PushNotification.h"
 #include "net/ContactPhotoClient.h"
@@ -545,6 +547,34 @@ int main(int argc, char* argv[])
     // the lock exists to survive. See AppLockStore.h.
     AppLockStore appLockStore(secureStore);
 
+    // 5b. Finish an interrupted wipe, BEFORE anything below can read the
+    // lock state or put a cached message on screen.
+    //
+    // The wipe-after-ten-failed-attempts path relaunches whether or not the
+    // wipe succeeded -- correctly, since leaving a window open on the
+    // pre-wipe view in front of whoever just failed ten attempts would be
+    // worse. But until now the only record of a failure was a qCritical
+    // line, and a wipe INTERRUPTED part-way (power loss, an OOM kill) wrote
+    // nothing at all, because the code that would have written it never ran.
+    // Either way the next launch came up looking perfectly ordinary on top of
+    // whatever survived.
+    //
+    // Placed here, above AppLockManager, on purpose: a completed recovery
+    // erases the stored PIN, and an AppLockManager constructed before that
+    // would already be holding the pre-wipe answer to "is there a lock".
+    LocalDataWipe localDataWipe(database, pairingStore, appLockStore, settingsStore, cursorStore, dataDir,
+                                 newDbPath, legacyDbPaths);
+    WipeTripwire wipeTripwire(dataDir + QStringLiteral("/wipe-pending"));
+    TrackedWipe trackedWipe(wipeTripwire, localDataWipe);
+
+    const TrackedWipe::RecoveryOutcome wipeRecovery = trackedWipe.recoverIfInterrupted();
+    if (wipeRecovery.wasInterrupted && wipeRecovery.nowErased) {
+        qWarning("main: a previous wipe had not completed; it has now been finished");
+    } else if (wipeRecovery.wasInterrupted) {
+        qCritical("main: a previous wipe did NOT complete and could not be finished on this launch -- "
+                   "data the user believes was erased is still on this device");
+    }
+
     // 6. HttpClient -- default transferTimeoutMs. networkManager must
     // outlive httpClient and every net/ client below that borrows it
     // transitively.
@@ -696,6 +726,11 @@ int main(int argc, char* argv[])
     // secret was still sealed under it -- an unrecoverable pairing.
     PairingStoreCredentialSealer credentialSealer(pairingStore);
     AppLockManager appLockManager(appLockStore, settingsStore, credentialSealer);
+    // Set from the recovery attempt at step 5b. Only ever true when a wipe
+    // was started, never reported completing, and could not be finished on
+    // this launch either -- the one state in which the user has been told
+    // their data is gone while it is still here.
+    appLockManager.setWipeIncomplete(wipeRecovery.wasInterrupted && !wipeRecovery.nowErased);
     qmlRegisterSingletonInstance<AppLockManager>(
         "com.urlxl.mail", 1, 0, "AppLock", &appLockManager);
 
@@ -704,19 +739,18 @@ int main(int argc, char* argv[])
     // and it is deliberately everything an attacker could otherwise read:
     // cached mail/contacts, the pairing credential, and the lock itself
     // (leaving a PIN behind would be a hint about the wiped account).
-    // The wipe itself lives in core/domain/LocalDataWipe, not in the lambda
-    // below. It used to be written out inline here, which is why it went
-    // untested for its whole life -- main() is one unbroken chain of stack
-    // locals with no seam a test can reach, and the bug that hid there for
-    // months was real: the pre-rename database was invisible to this handler
-    // AND to the Hostile Location Protection one, so both reported success
-    // while a full plaintext copy of the same mail and contacts stayed on
-    // disk. This handler is now the journal reporting only.
-    LocalDataWipe localDataWipe(database, pairingStore, appLockStore, settingsStore, cursorStore, dataDir,
-                                 newDbPath, legacyDbPaths);
+    // The wipe itself lives in core/domain/LocalDataWipe and its bookkeeping
+    // in core/domain/TrackedWipe, not in the lambda below -- both constructed
+    // above at step 5b. It used to be written out inline here, which is why
+    // it went untested for its whole life: main() is one unbroken chain of
+    // stack locals with no seam a test can reach, and the bug that hid there
+    // for months was real -- the pre-rename database was invisible to this
+    // handler AND to the Hostile Location Protection one, so both reported
+    // success while a full plaintext copy of the same mail and contacts
+    // stayed on disk. This handler is now the journal reporting only.
 
     QObject::connect(&appLockManager, &AppLockManager::wipeRequested, &appLockManager,
-                      [&localDataWipe]() {
+                      [&trackedWipe]() {
                           qWarning("App lock: wipe threshold reached, erasing local data");
                           // Each failure is named individually in the
                           // journal. All of these genuinely fail --
@@ -727,7 +761,18 @@ int main(int argc, char* argv[])
                           // app has already decided to perform. Silently
                           // relaunching into a state that merely LOOKS wiped
                           // is the worst available outcome.
-                          const LocalDataWipeResult wiped = localDataWipe.wipeEverything();
+                          const TrackedWipe::Outcome outcome = trackedWipe.wipeEverything();
+                          const LocalDataWipeResult& wiped = outcome.result;
+                          if (!outcome.tripwireArmed) {
+                              // Said out loud rather than passed over: from
+                              // here on, a wipe cut short by a power loss or
+                              // an OOM kill will NOT be noticed on the next
+                              // launch. The wipe still runs -- erasing what
+                              // we can beats erasing nothing because the
+                              // bookkeeping failed.
+                              qCritical("App lock: could not record that a wipe started; an interrupted "
+                                         "wipe will not be detected on the next launch");
+                          }
                           if (!wiped.tablesWiped)
                               qCritical("App lock: WIPE INCOMPLETE -- cached mail and contacts could not be erased");
                           if (!wiped.photoCacheCleared)
