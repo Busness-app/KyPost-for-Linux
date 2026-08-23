@@ -1,5 +1,6 @@
 #include "security/AppLockStore.h"
 
+#include "security/LockoutPolicy.h"
 #include "stores/SecureStore.h"
 
 #include <QCryptographicHash>
@@ -19,6 +20,7 @@ const QString kPinHash = QStringLiteral("applock.pinHash");
 const QString kPinRecord = QStringLiteral("applock.pinRecord");
 const QString kFailedAttempts = QStringLiteral("applock.failedAttempts");
 const QString kLockoutUntil = QStringLiteral("applock.lockoutUntilEpochMs");
+const QString kWipeAfterAttempts = QStringLiteral("applock.wipeAfterAttempts");
 const QString kCredentialGate = QString::fromLatin1(AppLockStore::kCredentialGateKey);
 
 // Matches Android's PBKDF2WithHmacSHA256(pin, salt, 150_000, 256-bit).
@@ -158,6 +160,14 @@ bool AppLockStore::clear()
     ok = m_secureStore.set(kFailedAttempts, QStringLiteral("0")) && ok;
     ok = m_secureStore.set(kLockoutUntil, QStringLiteral("0")) && ok;
     ok = m_secureStore.set(kCredentialGate, QStringLiteral("0")) && ok;
+    // Back to the default, not left as the user had it. clear() runs when the
+    // lock is switched off and on the wipe path, and in both cases the next
+    // person to set up a lock here is starting fresh -- a "never erase"
+    // choice must not survive silently into their setup. Written explicitly
+    // rather than removed so an absent-key removal cannot report a failure
+    // this function would have to explain.
+    ok = m_secureStore.set(kWipeAfterAttempts,
+                            QString::number(LockoutPolicy::kDefaultWipeThreshold)) && ok;
     return ok;
 }
 
@@ -169,6 +179,28 @@ int AppLockStore::failedAttemptCount() const
 bool AppLockStore::setFailedAttemptCount(int count)
 {
     return m_secureStore.set(kFailedAttempts, QString::number(count));
+}
+
+int AppLockStore::wipeAfterAttempts() const
+{
+    const std::optional<QString> stored = m_secureStore.get(kWipeAfterAttempts);
+    if (!stored.has_value())
+        return LockoutPolicy::kDefaultWipeThreshold;
+
+    bool parsed = false;
+    const int value = stored->toInt(&parsed);
+    if (!parsed)
+        return LockoutPolicy::kDefaultWipeThreshold;
+
+    // Clamped on the way out as well as the way in. A value that got here by
+    // some route other than setWipeAfterAttempts() -- an older build, an
+    // edited store -- must not be able to widen the policy.
+    return LockoutPolicy::clampWipeThreshold(value);
+}
+
+bool AppLockStore::setWipeAfterAttempts(int attempts)
+{
+    return m_secureStore.set(kWipeAfterAttempts, QString::number(LockoutPolicy::clampWipeThreshold(attempts)));
 }
 
 qint64 AppLockStore::lockoutUntilEpochMs() const

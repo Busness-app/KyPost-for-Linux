@@ -24,9 +24,23 @@ qint64 lockoutDurationMs(int failedAttempts)
     return std::min(scaled, kCapMs);
 }
 
-bool shouldWipe(int failedAttempts)
+bool shouldWipe(int failedAttempts, int threshold)
 {
-    return failedAttempts >= kWipeThreshold;
+    if (threshold <= kWipeNever)
+        return false; // the user switched the erase off
+    return failedAttempts >= threshold;
+}
+
+bool shouldRefuseForSession(int sessionFailedAttempts)
+{
+    return sessionFailedAttempts >= kSessionRefuseFloor;
+}
+
+int clampWipeThreshold(int threshold)
+{
+    if (threshold <= kWipeNever)
+        return kWipeNever;
+    return std::clamp(threshold, kMinWipeThreshold, kMaxWipeThreshold);
 }
 
 bool isLockedOut(qint64 lockoutUntilEpochMs, qint64 nowEpochMs)

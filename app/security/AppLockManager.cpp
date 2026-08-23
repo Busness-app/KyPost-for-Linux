@@ -130,8 +130,16 @@ bool AppLockManager::mustRefuseGuess()
     // Session floor, independent of the wall clock the persisted deadline
     // uses: an attacker holding the machine can move the system clock
     // forward to skip every backoff, but cannot move this counter.
-    if (LockoutPolicy::shouldWipe(m_sessionFailedAttempts)) {
-        emit wipeRequested();
+    //
+    // NOT the wipe threshold, which the user can lower, raise, or switch off
+    // entirely. These were the same number until the threshold became
+    // configurable, and leaving them joined would have meant "never erase
+    // this device" also silently removed the only limit a clock change
+    // cannot defeat. The erase is the user's to decline; the rate limit is
+    // not.
+    if (LockoutPolicy::shouldRefuseForSession(m_sessionFailedAttempts)) {
+        if (LockoutPolicy::shouldWipe(m_sessionFailedAttempts, m_store.wipeAfterAttempts()))
+            emit wipeRequested();
         return true;
     }
 
@@ -190,7 +198,7 @@ bool AppLockManager::tryUnlock(const QString& pin)
     if (!recordFailedAttempt(now))
         return false;
 
-    if (LockoutPolicy::shouldWipe(failedAttempts()))
+    if (LockoutPolicy::shouldWipe(failedAttempts(), m_store.wipeAfterAttempts()))
         emit wipeRequested();
 
     return false;
@@ -223,7 +231,7 @@ bool AppLockManager::verifyPinRateLimited(const QString& pin)
 
     if (!recordFailedAttempt(now))
         return false;
-    if (LockoutPolicy::shouldWipe(failedAttempts()))
+    if (LockoutPolicy::shouldWipe(failedAttempts(), m_store.wipeAfterAttempts()))
         emit wipeRequested();
     return false;
 }
@@ -363,6 +371,29 @@ bool AppLockManager::setHostileLocationEnabled(bool enabled, const QString& curr
     // already deleted when the mode was switched on, and the next launch
     // rebuilds it from the server via the roots' existing startup refresh.
     emit relaunchRequired(/*wipeDisk=*/enabled);
+    return true;
+}
+
+int AppLockManager::wipeAfterAttempts() const
+{
+    return m_store.wipeAfterAttempts();
+}
+
+bool AppLockManager::setWipeAfterAttempts(int attempts, const QString& currentPin)
+{
+    // The PIN is required, and checked through the rate-limited path, for the
+    // same reason disabling the lock is: this decides whether a device that
+    // is being guessed at erases itself. Someone who walks up to an unlocked
+    // session must not be able to switch that off, and the check must not be
+    // an unmetered oracle either.
+    if (m_store.lockEnabled() && !verifyPinRateLimited(currentPin))
+        return false;
+
+    const int clamped = LockoutPolicy::clampWipeThreshold(attempts);
+    if (!m_store.setWipeAfterAttempts(clamped))
+        return false;
+
+    emit lockStateChanged();
     return true;
 }
 

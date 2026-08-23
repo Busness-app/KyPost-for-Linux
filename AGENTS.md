@@ -573,6 +573,26 @@ never once run.
   in both the already-true-at-creation case and the false-to-true case. Ask
   the MODEL what is active; never the laid-out geometry.
 
+- **Making a protection configurable means deciding what the "off" setting
+  actually switches off.** The wipe-after-N-attempts threshold and the
+  per-process "refuse further guesses" floor were the same constant. Exposing
+  the threshold without splitting them would have meant a user choosing
+  "never erase this device" also switched off the only rate limit an attacker
+  cannot defeat by moving the system clock forward. They are now
+  `LockoutPolicy::shouldWipe(attempts, threshold)` and
+  `shouldRefuseForSession(attempts)`; the erase is the user's to decline, the
+  rate limit is not. `AppLockManagerTest::switchingTheEraseOffKeepsTheRateLimit`
+  fails if they are ever rejoined.
+
+- **Security policy goes in `AppLockStore`, never `SettingsStore`.**
+  settings.ini is a plain text file, so anything stored there can be changed
+  by whoever has file access -- which is the access level these policies exist
+  to survive. Same reasoning that already put `lockEnabled` behind the secret
+  store, now also applied to the erase threshold. Read it back defensively
+  too: absent, unparseable and out-of-range all resolve to the DEFAULT, never
+  to the permissive value, so an unreadable keyring is not mistaken for the
+  user asking for the erase to stop.
+
 ## 7. DOX framework
 
 ### Core Contract
