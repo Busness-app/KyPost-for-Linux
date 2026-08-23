@@ -1416,7 +1416,8 @@ namespace {
 
 MailController::ClientEncryptedOutcome runClientEncryptedSend(
     HttpClient& http, const RelayEndpoint& endpoint, const QString& to, const QString& cc,
-    const QString& bcc, const QString& subject, const QString& body, const QString& date)
+    const QString& bcc, const QString& subject, const QString& body, const QString& date,
+    const QVector<MailAttachmentUpload>& attachments)
 {
     using Failure = MailController::ClientEncryptedOutcome::Failure;
     MailController::ClientEncryptedOutcome outcome;
@@ -1501,6 +1502,8 @@ MailController::ClientEncryptedOutcome runClientEncryptedSend(
     message.body = body;
     message.mode = QStringLiteral("plain");
     message.date = date;
+    // Inside the encrypted part, so the filenames are encrypted too.
+    message.attachments = attachments;
 
     const PgpSendPlan plan = buildPgpSendPlan(message, bccList, fingerprints,
                                                ownKeyFingerprint(identity.primaryAddress));
@@ -1528,7 +1531,7 @@ MailController::ClientEncryptedOutcome runClientEncryptedSend(
                                             identity.primaryAddress, plan, toList, ccList, bccList,
                                             QStringLiteral("plain"));
     if (!sent.ok) {
-        outcome.failure = Failure::SendFailed;
+        outcome.failure = sent.tooLarge ? Failure::TooLarge : Failure::SendFailed;
         outcome.detail = sent.detail;
         return outcome;
     }
@@ -1548,14 +1551,9 @@ quint64 MailController::sendClientEncrypted(const QString& to, const QString& cc
     m_pendingSend = {};
     m_lastSendMissingSentCopy = false;
 
-    // Enforced here, not only in Compose.qml. Sending the message without the
-    // files and reporting success is a data loss the sender never sees, and a
-    // QML-side check is one a future caller can simply not write.
-    if (!attachmentFilePaths.isEmpty()) {
-        setLastError(i18n("Attachments cannot be sent on an end-to-end encrypted message yet. "
-                           "Remove them, or continue in webmail."));
-        return 0;
-    }
+    QVector<MailAttachmentUpload> attachments;
+    if (!readAttachments(attachmentFilePaths, attachments))
+        return 0; // readAttachments has already said what went wrong
 
     const std::optional<DevicePairing> pairing = m_pairingStore.load();
     if (!pairing.has_value()) {
@@ -1574,8 +1572,9 @@ quint64 MailController::sendClientEncrypted(const QString& to, const QString& cc
     pushBusy();
     m_executor.run(
         this,
-        [endpoint, to, cc, bcc, subject, body, date](HttpClient& http) {
-            return runClientEncryptedSend(http, endpoint, to, cc, bcc, subject, body, date);
+        [endpoint, to, cc, bcc, subject, body, date, attachments](HttpClient& http) {
+            return runClientEncryptedSend(http, endpoint, to, cc, bcc, subject, body, date,
+                                           attachments);
         },
         [this, sendToken, identity](const ClientEncryptedOutcome& outcome) {
             popBusy();
@@ -1641,6 +1640,16 @@ void MailController::finishClientEncryptedSend(quint64 token, const ClientEncryp
     case Failure::EngineUnavailable:
         setLastError(i18n("GnuPG is not available on this computer, so this message cannot be "
                            "encrypted here."));
+        break;
+    case Failure::TooLarge:
+        // Names the real constraint rather than "too big": this request
+        // carries one copy of the message per recipient who gets their own
+        // ciphertext, so the number of recipients matters as much as the
+        // attachment does, and only saying "smaller attachment" would send
+        // somebody trimming the wrong thing.
+        setLastError(i18n("This message is too large to send encrypted. Each blind-copied "
+                           "recipient receives their own encrypted copy, so removing an "
+                           "attachment or some recipients will bring it under the limit."));
         break;
     case Failure::ServerEncryptsInstead:
         setLastError(i18n("This account's key is held by the server, which encrypts on its own. "

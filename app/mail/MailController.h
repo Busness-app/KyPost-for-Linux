@@ -218,7 +218,8 @@ public:
         // the switch in finishClientEncryptedSend().
         enum class Failure {
             None, NotConfigured, RecipientWithoutKey, NoSigningKey, Cancelled,
-            KeyImportRefused, EncryptionFailed, SendFailed, EngineUnavailable, ServerEncryptsInstead
+            KeyImportRefused, EncryptionFailed, SendFailed, EngineUnavailable,
+            ServerEncryptsInstead, TooLarge
         } failure = Failure::None;
         QStringList namedRecipients;
         QString detail;
@@ -233,12 +234,14 @@ public slots:
     // executor thread, and one of those steps is pinentry, which waits for the
     // user indefinitely.
     //
-    // NO ATTACHMENTS. This path builds the MIME itself and does not yet write
-    // multipart bodies, so an attachment would have to be silently dropped --
-    // which is worse than refusing. The list is taken and REFUSED here rather
-    // than simply not offered in QML: a caller that forgets the check would
-    // otherwise send the message without the files and report success. See
-    // docs/PARITY.md.
+    // Attachments travel INSIDE the encrypted part, so their names and bytes
+    // are encrypted with the message -- for mail somebody chose to encrypt,
+    // the filenames are often the most telling thing about it.
+    //
+    // The size limit that bites here is not the attachment's. The request
+    // carries one full copy of the message per delivery, and each blind-copied
+    // recipient gets their own, so a file that is fine for one recipient can
+    // put the request over the relay's cap with three.
     Q_INVOKABLE quint64 sendClientEncrypted(const QString& to, const QString& cc, const QString& bcc,
                                              const QString& subject, const QString& body,
                                              const QStringList& attachmentFilePaths);

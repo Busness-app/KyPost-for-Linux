@@ -4,6 +4,7 @@
 #include "pgp/PgpMimeWriter.h"
 
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QJsonObject>
 
 namespace {
@@ -69,11 +70,28 @@ PgpSendResult PgpSendClient::send(const QUrl& serverBaseUrl, const RelayAuth& au
         body[QStringLiteral("sentCopyEncrypted")] = true;
     }
 
+    // Measured on the real serialized request, not estimated from the
+    // message: the multiplier is the delivery count, and the armor and base64
+    // inflation compound, so an estimate would be wrong in whichever
+    // direction is least convenient.
+    if (const qint64 size = QJsonDocument(body).toJson(QJsonDocument::Compact).size();
+        size > kMaxRequestBytes) {
+        out.tooLarge = true;
+        out.error = NetworkError::ResponseTooLarge;
+        out.detail = QStringLiteral("request is %1 bytes; the relay reads at most %2")
+                          .arg(size)
+                          .arg(kMaxRequestBytes);
+        return out;
+    }
+
     const HttpClient::HttpResult result = m_httpClient.post(
         joinUrlPath(serverBaseUrl, QStringLiteral("api/mail/send-pgp")), {}, body, auth.headerItems());
 
     if (result.error.has_value()) {
         out.error = result.error;
+        // The relay refusing the size is the same answer as this client
+        // refusing it, and the user's move is the same either way.
+        out.tooLarge = result.statusCode == 413;
         // Failures on this endpoint arrive as plain text, not JSON, so the body
         // is the detail when there is one.
         const QString bodyText = QString::fromUtf8(result.body).trimmed();

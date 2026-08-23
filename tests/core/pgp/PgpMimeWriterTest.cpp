@@ -68,6 +68,9 @@ private slots:
     void protectedContentCarriesTheSubjectWhereBothKindsOfClientFindIt();
     void protectedContentWithNoSubjectHasNoLegacyPart();
     void htmlIsDeclaredAsHtml();
+    void anAttachmentBecomesABase64PartInsideTheProtectedContent();
+    void aFilenameCannotEscapeItsQuotedString();
+    void base64IsWrappedRatherThanOneEnormousLine();
     void aBoundaryCannotOccurInArmor();
     void aBoundaryIsNotReusedBetweenCalls();
 };
@@ -260,6 +263,85 @@ void PgpMimeWriterTest::htmlIsDeclaredAsHtml()
 
     QVERIFY(content.contains("Content-Type: text/html; charset=utf-8"));
     QVERIFY(!content.contains("Content-Type: text/plain"));
+}
+
+// Attachments live inside the protected content, so their names and bytes are
+// encrypted with the message rather than announced on the envelope.
+void PgpMimeWriterTest::anAttachmentBecomesABase64PartInsideTheProtectedContent()
+{
+    OutgoingMessage message = sampleMessage();
+    MailAttachmentUpload attachment;
+    attachment.name = QStringLiteral("redundancy-list.txt");
+    attachment.mimeType = QStringLiteral("text/plain");
+    attachment.data = "everyone in row three\n";
+    message.attachments = { attachment };
+
+    const QByteArray content = protectedContent(message, QStringLiteral("=_kypost_test_="));
+
+    QVERIFY(content.contains("Content-Type: text/plain; name=\"redundancy-list.txt\""));
+    QVERIFY(content.contains("Content-Transfer-Encoding: base64"));
+    QVERIFY(content.contains("Content-Disposition: attachment; filename=\"redundancy-list.txt\""));
+    QVERIFY2(content.contains(QByteArray("everyone in row three\n").toBase64()),
+             "the attachment's bytes are missing");
+    // Never the raw bytes: a part declared base64 and carrying something else
+    // is one the reader decodes into rubbish.
+    QVERIFY2(!content.contains("everyone in row three"), "the bytes were written unencoded");
+}
+
+// A quote in a filename would close the parameter early and let the rest be
+// read as further parameters -- header injection, one level down. The user
+// picked the filename, but a forwarded attachment's name came from somebody
+// else.
+void PgpMimeWriterTest::aFilenameCannotEscapeItsQuotedString()
+{
+    OutgoingMessage message = sampleMessage();
+    MailAttachmentUpload attachment;
+    attachment.name = QStringLiteral("ok\"; filename=\"evil.exe");
+    attachment.mimeType = QStringLiteral("text/plain");
+    attachment.data = "x";
+    message.attachments = { attachment };
+
+    const QByteArray content = protectedContent(message, QStringLiteral("=_kypost_test_="));
+
+    QVERIFY2(!content.contains("filename=\"evil.exe\""), "a second filename parameter was injected");
+    QCOMPARE(content.count("Content-Disposition: attachment"), 1);
+
+    // The real property: the disposition line carries ONE quoted value, and
+    // everything the attacker wrote is inside it. Counting occurrences of
+    // "filename=" cannot show that -- the injected text appears literally
+    // within the value, which is exactly what safe looks like here.
+    QByteArray disposition;
+    for (const QByteArray& line : content.split('\n')) {
+        // "attachment" specifically: the legacy-display part carries a
+        // Content-Disposition too, and it comes first.
+        if (line.startsWith("Content-Disposition: attachment")) {
+            disposition = line.trimmed();
+            break;
+        }
+    }
+    QVERIFY(!disposition.isEmpty());
+    QCOMPARE(disposition.count('"'), 2);
+    QVERIFY2(disposition.endsWith('"'), "something followed the closing quote");
+    QVERIFY2(disposition.contains("filename=\"ok; filename=evil.exe\""),
+             "the injected text is not contained within the single quoted value");
+}
+
+// One unbroken line is legal base64 and is not legal MIME: RFC 5322 caps a
+// line at 998 octets, and a 25 MB attachment on one line is refused or
+// truncated by things along the way.
+void PgpMimeWriterTest::base64IsWrappedRatherThanOneEnormousLine()
+{
+    OutgoingMessage message = sampleMessage();
+    MailAttachmentUpload attachment;
+    attachment.name = QStringLiteral("big.bin");
+    attachment.mimeType = QStringLiteral("application/octet-stream");
+    attachment.data = QByteArray(4096, 'A');
+    message.attachments = { attachment };
+
+    const QByteArray content = protectedContent(message, QStringLiteral("=_kypost_test_="));
+
+    for (const QByteArray& line : content.split('\n'))
+        QVERIFY2(line.size() <= 998, "a line exceeds the RFC 5322 limit");
 }
 
 // OpenPGP armor is base64 plus dashes and newlines. A boundary containing '_'

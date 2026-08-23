@@ -12,6 +12,16 @@ struct RelayAuth;
 
 struct PgpSendResult
 {
+    // The whole request was larger than the relay will read. Its own limit is
+    // on the BODY, and this request carries one full copy of the message per
+    // delivery plus the Sent copy -- so a message that is comfortably under
+    // the cap on its own is not necessarily under it once three Bcc
+    // recipients each get their own ciphertext.
+    //
+    // Its own flag because the answer is specific: remove an attachment or
+    // some recipients. "Send failed" sends the user looking at their network.
+    bool tooLarge = false;
+
     std::optional<NetworkError> error;
     QString detail; // for a log line; never user-facing wording
     bool ok = false;
@@ -54,6 +64,13 @@ struct PgpSendResult
 class PgpSendClient
 {
 public:
+    // The relay reads at most this much of the request body
+    // (maxClientCiphertextBytes in pgp_send_client.go). Checked HERE, before
+    // the bytes go on the wire: uploading 200 MB for the relay to truncate at
+    // 34 and reject helps nobody, and on a metered connection it is somebody's
+    // money.
+    static constexpr qint64 kMaxRequestBytes = 34LL * 1024 * 1024;
+
     explicit PgpSendClient(HttpClient& httpClient);
 
     // `to`/`cc`/`bcc` are the plaintext address lists. They are NOT the SMTP

@@ -61,6 +61,7 @@ private slots:
     void aPartialBccFailureIsSurfacedWithoutPrintingRelayProse();
     void aSentCopyTheRelayDidNotSaveIsReported();
     void aPlanThatDidNotBuildIsNeverSent();
+    void aRequestOverTheRelaysLimitNeverGoesOnTheWire();
     void aPlainTextErrorBodyBecomesTheDetail();
     void anUndecodableResponseIsNotAnEmptySuccess();
 };
@@ -178,6 +179,33 @@ void PgpSendClientTest::aPlanThatDidNotBuildIsNeverSent()
 
     QVERIFY(!result.ok);
     QVERIFY2(fake.receivedRequest().isEmpty(), "a request was made for a send that cannot happen");
+}
+
+// The relay reads a bounded body. Uploading far more than it will read, for
+// it to truncate and reject, helps nobody -- and on a metered connection it is
+// somebody's money.
+//
+// The multiplier is what makes this reachable: the request carries one full
+// copy of the message per delivery, so three blind recipients mean four
+// copies of every attachment.
+void PgpSendClientTest::aRequestOverTheRelaysLimitNeverGoesOnTheWire()
+{
+    FakeRelayServer fake(httpResponse(200, "OK", R"({"ok":true})"));
+
+    PgpSendPlan plan;
+    plan.status = PgpSendPlanStatus::Built;
+    for (int i = 0; i < 4; ++i) {
+        PgpDelivery delivery;
+        delivery.smtpRecipients = { QStringLiteral("r%1@example.com").arg(i) };
+        delivery.message = QByteArray(10 * 1024 * 1024, 'A');
+        plan.deliveries.append(delivery);
+    }
+
+    const PgpSendResult result = sendAgainst(fake, plan);
+
+    QVERIFY(!result.ok);
+    QVERIFY2(result.tooLarge, "the size refusal is not distinguishable from any other failure");
+    QVERIFY2(fake.receivedRequest().isEmpty(), "the oversized request was sent anyway");
 }
 
 // Failures on this endpoint arrive as plain text rather than JSON, so the body
