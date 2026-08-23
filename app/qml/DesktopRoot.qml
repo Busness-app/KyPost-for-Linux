@@ -57,7 +57,11 @@ Kirigami.ApplicationWindow {
             root.visible = false
             // Hiding to tray is the desktop equivalent of Android's onStop:
             // the user has walked away from a window that is still running.
-            AppLock.lockNow()
+            //
+            // lockAfterGrace(), not lockNow(): the grace period defaults to
+            // 0, in which case this locks synchronously exactly as before.
+            // Only a user who has deliberately chosen a delay gets one.
+            AppLock.lockAfterGrace()
         }
     }
 
@@ -66,11 +70,15 @@ Kirigami.ApplicationWindow {
     // would leave the mail on screen the moment it is restored.
     onVisibleChanged: {
         if (!root.visible)
-            AppLock.lockNow()
+            AppLock.lockAfterGrace()
+        else
+            AppLock.cancelPendingLock()
     }
     onWindowStateChanged: {
         if (root.windowState === Qt.WindowMinimized)
-            AppLock.lockNow()
+            AppLock.lockAfterGrace()
+        else if (root.visible)
+            AppLock.cancelPendingLock()
     }
 
     // ---- selection state --------------------------------------------

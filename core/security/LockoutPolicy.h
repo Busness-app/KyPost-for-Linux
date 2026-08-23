@@ -45,6 +45,24 @@ inline constexpr int kSessionRefuseFloor = 10;
 // twice shouldn't cost the owner a delay.
 inline constexpr int kFreeAttempts = 3;
 
+// How long the app may stay unlocked after it has left the foreground, when
+// the user has not chosen otherwise.
+//
+// Zero, deliberately: locking the moment the window is hidden is what this
+// app does today, and a grace period is strictly a weakening of it. Someone
+// who wants the convenience can ask for it; nobody gets it by default.
+inline constexpr int kDefaultBackgroundGraceSeconds = 0;
+
+// The ceiling on that choice. Five minutes is already long enough to walk
+// away from a machine and have someone else reach it, so there is no case
+// for offering more -- past this the setting is just "leave it unlocked".
+inline constexpr int kMaxBackgroundGraceSeconds = 300;
+
+// Zero (lock immediately) or a value up to the ceiling. Negative values --
+// a typo from QML, a corrupted store -- resolve to zero, which is the
+// protective direction: they must never read as "never lock".
+int clampBackgroundGraceSeconds(int seconds);
+
 // Backoff for the Nth consecutive failure, in milliseconds. 0 means "no
 // wait". Doubles from 30s at the 4th failure and is capped so the final
 // attempts before a wipe stay bounded.

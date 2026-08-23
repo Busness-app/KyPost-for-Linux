@@ -21,6 +21,15 @@ AppLockManager::AppLockManager(AppLockStore& store, SettingsStore& settingsStore
     // by definition not been unlocked yet.
     , m_locked(store.lockEnabled())
 {
+    m_graceTimer.setSingleShot(true);
+    // The timer only ever fires the lock. Cancelling is cancelPendingLock()'s
+    // job; there is no path where an expiring grace does anything other than
+    // lock, which is what makes "the app is unlocked but on its way to
+    // locking" a state with exactly one exit.
+    connect(&m_graceTimer, &QTimer::timeout, this, [this]() {
+        emit lockPendingChanged();
+        lockNow();
+    });
 }
 
 bool AppLockManager::lockEnabled() const
@@ -410,8 +419,83 @@ void AppLockManager::setWipeIncomplete(bool incomplete)
     emit wipeIncompleteChanged();
 }
 
+bool AppLockManager::lockPending() const
+{
+    return m_graceTimer.isActive();
+}
+
+int AppLockManager::backgroundGraceSeconds() const
+{
+    return m_store.backgroundGraceSeconds();
+}
+
+bool AppLockManager::setBackgroundGraceSeconds(int seconds, const QString& currentPin)
+{
+    // PIN-gated for the same reason the erase threshold is: this weakens the
+    // lock, and someone who walks up to an unlocked session must not be able
+    // to grant themselves five minutes of access after the owner leaves.
+    if (m_store.lockEnabled() && !verifyPinRateLimited(currentPin))
+        return false;
+
+    const int clamped = LockoutPolicy::clampBackgroundGraceSeconds(seconds);
+    if (!m_store.setBackgroundGraceSeconds(clamped))
+        return false;
+
+    // A shortened grace must not leave a longer one already counting down --
+    // the user just asked for less exposure, not for this one time to be
+    // exempt.
+    if (m_graceTimer.isActive()) {
+        m_graceTimer.stop();
+        emit lockPendingChanged();
+        lockAfterGrace();
+    }
+
+    emit lockStateChanged();
+    return true;
+}
+
+void AppLockManager::lockAfterGrace()
+{
+    if (!m_store.lockEnabled() || m_locked)
+        return;
+
+    const int graceSeconds = m_store.backgroundGraceSeconds();
+    if (graceSeconds <= 0) {
+        // Synchronously, NOT via a zero-delay timer. A queued single-shot
+        // would leave the app unlocked for the remainder of this event-loop
+        // pass, which is precisely the window "lock immediately" exists to
+        // close -- and it is the default, so it is the path almost every
+        // user is on.
+        lockNow();
+        return;
+    }
+
+    if (m_graceTimer.isActive())
+        return; // already counting down; a second background event does not extend it
+
+    m_graceTimer.start(graceSeconds * 1000);
+    emit lockPendingChanged();
+}
+
+void AppLockManager::cancelPendingLock()
+{
+    if (!m_graceTimer.isActive())
+        return;
+    m_graceTimer.stop();
+    emit lockPendingChanged();
+}
+
 void AppLockManager::lockNow()
 {
+    // Stopped before the early return below, not after: an explicit lock
+    // request must clear a pending one even when the lock is already engaged
+    // or disabled, or a timer started while the lock was on could fire after
+    // the user had turned it off.
+    const bool wasPending = m_graceTimer.isActive();
+    m_graceTimer.stop();
+    if (wasPending)
+        emit lockPendingChanged();
+
     if (!m_store.lockEnabled() || m_locked)
         return;
     m_locked = true;

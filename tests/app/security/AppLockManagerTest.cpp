@@ -175,6 +175,12 @@ private slots:
     void switchingTheEraseOffKeepsTheRateLimit();
     void aLoweredEraseThresholdWipesEarlier();
     void changingTheEraseThresholdRequiresTheCurrentPin();
+
+    // Configurable background-lock grace period (phase 5).
+    void theDefaultGraceLocksSynchronouslyWithNoTimer();
+    void aGracePeriodDelaysTheLockAndComingBackCancelsIt();
+    void lockNowIgnoresAndCancelsTheGracePeriod();
+    void changingTheGraceRequiresThePinAndIsClamped();
 };
 
 void AppLockManagerTest::startsUnlockedWhenLockDisabled()
@@ -912,6 +918,118 @@ void AppLockManagerTest::changingTheEraseThresholdRequiresTheCurrentPin()
     // arrange to erase the device on the second mistyped digit.
     QCOMPARE(manager.setWipeAfterAttempts(1, kGoodPin), true);
     QCOMPARE(manager.wipeAfterAttempts(), LockoutPolicy::kMinWipeThreshold);
+}
+
+// The default path, and the one almost every user is on.
+//
+// Asserted to be SYNCHRONOUS, not "locks eventually". A zero-delay
+// QTimer::singleShot would satisfy a looser test while leaving the app
+// unlocked for the rest of the current event-loop pass -- which is exactly
+// the window "lock immediately" exists to close.
+void AppLockManagerTest::theDefaultGraceLocksSynchronouslyWithNoTimer()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    FlakySecureStore secureStore;
+    AppLockStore store(secureStore);
+    SettingsStore settingsStore(dir.filePath(QStringLiteral("settings.ini")));
+    NullCredentialSealer sealer;
+    QVERIFY(store.setPin(kGoodPin));
+
+    AppLockManager manager(store, settingsStore, sealer);
+    QCOMPARE(manager.backgroundGraceSeconds(), LockoutPolicy::kDefaultBackgroundGraceSeconds);
+    QVERIFY(manager.tryUnlock(kGoodPin));
+    QCOMPARE(manager.locked(), false);
+
+    manager.lockAfterGrace();
+
+    // No event loop was spun between those two lines.
+    QCOMPARE(manager.locked(), true);
+    QCOMPARE(manager.lockPending(), false);
+}
+
+void AppLockManagerTest::aGracePeriodDelaysTheLockAndComingBackCancelsIt()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    FlakySecureStore secureStore;
+    AppLockStore store(secureStore);
+    SettingsStore settingsStore(dir.filePath(QStringLiteral("settings.ini")));
+    NullCredentialSealer sealer;
+    QVERIFY(store.setPin(kGoodPin));
+    QVERIFY(store.setBackgroundGraceSeconds(1));
+
+    AppLockManager manager(store, settingsStore, sealer);
+    QVERIFY(manager.tryUnlock(kGoodPin));
+
+    // 1. Backgrounded, then back before the grace expires: still unlocked,
+    // and nothing left counting down.
+    manager.lockAfterGrace();
+    QCOMPARE(manager.locked(), false);
+    QCOMPARE(manager.lockPending(), true);
+
+    manager.cancelPendingLock();
+    QCOMPARE(manager.lockPending(), false);
+    QTest::qWait(1200);
+    QVERIFY2(!manager.locked(), "a cancelled grace period locked the app anyway");
+
+    // 2. Backgrounded and left alone: it locks when the grace expires.
+    manager.lockAfterGrace();
+    QCOMPARE(manager.locked(), false);
+    QTRY_VERIFY_WITH_TIMEOUT(manager.locked(), 5000);
+    QCOMPARE(manager.lockPending(), false);
+}
+
+// A user who asks to lock is not asking to lock in five minutes.
+void AppLockManagerTest::lockNowIgnoresAndCancelsTheGracePeriod()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    FlakySecureStore secureStore;
+    AppLockStore store(secureStore);
+    SettingsStore settingsStore(dir.filePath(QStringLiteral("settings.ini")));
+    NullCredentialSealer sealer;
+    QVERIFY(store.setPin(kGoodPin));
+    QVERIFY(store.setBackgroundGraceSeconds(LockoutPolicy::kMaxBackgroundGraceSeconds));
+
+    AppLockManager manager(store, settingsStore, sealer);
+    QVERIFY(manager.tryUnlock(kGoodPin));
+
+    manager.lockAfterGrace();
+    QCOMPARE(manager.lockPending(), true);
+
+    manager.lockNow();
+    QCOMPARE(manager.locked(), true);
+    QVERIFY2(!manager.lockPending(),
+             "an explicit lock left a grace timer running that could fire after the lock was turned off");
+}
+
+void AppLockManagerTest::changingTheGraceRequiresThePinAndIsClamped()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    FlakySecureStore secureStore;
+    AppLockStore store(secureStore);
+    SettingsStore settingsStore(dir.filePath(QStringLiteral("settings.ini")));
+    NullCredentialSealer sealer;
+    QVERIFY(store.setPin(kGoodPin));
+
+    AppLockManager manager(store, settingsStore, sealer);
+
+    QCOMPARE(manager.setBackgroundGraceSeconds(60, kWrongPin), false);
+    QCOMPARE(manager.backgroundGraceSeconds(), 0);
+
+    QVERIFY(store.setFailedAttemptCount(0));
+    QVERIFY(store.setLockoutUntilEpochMs(0));
+
+    QCOMPARE(manager.setBackgroundGraceSeconds(60, kGoodPin), true);
+    QCOMPARE(manager.backgroundGraceSeconds(), 60);
+
+    // Above the ceiling, and below zero. Neither may read as "never lock".
+    QCOMPARE(manager.setBackgroundGraceSeconds(99999, kGoodPin), true);
+    QCOMPARE(manager.backgroundGraceSeconds(), LockoutPolicy::kMaxBackgroundGraceSeconds);
+    QCOMPARE(manager.setBackgroundGraceSeconds(-5, kGoodPin), true);
+    QCOMPARE(manager.backgroundGraceSeconds(), 0);
 }
 
 QTEST_GUILESS_MAIN(AppLockManagerTest)

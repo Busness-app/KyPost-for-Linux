@@ -4,6 +4,13 @@
 
 namespace LockoutPolicy {
 
+int clampBackgroundGraceSeconds(int seconds)
+{
+    if (seconds <= 0)
+        return 0;
+    return std::min(seconds, kMaxBackgroundGraceSeconds);
+}
+
 qint64 lockoutDurationMs(int failedAttempts)
 {
     if (failedAttempts <= kFreeAttempts)

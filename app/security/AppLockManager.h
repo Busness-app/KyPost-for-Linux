@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QObject>
+#include <QTimer>
 #include <QString>
 
 class AppLockStore;
@@ -77,6 +78,11 @@ class AppLockManager : public QObject
     // core/security/LockoutPolicy.h.
     Q_PROPERTY(int wipeAfterAttempts READ wipeAfterAttempts NOTIFY lockStateChanged)
 
+    // How long the app stays unlocked after leaving the foreground, in
+    // seconds. 0 -- the default -- locks immediately, which is what this app
+    // did before the setting existed.
+    Q_PROPERTY(int backgroundGraceSeconds READ backgroundGraceSeconds NOTIFY lockStateChanged)
+
 public:
     AppLockManager(AppLockStore& store, SettingsStore& settingsStore, CredentialSealer& sealer,
                    QObject* parent = nullptr);
@@ -138,9 +144,40 @@ public:
     // "the mode is already active".
     Q_INVOKABLE bool setHostileLocationEnabled(bool enabled, const QString& currentPin);
 
-    // Re-locks immediately. Called by the host's lock triggers; a no-op when
-    // the lock is disabled.
+    // Re-locks immediately. Called by the explicit "Lock now" action; a
+    // no-op when the lock is disabled.
+    //
+    // Always immediate, and always cancels a grace period already running.
+    // A user who asks to lock is not asking to lock in five minutes, and if
+    // this honoured the grace there would be no way to lock at once at all.
     Q_INVOKABLE void lockNow();
+
+    // The host's "the window went away" trigger: minimised, hidden to tray,
+    // or the application state left Active.
+    //
+    // Locks immediately when the grace period is 0, WITHOUT going through a
+    // zero-delay timer -- a queued timer would leave the app unlocked for the
+    // rest of the current event-loop pass, which is exactly the window this
+    // is supposed to close. Otherwise it starts the grace timer.
+    Q_INVOKABLE void lockAfterGrace();
+
+    // The host's "the window came back" trigger. Cancels a running grace
+    // period. Safe to call when none is running.
+    Q_INVOKABLE void cancelPendingLock();
+
+    // True while a grace period is running -- the app is unlocked but on its
+    // way to locking. Exposed so a host can show it, and so tests can assert
+    // on it rather than on a timer they cannot see.
+    Q_PROPERTY(bool lockPending READ lockPending NOTIFY lockPendingChanged)
+    bool lockPending() const;
+
+    int backgroundGraceSeconds() const;
+
+    // Requires the current PIN, for the same reason the erase threshold does:
+    // this weakens the lock, and someone at an unlocked session must not be
+    // able to grant themselves five minutes of access after the owner walks
+    // away. Clamped to LockoutPolicy's range.
+    Q_INVOKABLE bool setBackgroundGraceSeconds(int seconds, const QString& currentPin);
 
     int wipeAfterAttempts() const;
 
@@ -162,6 +199,7 @@ signals:
     void lockoutChanged();
     void credentialsUnavailableChanged();
     void wipeIncompleteChanged();
+    void lockPendingChanged();
 
     // Emitted when failed attempts reach the wipe threshold. The host owns
     // what "wipe" means (database, caches, pairing) -- this class knows only
@@ -207,6 +245,7 @@ private:
     // rate-limit the next one, and a relaunch is a cheap recovery.
     bool m_attemptRecordingBroken = false;
     bool m_wipeIncomplete = false;
+    QTimer m_graceTimer;
     // In-process floor under the persisted counter, so even a store that
     // accepts writes and silently loses them still caps guessing per launch.
     int m_sessionFailedAttempts = 0;

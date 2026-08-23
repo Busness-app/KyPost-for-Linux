@@ -593,6 +593,20 @@ never once run.
   to the permissive value, so an unreadable keyring is not mistaken for the
   user asking for the erase to stop.
 
+- **"Immediately" must not be implemented as a zero-delay timer.** The
+  background-lock grace period defaults to 0, and that path locks
+  synchronously inside `lockAfterGrace()`. A `QTimer::start(0)` would satisfy
+  any test that merely waits and then checks, while leaving the app unlocked
+  for the remainder of the current event-loop pass -- the exact window "lock
+  immediately" exists to close, on the path almost every user is on.
+  `theDefaultGraceLocksSynchronouslyWithNoTimer` spins no event loop between
+  the call and the assertion, and fails if this is ever changed.
+
+- **An explicit lock cancels a pending one.** `lockNow()` stops the grace
+  timer BEFORE its early return, so a timer started while the lock was on
+  cannot fire after the user has turned the lock off. A user who asks to lock
+  is not asking to lock in five minutes.
+
 ## 7. DOX framework
 
 ### Core Contract

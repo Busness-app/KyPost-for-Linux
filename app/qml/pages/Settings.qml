@@ -70,6 +70,10 @@ Item {
     // re-checks whatever arrives, so this is a convenience, not a control.
     property int eraseThresholdChoice: 0
 
+    // Same pattern as eraseThresholdChoice above: the value the PIN prompt is
+    // about to apply. AppLockManager clamps whatever arrives.
+    property int graceSecondsChoice: 0
+
     function refreshKeywordSettings() {
         root.keywordSettings = MailApp.allKeywordSettings()
     }
@@ -682,6 +686,54 @@ Item {
 
                     Item { Layout.preferredHeight: 4 }
 
+                    SectionLabel { text: i18n("Lock when KyPost is not in front") }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
+                        enabled: AppLock.lockEnabled
+                        opacity: enabled ? 1.0 : 0.5
+                        Text {
+                            Layout.fillWidth: true
+                            text: i18n("Lock after")
+                            color: Theme.inkStrong
+                            font.family: Theme.fontUi
+                            font.pixelSize: 14
+                        }
+                        Repeater {
+                            model: [0, 15, 60, 300]
+                            delegate: PillTab {
+                                required property int modelData
+                                text: modelData === 0
+                                    ? i18n("At once")
+                                    : (modelData < 60
+                                        ? i18np("%1 second", "%1 seconds", modelData)
+                                        : i18np("%1 minute", "%1 minutes", Math.round(modelData / 60)))
+                                selected: AppLock.backgroundGraceSeconds === modelData
+                                onClicked: {
+                                    if (AppLock.backgroundGraceSeconds === modelData)
+                                        return
+                                    graceSecondsChoice = modelData
+                                    securityPrompt.begin(
+                                        "backgroundGrace",
+                                        modelData === 0
+                                            ? i18n("Enter your PIN to lock KyPost as soon as it leaves the front.")
+                                            : i18n("Enter your PIN. KyPost will stay unlocked for this long after "
+                                                   + "it leaves the front."))
+                                }
+                            }
+                        }
+                    }
+
+                    MutedHint {
+                        Layout.fillWidth: true
+                        text: AppLock.backgroundGraceSeconds === 0
+                            ? i18n("KyPost locks the moment its window is minimised, hidden or sent to the background.")
+                            : i18n("KyPost stays unlocked for this long after its window goes away, so switching to another app briefly does not mean typing your PIN again. Anyone who reaches this computer within that time can read your mail. Lock now, from the menu, always locks straight away.")
+                    }
+
+                    Item { Layout.preferredHeight: 4 }
+
                     SectionLabel { text: i18n("Erase after failed attempts") }
 
                     RowLayout {
@@ -967,6 +1019,8 @@ Item {
                 ok = AppLock.setHostileLocationEnabled(false, current)
             else if (securityPrompt.mode === "eraseAfter")
                 ok = AppLock.setWipeAfterAttempts(eraseThresholdChoice, current)
+            else if (securityPrompt.mode === "backgroundGrace")
+                ok = AppLock.setBackgroundGraceSeconds(graceSecondsChoice, current)
 
             if (ok) {
                 securityPrompt.close()

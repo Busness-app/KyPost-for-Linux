@@ -91,6 +91,18 @@ public:
     // the second mistyped digit.
     bool setWipeAfterAttempts(int attempts);
 
+    // How long the app may stay unlocked after leaving the foreground, in
+    // seconds. 0 means "lock immediately", which is the default and what this
+    // app did before the setting existed.
+    //
+    // Behind the secret store for the same reason the erase threshold is: a
+    // grace period in settings.ini could be stretched to five minutes by
+    // anyone with file access, who would then only have to wait for the owner
+    // to walk away from an unlocked session. Absent, unparseable and
+    // out-of-range all read as 0 -- the protective direction.
+    int backgroundGraceSeconds() const;
+    bool setBackgroundGraceSeconds(int seconds);
+
     // "Require unlock to receive push/MFA": when on, the device secret is
     // stored sealed (see core/security/CredentialCipher.h) and is unusable
     // until the PIN has been entered this session.
