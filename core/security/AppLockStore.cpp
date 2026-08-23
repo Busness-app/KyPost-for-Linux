@@ -21,6 +21,7 @@ const QString kPinRecord = QStringLiteral("applock.pinRecord");
 const QString kFailedAttempts = QStringLiteral("applock.failedAttempts");
 const QString kLockoutUntil = QStringLiteral("applock.lockoutUntilEpochMs");
 const QString kWipeAfterAttempts = QStringLiteral("applock.wipeAfterAttempts");
+const QString kBackgroundGrace = QStringLiteral("applock.backgroundGraceSeconds");
 const QString kCredentialGate = QString::fromLatin1(AppLockStore::kCredentialGateKey);
 
 // Matches Android's PBKDF2WithHmacSHA256(pin, salt, 150_000, 256-bit).
@@ -168,6 +169,10 @@ bool AppLockStore::clear()
     // this function would have to explain.
     ok = m_secureStore.set(kWipeAfterAttempts,
                             QString::number(LockoutPolicy::kDefaultWipeThreshold)) && ok;
+    // Same reasoning: a grace period the previous owner chose must not carry
+    // into the next setup on this machine.
+    ok = m_secureStore.set(kBackgroundGrace,
+                            QString::number(LockoutPolicy::kDefaultBackgroundGraceSeconds)) && ok;
     return ok;
 }
 
@@ -201,6 +206,26 @@ int AppLockStore::wipeAfterAttempts() const
 bool AppLockStore::setWipeAfterAttempts(int attempts)
 {
     return m_secureStore.set(kWipeAfterAttempts, QString::number(LockoutPolicy::clampWipeThreshold(attempts)));
+}
+
+int AppLockStore::backgroundGraceSeconds() const
+{
+    const std::optional<QString> stored = m_secureStore.get(kBackgroundGrace);
+    if (!stored.has_value())
+        return LockoutPolicy::kDefaultBackgroundGraceSeconds;
+
+    bool parsed = false;
+    const int value = stored->toInt(&parsed);
+    if (!parsed)
+        return LockoutPolicy::kDefaultBackgroundGraceSeconds;
+
+    return LockoutPolicy::clampBackgroundGraceSeconds(value);
+}
+
+bool AppLockStore::setBackgroundGraceSeconds(int seconds)
+{
+    return m_secureStore.set(kBackgroundGrace,
+                              QString::number(LockoutPolicy::clampBackgroundGraceSeconds(seconds)));
 }
 
 qint64 AppLockStore::lockoutUntilEpochMs() const

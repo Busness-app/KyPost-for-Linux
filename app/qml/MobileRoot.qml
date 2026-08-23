@@ -881,8 +881,14 @@ Kirigami.ApplicationWindow {
     Connections {
         target: Qt.application
         function onStateChanged() {
+            // lockAfterGrace() honours the user's chosen delay, which
+            // defaults to 0 -- i.e. locking synchronously, exactly as this
+            // did before the setting existed. Coming back cancels a delay
+            // still counting down.
             if (Qt.application.state !== Qt.ApplicationActive)
-                AppLock.lockNow()
+                AppLock.lockAfterGrace()
+            else
+                AppLock.cancelPendingLock()
         }
     }
 
