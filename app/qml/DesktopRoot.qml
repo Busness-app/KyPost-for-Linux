@@ -240,6 +240,14 @@ Kirigami.ApplicationWindow {
             root.raise()
             root.requestActivate()
         }
+        // Cached in several mailboxes and the notification did not say which.
+        // Only the user can answer this, so ask instead of rendering the
+        // refusal as a blank detail page.
+        function onNotificationEmailAmbiguous(messageId, folders) {
+            root.currentSection = "mail"
+            notificationFolderDialog.open(messageId, folders)
+        }
+
         function onNotificationEmailResolved(messageId, folder) {
             // Empty folder: not found even after a refresh. MailController
             // has set lastError, and selecting nothing leaves that visible
@@ -1559,4 +1567,16 @@ Kirigami.ApplicationWindow {
     }
 
     LockOverlay { id: unlockOverlay }
+
+    // Answers a notification tap-through that cannot say which mailbox it
+    // meant. Anchored over everything, like the other overlay dialogs.
+    NotificationFolderDialog {
+        id: notificationFolderDialog
+        anchors.fill: parent
+        z: 900
+        onChosen: function (messageId, folder) {
+            root.selectEmail(messageId, folder)
+        }
+    }
+
 }

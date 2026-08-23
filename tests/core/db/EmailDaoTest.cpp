@@ -16,6 +16,7 @@ private slots:
     void sameMessageIdCoexistsInTwoFoldersAsSeparateRows();
     void insertOrReplaceStoresAnUnsetFolderAsEmptyRatherThanFailing();
     void findUniqueByIdRefusesAnIdCachedInMoreThanOneFolder();
+    void foldersContainingNamesEveryMailboxHoldingTheId();
     void replaceFolderSnapshotWipesOnlyTargetFolderAndInsertsGivenEmails();
 
 private:
@@ -119,6 +120,39 @@ void EmailDaoTest::deleteByFolderRemovesOnlyThatFolder()
 
     QVERIFY(!dao.findById(QStringLiteral("INBOX"), QStringLiteral("msg-inbox")).has_value());
     QVERIFY(dao.findById(QStringLiteral("Sent"), QStringLiteral("msg-sent")).has_value());
+}
+
+// findUniqueById collapses "not cached" and "cached twice" into one nullopt,
+// which is right for a caller that just wants the row and useless for the one
+// that has to explain itself to a user. This is how the three cases are told
+// apart.
+void EmailDaoTest::foldersContainingNamesEveryMailboxHoldingTheId()
+{
+    EmailDao dao(m_db.handle());
+
+    QCOMPARE(dao.foldersContaining(QStringLiteral("msg-shared")), QStringList());
+
+    Email inboxCopy;
+    inboxCopy.messageId = QStringLiteral("msg-shared");
+    inboxCopy.folder = QStringLiteral("INBOX");
+    QVERIFY(dao.insertOrReplace(inboxCopy));
+    QCOMPARE(dao.foldersContaining(QStringLiteral("msg-shared")),
+             QStringList({ QStringLiteral("INBOX") }));
+
+    Email archiveCopy = inboxCopy;
+    archiveCopy.folder = QStringLiteral("Archive");
+    QVERIFY(dao.insertOrReplace(archiveCopy));
+
+    // Sorted, so a chooser's entries do not move between openings.
+    QCOMPARE(dao.foldersContaining(QStringLiteral("msg-shared")),
+             QStringList({ QStringLiteral("Archive"), QStringLiteral("INBOX") }));
+
+    // A different id in one of those folders must not widen the answer.
+    Email other;
+    other.messageId = QStringLiteral("msg-other");
+    other.folder = QStringLiteral("Sent");
+    QVERIFY(dao.insertOrReplace(other));
+    QCOMPARE(dao.foldersContaining(QStringLiteral("msg-shared")).size(), 2);
 }
 
 void EmailDaoTest::replaceFolderSnapshotWipesOnlyTargetFolderAndInsertsGivenEmails()
