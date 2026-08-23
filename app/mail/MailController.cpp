@@ -282,6 +282,23 @@ void MailController::finishRefresh(const MailRefreshPlan& plan, const InboxFetch
     // plan.folder) without repainting the list with it.
     reloadCurrentFolder();
 
+    // Answer an outstanding notification tap-through, if this was the refresh
+    // it was waiting for. Cleared before the lookup so a miss cannot leave it
+    // set and hijack the next unrelated refresh.
+    if (!m_pendingNotificationMessageId.isEmpty()) {
+        const QString pendingId = m_pendingNotificationMessageId;
+        m_pendingNotificationMessageId.clear();
+        const std::optional<Email> found = m_mailRepository.findCachedEmail(pendingId);
+        if (!found.has_value()) {
+            // Worded here rather than left to the roots: this is the one
+            // outcome the user cannot act on by waiting, and a blank detail
+            // page said nothing at all.
+            setLastError(i18n("That message could not be found. It may have been moved or deleted, "
+                               "or it may be in a folder KyPost has not synced."));
+        }
+        emit notificationEmailResolved(pendingId, found.has_value() ? found->folder : QString());
+    }
+
     if (m_refreshPending) {
         const bool fullResync = m_refreshPendingFullResync;
         m_refreshPending = false;
@@ -1263,6 +1280,41 @@ void MailController::clearEphemeralAttachments()
     for (const QString& path : m_ephemeralAttachments)
         QFile::remove(path);
     m_ephemeralAttachments.clear();
+}
+
+void MailController::openFromNotification(const QString& messageId)
+{
+    if (messageId.isEmpty())
+        return;
+
+    // Already here: answer without a round trip. Note this also covers the
+    // ambiguous case (the same id cached under two mailboxes), where
+    // findCachedEmail deliberately refuses -- that falls through to the
+    // refresh below and then to an empty answer, which is the honest one. A
+    // refresh cannot disambiguate it either, but it costs one request and
+    // leaves the user no worse off than the blank page they get today.
+    if (const std::optional<Email> cached = m_mailRepository.findCachedEmail(messageId)) {
+        emit notificationEmailResolved(messageId, cached->folder);
+        return;
+    }
+
+    m_pendingNotificationMessageId = messageId;
+
+    // A delta refresh, not a forced full resync. The relay's cursor protocol
+    // returns everything after the stored cursor, and a message that has just
+    // arrived is by definition after it -- so a delta finds it, while a full
+    // resync would re-download the entire window including every body to
+    // learn the same thing.
+    //
+    // The Inbox specifically: the notification carries no mailbox (see
+    // PushPayloadParser.h), and new mail arrives there. A message filed
+    // somewhere else by a server-side rule will not be found, and that is
+    // reported rather than papered over.
+    const QString inbox = standardFolderWireName(StandardFolder::Inbox);
+    if (m_currentFolder == inbox)
+        refreshInternal(false);
+    else
+        selectFolderInternal(inbox);
 }
 
 QVariantMap MailController::findByMessageId(const QString& messageId) const
