@@ -373,10 +373,9 @@ modules:
     config-opts:
       - -DCMAKE_BUILD_TYPE=Release
       # Points at the sqlcipher module above, already installed into /app by
-      # the time this module configures. Without it the build is simply an
-      # unencrypted one -- Database::open() then REFUSES an encrypted
-      # database rather than quietly writing plaintext, so the failure mode
-      # is a visible one, but it is still not the build we mean to ship.
+      # the time this module configures. Losing this line no longer produces
+      # a quietly-unencrypted package: CMakeLists.txt stops a Release build
+      # that has no SQLCipher, which is what this is.
       - -DKYPOST_SQLCIPHER_ROOT=/app
     sources:
       - type: dir

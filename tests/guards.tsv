@@ -128,3 +128,34 @@ core/domain/MailRepository.cpp	    if (result.cursor > 0 && !m_cursorStore.setMa
 
 # a group deleted on the server is only visible as an absence -- upserting cannot see it
 core/domain/GroupsRepository.cpp	    return m_groupDao.replaceSnapshot(result.groups);	    { for (const Group& g : result.groups) { if (!m_groupDao.insertOrReplace(g)) return false; } return true; }	GroupsRepositoryTest:aGroupDeletedOnTheServerLeavesTheCache
+
+# --- an attachment is never written where another local user can read it -
+#
+# The symlink check specifically. A neutralised one is caught by a link
+# pointing at a directory this user owns and that IS private, so the
+# permission check cannot be what refuses.
+app/mail/MailController.cpp	    if (QFileInfo(dir).isSymLink()) {	    if (false) {	MailControllerTest:hostileLocationRefusesASymlinkPlantedAtThePredictableTemporaryPath
+
+# --- an attachment nobody opened is not left lying on disk ----------------
+app/mail/MailController.cpp	    if (!m_launchAttachment(QUrl::fromLocalFile(path))) {	    if (false) {	MailControllerTest:anAttachmentNoApplicationWillOpenIsDeletedRatherThanLeftBehind
+
+# --- the photo cache refuses a directory other users can read -------------
+core/stores/ContactPhotoCache.cpp	    if (!m_available || photoRef.isEmpty() || bytes.isEmpty())	    if (photoRef.isEmpty() || bytes.isEmpty())	ContactPhotoCacheTest:aCacheDirectoryOtherUsersCanReadDisablesTheCacheEntirely
+
+# --- and a cached photo is owner-only on the disk, not just in a 0700 dir -
+core/stores/ContactPhotoCache.cpp	    if (!PrivatePath::ensureFile(path)) {	    if (false) {	ContactPhotoCacheTest:aStoredPhotoIsUnreadableToOtherUsers
+
+# NOT LISTED, deliberately: the PrivatePath::ensureDirectory() check in
+# openAttachmentEphemerally(). Neutralised against
+# hostileLocationRefusesATemporaryDirectoryItCannotCreate this harness
+# reported STILL GREEN -- with that test's premise (a file where the
+# directory has to go) the open a few lines later fails anyway, so the test
+# cannot tell the two refusals apart. The premise that WOULD isolate it is a
+# directory owned by another user, and chmod succeeds on anything this
+# process owns, so no in-process test can stage one. The status itself is
+# covered from the other side, through a symlink to a directory root owns:
+# PrivatePathTest::aDirectoryThatCannotBeTightenedIsReportedAsNotPrivate and
+# ContactPhotoCacheTest::aCacheDirectoryOtherUsersCanReadDisablesTheCacheEntirely.
+
+# --- a restore that did not happen is never reported as recovery ----------
+core/db/DatabaseEncryptionMigration.cpp	        if (!QFile::rename(m_supersededPath, m_databasePath)) {	        if (false) {	DatabaseEncryptionMigrationTest:aRestoreThatCannotHappenIsReportedRatherThanCalledRecovery

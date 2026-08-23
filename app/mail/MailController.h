@@ -7,6 +7,7 @@
 #include "net/RelayMailSource.h" // MailAttachmentUpload -- held by value in PendingSend below
 #include "pgp/EncryptedMessageReader.h" // PgpReadResult/PgpReadStatus -- carried across the hop
 
+#include <QDesktopServices>
 #include <QObject>
 #include <QString>
 #include <QStringList>
@@ -26,6 +27,11 @@ class PairingStore;
 class PgpBootstrapClient;
 class PgpRecipientChecker;
 class QUrl;
+
+// Hands a written attachment to the desktop's handler for its type, and says
+// whether that actually happened. Injectable for the reason given on
+// setAttachmentLauncher(); defaults to QDesktopServices::openUrl().
+using AttachmentLauncher = std::function<bool(const QUrl&)>;
 
 // QML-facing bridge (Task 32) over the core/domain mail stack: MailRepository
 // (cache + delta-merge), RelayMailSource (direct relay calls for actions/
@@ -314,6 +320,14 @@ public slots:
     // that will never fire.
     Q_INVOKABLE void clearEphemeralAttachments();
 
+    // Swaps out the desktop handoff. QDesktopServices::openUrl() needs a
+    // QGuiApplication and every test binary here is guiless, so without this
+    // the launch always fails under test and the "the file was written and
+    // handed over" path could not be covered at all -- which is how the
+    // dropped openUrl() result went unnoticed. Same idea as
+    // PgpQrTargetValidator's HostResolver.
+    void setAttachmentLauncher(AttachmentLauncher launcher);
+
     Q_INVOKABLE QVariantList allKeywordSettings() const;
     // Task 39: KeywordRepository::setVisible() -- also re-emits
     // keywordTabsChanged() since toggling a keyword's visibility can change
@@ -557,6 +571,7 @@ private:
     static constexpr int kEphemeralAttachmentLifetimeMs = 5 * 60 * 1000;
 
     QStringList m_ephemeralAttachments;
+    AttachmentLauncher m_launchAttachment = [](const QUrl& url) { return QDesktopServices::openUrl(url); };
     // Base URL for webmail deep links, or an empty QUrl when unpaired. See
     // the .cpp for why this is separate from requirePairing().
     QUrl webmailBaseUrl() const;

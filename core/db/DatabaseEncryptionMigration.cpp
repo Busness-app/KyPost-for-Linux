@@ -81,35 +81,76 @@ bool DatabaseEncryptionMigration::disarm()
     return QFile::remove(m_markerPath);
 }
 
-void DatabaseEncryptionMigration::reconcile()
+// A marker that outlives its conversion only makes interrupted() answer true
+// for a profile that is in fact settled -- worth saying, not worth failing.
+void DatabaseEncryptionMigration::disarmOrWarn()
+{
+    if (!disarm())
+        qWarning("DatabaseEncryptionMigration: the conversion marker at %s could not be removed",
+                  qUtf8Printable(m_markerPath));
+}
+
+void DatabaseEncryptionMigration::discardWorkingCopy()
+{
+    // Worthless in every state -- there is none in which a half-written copy
+    // is preferred to the original -- but a leftover one would make the next
+    // attempt's ATTACH land on a partial file, so exportEncrypted() refuses
+    // to start when this could not remove it.
+    if (!SecurityWipe::removeDatabaseFiles(m_workingCopyPath))
+        qWarning("DatabaseEncryptionMigration: the partial encrypted copy at %s could not be removed",
+                  qUtf8Printable(m_workingCopyPath));
+}
+
+bool DatabaseEncryptionMigration::reconcile()
 {
     // The swap died between the two renames: the original was moved aside and
     // the copy never took its place. Put the original back -- it is the only
     // complete database on this disk.
     if (!QFileInfo::exists(m_databasePath) && QFileInfo::exists(m_supersededPath)) {
-        QFile::rename(m_supersededPath, m_databasePath);
-        SecurityWipe::removeDatabaseFiles(m_workingCopyPath);
-        return;
+        if (!QFile::rename(m_supersededPath, m_databasePath)) {
+            // The one outcome this class exists to prevent. Saying "recovered"
+            // here would let the caller open a fresh empty database over the
+            // top of a profile whose mail is sitting under another name.
+            qCritical("DatabaseEncryptionMigration: this profile's only complete database could not be "
+                       "moved back to %s and is still at %s; refusing to go any further",
+                       qUtf8Printable(m_databasePath), qUtf8Printable(m_supersededPath));
+            return false;
+        }
+        discardWorkingCopy();
+        return true;
     }
 
     // The swap completed but the secure delete did not. There is a verified
     // encrypted database in place, so the plaintext one is now purely an
     // exposure and goes.
     if (QFileInfo::exists(m_supersededPath) && databaseFileIsEncrypted(m_databasePath)) {
-        SecurityWipe::removeDatabaseFiles(m_supersededPath);
-        SecurityWipe::removeDatabaseFiles(m_workingCopyPath);
-        return;
+        if (!SecurityWipe::removeDatabaseFiles(m_supersededPath)) {
+            // Not fatal: the mail is present and encrypted at its usual path.
+            // The plaintext copy beside it is an exposure, and the next
+            // launch retries -- which is strictly better than refusing to
+            // open the encrypted database that is sitting right there.
+            qCritical("DatabaseEncryptionMigration: a readable copy of this mail is still on disk at %s",
+                       qUtf8Printable(m_supersededPath));
+        }
+        discardWorkingCopy();
+        return true;
     }
 
-    // Anything else: a half-written copy from a run that died during the
-    // export. It is worthless -- there is no state in which it is preferred
-    // to the original -- and leaving it would make the next attempt's ATTACH
-    // land on a partial file.
-    SecurityWipe::removeDatabaseFiles(m_workingCopyPath);
+    discardWorkingCopy();
+    return true;
 }
 
 bool DatabaseEncryptionMigration::exportEncrypted(const QByteArray& key)
 {
+    // reconcile() tried and failed to remove it. ATTACH would open that
+    // partial file and sqlcipher_export would write into it.
+    if (QFileInfo::exists(m_workingCopyPath)) {
+        qWarning("DatabaseEncryptionMigration: a previous attempt's partial copy is still at %s; not "
+                  "converting this launch",
+                  qUtf8Printable(m_workingCopyPath));
+        return false;
+    }
+
     Database source;
     if (!source.open(m_databasePath)) {
         qWarning("DatabaseEncryptionMigration: could not open the plaintext database");
@@ -198,7 +239,8 @@ bool DatabaseEncryptionMigration::swapInEncrypted(const QByteArray& key)
     }
     if (!QFile::rename(m_workingCopyPath, m_databasePath)) {
         qWarning("DatabaseEncryptionMigration: could not put the encrypted database in place");
-        QFile::rename(m_supersededPath, m_databasePath); // and back it goes
+        if (!QFile::rename(m_supersededPath, m_databasePath)) // and back it goes
+            qCritical("DatabaseEncryptionMigration: and the plaintext database could not be put back");
         return false;
     }
 
@@ -208,8 +250,16 @@ bool DatabaseEncryptionMigration::swapInEncrypted(const QByteArray& key)
         Database finalCheck;
         if (!finalCheck.open(m_databasePath, key)) {
             qWarning("DatabaseEncryptionMigration: the encrypted database does not open in place; reverting");
-            QFile::rename(m_databasePath, m_workingCopyPath);
-            QFile::rename(m_supersededPath, m_databasePath);
+            if (!QFile::rename(m_databasePath, m_workingCopyPath)) {
+                // The encrypted file is occupying the profile's path and will
+                // not move. run() calls reconcile(), which reports that the
+                // plaintext original is stranded rather than pretending.
+                qCritical("DatabaseEncryptionMigration: the unusable encrypted database could not be "
+                           "moved out of the way");
+                return false;
+            }
+            if (!QFile::rename(m_supersededPath, m_databasePath))
+                qCritical("DatabaseEncryptionMigration: the plaintext database could not be put back");
             return false;
         }
     }
@@ -230,7 +280,11 @@ bool DatabaseEncryptionMigration::swapInEncrypted(const QByteArray& key)
 
 DatabaseEncryptionMigration::Status DatabaseEncryptionMigration::run(const QByteArray& key)
 {
-    reconcile();
+    // The marker deliberately stays armed on Stranded: it is the only record
+    // that this profile is mid-conversion, and disarming it would make the
+    // next launch treat a stranded database as a routine one.
+    if (!reconcile())
+        return Status::Stranded;
 
     if (key.size() != Database::kRawKeyBytes)
         return Status::Failed;
@@ -257,17 +311,21 @@ DatabaseEncryptionMigration::Status DatabaseEncryptionMigration::run(const QByte
     }
 
     if (!exportEncrypted(key) || !verifyCopyMatchesOriginal(key)) {
-        SecurityWipe::removeDatabaseFiles(m_workingCopyPath);
-        disarm();
+        discardWorkingCopy();
+        disarmOrWarn();
         return Status::Failed; // the plaintext database is untouched
     }
 
     if (!swapInEncrypted(key)) {
-        SecurityWipe::removeDatabaseFiles(m_workingCopyPath);
-        disarm();
+        // Whatever half-finished rename it left, reconcile() is the code that
+        // knows how to undo it -- and it is the only thing here that can tell
+        // "put back" apart from "stranded under another name".
+        if (!reconcile())
+            return Status::Stranded;
+        disarmOrWarn();
         return Status::Failed;
     }
 
-    disarm();
+    disarmOrWarn();
     return Status::Migrated;
 }

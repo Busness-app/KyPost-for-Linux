@@ -47,6 +47,9 @@ private slots:
     void downloadAttachmentStripsEmbeddedNulFromTheFilename();
     void hostileLocationRefusesToOpenNonAllowlistedAttachmentTypes();
     void hostileLocationForcesTheExtensionToMatchTheDeclaredType();
+    void hostileLocationRefusesASymlinkPlantedAtThePredictableTemporaryPath();
+    void hostileLocationRefusesATemporaryDirectoryItCannotCreate();
+    void anAttachmentNoApplicationWillOpenIsDeletedRatherThanLeftBehind();
     void findByMessageIdReturnsMapForCachedEmailAndEmptyMapWhenMissing();
     void aNotificationForAMessageInTwoMailboxesAsksWhichOne();
     void allKeywordSettingsReflectsInboxCacheAndSetKeywordVisibleRoundTrips();
@@ -1332,8 +1335,22 @@ void MailControllerTest::hostileLocationForcesTheExtensionToMatchTheDeclaredType
                                settingsStore, bootstrapClient, recipientChecker, executor);
     ExecutorShutdownGuard shutdownGuard{ executor };
 
-    QVERIFY(downloadAndWait(controller, executor, QStringLiteral("Inbox"), QStringLiteral("42"), 0,
-                             QStringLiteral("Invoice.pdf.desktop")));
+    // Stands in for the desktop's handler. QDesktopServices::openUrl() needs
+    // a QGuiApplication and this binary is guiless, so the real one always
+    // fails here -- and, now that a failed launch is a failed open, this test
+    // measures the extension rule rather than the QPA platform.
+    QUrl launched;
+    controller.setAttachmentLauncher([&launched](const QUrl& url) {
+        launched = url;
+        return true;
+    });
+
+    QVERIFY2(downloadAndWait(controller, executor, QStringLiteral("Inbox"), QStringLiteral("42"), 0,
+                             QStringLiteral("Invoice.pdf.desktop")),
+             qUtf8Printable(controller.lastError()));
+
+    QVERIFY2(launched.isLocalFile(), "the attachment was reported as opened without being handed over");
+    QVERIFY(launched.toLocalFile().endsWith(QStringLiteral(".pdf")));
 
     const QDir attachmentDir(runtimeDir.filePath(QStringLiteral("kypost-attachments")));
     const QStringList written = attachmentDir.entryList(QDir::Files);
@@ -1343,6 +1360,220 @@ void MailControllerTest::hostileLocationForcesTheExtensionToMatchTheDeclaredType
     QVERIFY(!written.first().contains(QStringLiteral(".desktop")));
 
     controller.clearEphemeralAttachments();
+}
+
+// The one that used to fail open.
+//
+// /tmp/kypost-attachments is a PREDICTABLE path, and on a sticky /tmp any
+// local user can create it before KyPost does. A symlink planted there sends
+// the mail wherever it points; mkpath() succeeded because the path already
+// resolved to a directory, the chmod result was dropped, and the attachment
+// was written through the link.
+//
+// The link here points at a directory this user owns and that IS private, so
+// the permission check cannot be what refuses -- only the symlink check can.
+void MailControllerTest::hostileLocationRefusesASymlinkPlantedAtThePredictableTemporaryPath()
+{
+    QStandardPaths::setTestModeEnabled(true);
+
+    Database db;
+    QVERIFY(db.open(QStringLiteral(":memory:")));
+    EmailDao emailDao(db.handle());
+
+    FakeRelayServer fake(httpResponse(200, "OK", "%PDF-1.4 confidential", "application/pdf",
+                                       { { "Content-Disposition", "attachment; filename=\"payslip.pdf\"" } }));
+
+    QTemporaryDir secureDir;
+    QVERIFY(secureDir.isValid());
+    SecureStoreFile secureStore(secureDir.path());
+    PairingStore pairingStore(secureStore);
+    savePairing(pairingStore, fake.port());
+
+    QTemporaryDir cursorDir;
+    QVERIFY(cursorDir.isValid());
+    CursorStore cursorStore(cursorDir.filePath(QStringLiteral("cursor.ini")));
+
+    QTemporaryDir settingsDir;
+    QVERIFY(settingsDir.isValid());
+    SettingsStore settingsStore(settingsDir.filePath(QStringLiteral("settings.ini")));
+    settingsStore.setHostileLocationProtectionEnabled(true);
+    KeywordRepository keywordRepository(settingsStore);
+
+    QTemporaryDir runtimeDir;
+    QVERIFY(runtimeDir.isValid());
+    QTemporaryDir elsewhere; // where the planted link points
+    QVERIFY(elsewhere.isValid());
+    const QString planted = runtimeDir.filePath(QStringLiteral("kypost-attachments"));
+    QVERIFY(QFile::link(elsewhere.path(), planted));
+    QVERIFY2(QFileInfo(planted).isSymLink(), "the premise is a symlink at the predictable path");
+    qputenv("XDG_RUNTIME_DIR", runtimeDir.path().toUtf8());
+
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    RelayMailSource source(http);
+    PgpBootstrapClient bootstrapClient(http);
+    PgpRecipientChecker recipientChecker(http);
+    MailRepository mailRepository(source, emailDao, pairingStore, cursorStore);
+    FolderDao folderDao(db.handle());
+    FolderClient folderClient(http);
+    FolderRepository folderRepository(folderClient, folderDao, pairingStore);
+
+    NetworkExecutor executor(3000);
+    MailController controller(mailRepository, source, keywordRepository, pairingStore, folderRepository,
+                               settingsStore, bootstrapClient, recipientChecker, executor);
+    ExecutorShutdownGuard shutdownGuard{ executor };
+
+    bool launched = false;
+    controller.setAttachmentLauncher([&launched](const QUrl&) {
+        launched = true;
+        return true;
+    });
+
+    QCOMPARE(downloadAndWait(controller, executor, QStringLiteral("Inbox"), QStringLiteral("42"), 0,
+                              QStringLiteral("payslip.pdf")),
+             false);
+    QVERIFY2(!controller.lastError().isEmpty(), "the refusal must be explained, not silent");
+    QVERIFY2(!launched, "the attachment was handed to a viewer out of a planted directory");
+    QVERIFY2(QDir(elsewhere.path()).entryList(QDir::Files).isEmpty(),
+             "the attachment was written through a symlink planted at the predictable path");
+}
+
+// And the other half of the same rule: when the location cannot be created at
+// all, nothing is written and nothing is reported as opened. mkpath()'s result
+// used to be checked here but its companion chmod's was not, so this is the
+// branch that stayed honest -- it is locked down so it cannot quietly stop
+// being.
+//
+// NOT COVERED, and not pretendable: a directory owned by ANOTHER user, which
+// is the case where the chmod is the only thing that fails. It needs a second
+// uid, which an in-process test does not have. PrivatePath::ensureDirectory()
+// answers from the mode on the disk either way, and PrivatePathTest covers it
+// from the other side.
+void MailControllerTest::hostileLocationRefusesATemporaryDirectoryItCannotCreate()
+{
+    QStandardPaths::setTestModeEnabled(true);
+
+    Database db;
+    QVERIFY(db.open(QStringLiteral(":memory:")));
+    EmailDao emailDao(db.handle());
+
+    FakeRelayServer fake(httpResponse(200, "OK", "%PDF-1.4 confidential", "application/pdf",
+                                       { { "Content-Disposition", "attachment; filename=\"payslip.pdf\"" } }));
+
+    QTemporaryDir secureDir;
+    QVERIFY(secureDir.isValid());
+    SecureStoreFile secureStore(secureDir.path());
+    PairingStore pairingStore(secureStore);
+    savePairing(pairingStore, fake.port());
+
+    QTemporaryDir cursorDir;
+    QVERIFY(cursorDir.isValid());
+    CursorStore cursorStore(cursorDir.filePath(QStringLiteral("cursor.ini")));
+
+    QTemporaryDir settingsDir;
+    QVERIFY(settingsDir.isValid());
+    SettingsStore settingsStore(settingsDir.filePath(QStringLiteral("settings.ini")));
+    settingsStore.setHostileLocationProtectionEnabled(true);
+    KeywordRepository keywordRepository(settingsStore);
+
+    // A plain FILE sitting where the directory has to go.
+    QTemporaryDir runtimeDir;
+    QVERIFY(runtimeDir.isValid());
+    const QString blocked = runtimeDir.filePath(QStringLiteral("kypost-attachments"));
+    QFile blocker(blocked);
+    QVERIFY(blocker.open(QIODevice::WriteOnly));
+    blocker.close();
+    qputenv("XDG_RUNTIME_DIR", runtimeDir.path().toUtf8());
+
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    RelayMailSource source(http);
+    PgpBootstrapClient bootstrapClient(http);
+    PgpRecipientChecker recipientChecker(http);
+    MailRepository mailRepository(source, emailDao, pairingStore, cursorStore);
+    FolderDao folderDao(db.handle());
+    FolderClient folderClient(http);
+    FolderRepository folderRepository(folderClient, folderDao, pairingStore);
+
+    NetworkExecutor executor(3000);
+    MailController controller(mailRepository, source, keywordRepository, pairingStore, folderRepository,
+                               settingsStore, bootstrapClient, recipientChecker, executor);
+    ExecutorShutdownGuard shutdownGuard{ executor };
+
+    bool launched = false;
+    controller.setAttachmentLauncher([&launched](const QUrl&) {
+        launched = true;
+        return true;
+    });
+
+    QCOMPARE(downloadAndWait(controller, executor, QStringLiteral("Inbox"), QStringLiteral("42"), 0,
+                              QStringLiteral("payslip.pdf")),
+             false);
+    QVERIFY2(!controller.lastError().isEmpty(), "the refusal must be explained, not silent");
+    QVERIFY2(!launched, "an attachment that was never written was handed to a viewer");
+    QCOMPARE(QFileInfo(blocked).size(), 0); // nothing appended to the blocker either
+}
+
+// A launch that never happened used to be reported as success, and the file
+// stayed on disk for the five-minute timer -- an "ephemeral" attachment
+// nobody ever opened, sitting there for no reason at all.
+void MailControllerTest::anAttachmentNoApplicationWillOpenIsDeletedRatherThanLeftBehind()
+{
+    QStandardPaths::setTestModeEnabled(true);
+
+    Database db;
+    QVERIFY(db.open(QStringLiteral(":memory:")));
+    EmailDao emailDao(db.handle());
+
+    FakeRelayServer fake(httpResponse(200, "OK", "%PDF-1.4 fake", "application/pdf",
+                                       { { "Content-Disposition", "attachment; filename=\"payslip.pdf\"" } }));
+
+    QTemporaryDir secureDir;
+    QVERIFY(secureDir.isValid());
+    SecureStoreFile secureStore(secureDir.path());
+    PairingStore pairingStore(secureStore);
+    savePairing(pairingStore, fake.port());
+
+    QTemporaryDir cursorDir;
+    QVERIFY(cursorDir.isValid());
+    CursorStore cursorStore(cursorDir.filePath(QStringLiteral("cursor.ini")));
+
+    QTemporaryDir settingsDir;
+    QVERIFY(settingsDir.isValid());
+    SettingsStore settingsStore(settingsDir.filePath(QStringLiteral("settings.ini")));
+    settingsStore.setHostileLocationProtectionEnabled(true);
+    KeywordRepository keywordRepository(settingsStore);
+
+    QTemporaryDir runtimeDir;
+    QVERIFY(runtimeDir.isValid());
+    qputenv("XDG_RUNTIME_DIR", runtimeDir.path().toUtf8());
+
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    RelayMailSource source(http);
+    PgpBootstrapClient bootstrapClient(http);
+    PgpRecipientChecker recipientChecker(http);
+    MailRepository mailRepository(source, emailDao, pairingStore, cursorStore);
+    FolderDao folderDao(db.handle());
+    FolderClient folderClient(http);
+    FolderRepository folderRepository(folderClient, folderDao, pairingStore);
+
+    NetworkExecutor executor(3000);
+    MailController controller(mailRepository, source, keywordRepository, pairingStore, folderRepository,
+                               settingsStore, bootstrapClient, recipientChecker, executor);
+    ExecutorShutdownGuard shutdownGuard{ executor };
+
+    // No handler for this type on this machine.
+    controller.setAttachmentLauncher([](const QUrl&) { return false; });
+
+    QCOMPARE(downloadAndWait(controller, executor, QStringLiteral("Inbox"), QStringLiteral("42"), 0,
+                              QStringLiteral("payslip.pdf")),
+             false);
+    QVERIFY2(!controller.lastError().isEmpty(), "the failure must be explained, not silent");
+
+    const QDir attachmentDir(runtimeDir.filePath(QStringLiteral("kypost-attachments")));
+    QVERIFY2(attachmentDir.entryList(QDir::Files).isEmpty(),
+             "the attachment nobody opened was left on disk");
 }
 
 

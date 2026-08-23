@@ -40,6 +40,10 @@ public:
         NotNeeded,   // already encrypted, or there is nothing to convert
         Migrated,    // converted and verified this launch
         Failed,      // the plaintext database is untouched and still usable
+        Stranded,    // NOTHING is openable at the profile's path: an
+                     // interrupted swap left the only complete database under
+                     // another name and it could not be moved back. The
+                     // caller must not open or create anything here.
     };
 
     // Tidies up after an interrupted previous attempt, then converts if
@@ -53,10 +57,17 @@ public:
 private:
     bool arm();
     bool disarm();
+    void disarmOrWarn();
+    void discardWorkingCopy();
     // Puts the profile back into one of the two states a launch can start
     // from -- "plaintext original in place" or "encrypted database in place"
     // -- by undoing whatever half-finished rename an interrupted run left.
-    void reconcile();
+    //
+    // Returns false only for the outcome that matters: a complete database
+    // that could not be moved back to the profile's path. Reporting that as
+    // success is how a failed rollback turns into a fresh empty profile
+    // written over the top of somebody's mail.
+    [[nodiscard]] bool reconcile();
     bool exportEncrypted(const QByteArray& key);
     bool verifyCopyMatchesOriginal(const QByteArray& key) const;
     bool swapInEncrypted(const QByteArray& key);
