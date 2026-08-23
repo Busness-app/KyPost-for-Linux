@@ -9,6 +9,8 @@
 #include <QTemporaryDir>
 #include <QTest>
 
+#include <unistd.h>
+
 namespace {
 
 class UnreachableSecureStore : public SecureStore
@@ -46,6 +48,7 @@ private slots:
     void anEncryptedProfileIsNeverReopenedInTheClear();
     void aNewProfileWithNowhereToKeepAKeyGoesToMemory();
     void openingAnExistingPlaintextProfileConvertsItInPlace();
+    void aStrandedProfileIsRefusedRatherThanReplacedWithAnEmptyOne();
 };
 
 // The decision table, exhaustively, with no disk and no keyring involved.
@@ -211,6 +214,61 @@ void ProfileDatabaseTest::openingAnExistingPlaintextProfileConvertsItInPlace()
     QCOMPARE(keyStore.existing().status, DatabaseKeyStore::Status::Found);
 
     QSqlQuery read(db.handle());
+    QVERIFY(read.exec(QStringLiteral("SELECT subject FROM emails WHERE message_id = 'm1'")));
+    QVERIFY(read.next());
+    QCOMPARE(read.value(0).toString(), QStringLiteral("SUBJECTFROMBEFORE"));
+}
+
+// An interrupted conversion left the only complete database under another
+// name and it could not be moved back. Opening the profile's path now creates
+// a NEW, empty encrypted database on top of it -- the app looks fine, the
+// mailbox is empty, and the real one is deleted by the next successful
+// conversion. Refusing is the only answer that keeps the mail.
+void ProfileDatabaseTest::aStrandedProfileIsRefusedRatherThanReplacedWithAnEmptyOne()
+{
+    if (!Database::encryptionAvailable())
+        QSKIP("built without SQLCipher -- this behaviour is NOT covered");
+    if (::geteuid() == 0)
+        QSKIP("running as root: an unwritable directory does not stop root from renaming in it");
+
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("kypost.db"));
+    const QString superseded = path + QStringLiteral(".plaintext-old");
+
+    {
+        Database plain;
+        QVERIFY(plain.open(path));
+        QSqlQuery insert(plain.handle());
+        insert.prepare(QStringLiteral("INSERT INTO emails (message_id, folder, subject, at_utc) "
+                                       "VALUES (?, ?, ?, ?)"));
+        insert.addBindValue(QStringLiteral("m1"));
+        insert.addBindValue(QStringLiteral("INBOX"));
+        insert.addBindValue(QStringLiteral("SUBJECTFROMBEFORE"));
+        insert.addBindValue(QStringLiteral("2026-08-22T00:00:00Z"));
+        QVERIFY(insert.exec());
+    }
+    QVERIFY(QFile::rename(path, superseded));
+    QVERIFY(QFile::setPermissions(dir.path(), QFileDevice::ReadOwner | QFileDevice::ExeOwner));
+
+    QTemporaryDir secureDir;
+    QVERIFY(secureDir.isValid());
+    SecureStoreFile secureStore(secureDir.path());
+    DatabaseKeyStore keyStore(secureStore);
+
+    Database db;
+    QCOMPARE(openProfileDatabase(db, keyStore, path), ProfileDatabaseMode::FailedToOpen);
+    QVERIFY2(!QFile::exists(path), "an empty database was created over a stranded profile");
+    QVERIFY(QFile::exists(superseded));
+
+    QVERIFY(QFile::setPermissions(dir.path(),
+                                   QFileDevice::ReadOwner | QFileDevice::WriteOwner
+                                       | QFileDevice::ExeOwner));
+
+    // And once the directory is writable again, the same call recovers it.
+    Database recovered;
+    QCOMPARE(openProfileDatabase(recovered, keyStore, path), ProfileDatabaseMode::EncryptedOnDisk);
+    QSqlQuery read(recovered.handle());
     QVERIFY(read.exec(QStringLiteral("SELECT subject FROM emails WHERE message_id = 'm1'")));
     QVERIFY(read.next());
     QCOMPARE(read.value(0).toString(), QStringLiteral("SUBJECTFROMBEFORE"));

@@ -1,8 +1,25 @@
 #include "stores/ContactPhotoCache.h"
 
+#include <QCryptographicHash>
+#include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QTemporaryDir>
 #include <QTest>
+
+#include <unistd.h>
+
+namespace {
+
+// The cache's own naming rule, restated: the test has to know where a photo
+// WOULD have landed to prove that it did not.
+QString expectedFileName(const QString& photoRef)
+{
+    return QString::fromLatin1(
+        QCryptographicHash::hash(photoRef.toUtf8(), QCryptographicHash::Sha256).toHex());
+}
+
+} // namespace
 
 class ContactPhotoCacheTest : public QObject
 {
@@ -15,6 +32,9 @@ private slots:
     void storeOnEmptyBytesReturnsEmptyAndWritesNothing();
     void storeOverwritesExistingFileForSameRef();
     void constructorCreatesCacheDirIfMissing();
+    void aCacheDirectoryOtherUsersCanReadDisablesTheCacheEntirely();
+    void aCacheDirectoryThatCannotBeCreatedDisablesTheCache();
+    void aStoredPhotoIsUnreadableToOtherUsers();
 };
 
 void ContactPhotoCacheTest::cachedPathForReturnsEmptyWhenNothingStored()
@@ -97,6 +117,89 @@ void ContactPhotoCacheTest::constructorCreatesCacheDirIfMissing()
     // exist.
     const QString path = cache.store(QStringLiteral("photo-ref-1"), QByteArrayLiteral("bytes"));
     QVERIFY(!path.isEmpty());
+}
+
+// Finding the cache directory readable by other users used to produce a
+// warning and nothing else: the cache stayed on, and pictures of everyone the
+// user knows went into it under the default umask. The log line is not read
+// until after the exposure, so it protected nobody.
+//
+// The premise is a directory belonging to somebody else -- chmod succeeds on
+// anything this process owns -- and it is deliberately a WRITABLE one, so
+// that removing the guard makes this test fail by actually storing the photo
+// rather than by failing to write it for an unrelated reason.
+void ContactPhotoCacheTest::aCacheDirectoryOtherUsersCanReadDisablesTheCacheEntirely()
+{
+    if (::geteuid() == 0)
+        QSKIP("running as root: chmod would succeed, and would chmod /tmp");
+
+    const QString shared = QStringLiteral("/tmp");
+    const QFileInfo sharedInfo(shared);
+    if (!sharedInfo.isDir() || sharedInfo.ownerId() == ::geteuid()
+        || !(sharedInfo.permissions() & QFileDevice::ReadOther)) {
+        QSKIP("no world-readable directory owned by another user on this machine");
+    }
+
+    QTemporaryDir parent;
+    QVERIFY(parent.isValid());
+    const QString cacheDir = parent.filePath(QStringLiteral("contact-photos"));
+    QVERIFY(QFile::link(shared, cacheDir));
+
+    const QString photoRef = QStringLiteral("photo-ref-shared-machine");
+    const QString wouldBe = shared + QLatin1Char('/') + expectedFileName(photoRef);
+    QFile::remove(wouldBe); // a run that failed here before really did leave one
+
+    ContactPhotoCache cache(cacheDir);
+    const QString stored = cache.store(photoRef, QByteArrayLiteral("a-recognisable-face"));
+
+    // Cleaned up BEFORE anything can fail: the first version of this test put
+    // the remove() after the QVERIFY, so the run that proved the guard
+    // load-bearing left a face in /tmp for the next one to trip over.
+    const bool leaked = QFileInfo::exists(wouldBe);
+    QFile::remove(wouldBe);
+
+    QVERIFY2(!leaked, "a contact photo was written into a directory other users can read");
+    QVERIFY2(stored.isEmpty(), "the cache stayed enabled on a directory other users can read");
+    // Reads are refused too: a cache that will not write must not hand out
+    // paths under someone else's directory either.
+    QVERIFY(cache.cachedPathFor(photoRef).isEmpty());
+}
+
+// The other way the directory can be unusable, and the one that needs no
+// second user: a plain file sitting where it has to go.
+void ContactPhotoCacheTest::aCacheDirectoryThatCannotBeCreatedDisablesTheCache()
+{
+    QTemporaryDir parent;
+    QVERIFY(parent.isValid());
+    const QString cacheDir = parent.filePath(QStringLiteral("contact-photos"));
+    QFile blocker(cacheDir);
+    QVERIFY(blocker.open(QIODevice::WriteOnly));
+    blocker.close();
+
+    ContactPhotoCache cache(cacheDir);
+
+    QVERIFY(cache.store(QStringLiteral("photo-ref-1"), QByteArrayLiteral("bytes")).isEmpty());
+    QVERIFY(cache.cachedPathFor(QStringLiteral("photo-ref-1")).isEmpty());
+    QCOMPARE(QFileInfo(cacheDir).size(), 0); // nothing written through the blocker either
+}
+
+// The directory is owner-only, and so is every file in it. A 0644 photo in a
+// 0700 directory is safe only until the directory's mode is what changes.
+void ContactPhotoCacheTest::aStoredPhotoIsUnreadableToOtherUsers()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    ContactPhotoCache cache(dir.path());
+
+    const QString path = cache.store(QStringLiteral("photo-ref-1"), QByteArrayLiteral("a-face"));
+    QVERIFY(!path.isEmpty());
+
+    const QFileDevice::Permissions mode = QFileInfo(path).permissions();
+    QVERIFY2(!(mode & (QFileDevice::ReadGroup | QFileDevice::WriteGroup | QFileDevice::ExeGroup)), "group");
+    QVERIFY2(!(mode & (QFileDevice::ReadOther | QFileDevice::WriteOther | QFileDevice::ExeOther)), "other");
+
+    // And nothing half-written was left beside it by QSaveFile.
+    QCOMPARE(QDir(dir.path()).entryList(QDir::Files).size(), 1);
 }
 
 QTEST_GUILESS_MAIN(ContactPhotoCacheTest)

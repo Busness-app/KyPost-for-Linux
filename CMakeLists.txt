@@ -57,6 +57,24 @@ option(KYPOST_SANITIZE "Build with AddressSanitizer and UndefinedBehaviorSanitiz
 # accepts `PRAGMA key` and silently ignores it -- see Database::open() for
 # what that costs. If it is not the copy we built, we do not want it.
 set(KYPOST_SQLCIPHER_ROOT "" CACHE PATH "Prefix containing a SQLCipher built by scripts/build-sqlcipher.sh")
+
+# A shipped build without SQLCipher is a plaintext mail cache, and nothing
+# about it looks wrong: it builds, it runs, every test passes, and the
+# encryption tests report a skip nobody reads. One dropped -D in a release or
+# packaging job is all it takes. So a Release build STOPS here instead.
+#
+# Debug and unspecified build types are left alone deliberately -- that is
+# where somebody is working on something unrelated and has no reason to build
+# SQLCipher first -- and a Release build that really does mean it can say so
+# with -DKYPOST_ALLOW_PLAINTEXT_DB=ON.
+option(KYPOST_ALLOW_PLAINTEXT_DB "Permit a Release build with no SQLCipher, which stores mail unencrypted" OFF)
+if(CMAKE_BUILD_TYPE STREQUAL "Release" AND NOT KYPOST_SQLCIPHER_ROOT AND NOT KYPOST_ALLOW_PLAINTEXT_DB)
+  message(FATAL_ERROR
+    "Release build with no SQLCipher: this binary would store the user's mail unencrypted on disk.\n"
+    "  Build it:   ./scripts/build-sqlcipher.sh /tmp/sqlcipher\n"
+    "  Point here: -DKYPOST_SQLCIPHER_ROOT=/tmp/sqlcipher\n"
+    "If a plaintext Release build is genuinely what you want, say so: -DKYPOST_ALLOW_PLAINTEXT_DB=ON")
+endif()
 if(KYPOST_SANITIZE)
   add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer -g)
   add_link_options(-fsanitize=address,undefined)

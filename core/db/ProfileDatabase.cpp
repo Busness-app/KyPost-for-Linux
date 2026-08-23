@@ -103,8 +103,20 @@ ProfileDatabaseMode openProfileDatabase(Database& database, DatabaseKeyStore& ke
         // call unconditionally: it is a no-op when there is nothing to
         // convert, and it repairs the leftovers of an interrupted run.
         DatabaseEncryptionMigration migration(path);
-        if (migration.run(material) == DatabaseEncryptionMigration::Status::Failed
-            && QFileInfo::exists(path) && !databaseFileIsEncrypted(path)) {
+        const DatabaseEncryptionMigration::Status migrated = migration.run(material);
+        if (migrated == DatabaseEncryptionMigration::Status::Stranded) {
+            // An interrupted conversion left this profile's only complete
+            // database under another name and it could not be moved back.
+            // Opening `path` now would create an empty encrypted database on
+            // top of that, and the mail would be gone for good; the next
+            // launch retries the restore instead.
+            qCritical("ProfileDatabase: this profile's database is mid-conversion and could not be "
+                       "restored; refusing to open anything at %s",
+                       qUtf8Printable(path));
+            return ProfileDatabaseMode::FailedToOpen;
+        }
+        if (migrated == DatabaseEncryptionMigration::Status::Failed && QFileInfo::exists(path)
+            && !databaseFileIsEncrypted(path)) {
             // The conversion did not happen and the plaintext database is
             // still there, untouched. Opening it is strictly better than
             // handing the user an app with no mail in it; the next launch

@@ -22,6 +22,7 @@
 #include "pgp/OpenPgpKeyImporter.h"
 #include "pgp/MimeBodyReader.h"
 #include "pgp/OpenPgpDecryptor.h"
+#include "security/PrivatePath.h"
 #include "net/PgpRecipientChecker.h"
 #include "net/RelayMailSource.h"
 
@@ -1265,12 +1266,25 @@ bool MailController::openAttachmentEphemerally(const QString& name, const QStrin
     if (baseDir.isEmpty())
         baseDir = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
 
+    // Fail closed on a PREDICTABLE path. Another local user can create
+    // /tmp/kypost-attachments first: mkpath() then succeeds because it
+    // exists, the chmod fails because it is not ours, and both results used
+    // to be dropped -- so the mail went in anyway.
     const QString dir = baseDir + QStringLiteral("/kypost-attachments");
-    if (!QDir().mkpath(dir)) {
-        setLastError(i18n("Could not create a temporary location for the attachment"));
+    // Symlink first: a link sends the bytes wherever it points, and the
+    // permission check below would only ever see the target's mode.
+    if (QFileInfo(dir).isSymLink()) {
+        setLastError(i18n("KyPost will not write this attachment: the temporary location (%1) is a link "
+                           "to somewhere else.",
+                           dir));
         return false;
     }
-    QFile::setPermissions(dir, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
+    if (PrivatePath::ensureDirectory(dir) != PrivatePath::Status::Ready) {
+        setLastError(i18n("KyPost will not write this attachment: the temporary location (%1) cannot be "
+                           "made private to you.",
+                           dir));
+        return false;
+    }
 
     // Force the extension to the one the allowlisted MIME type implies,
     // rather than keeping whatever the message asked for. Without this,
@@ -1287,15 +1301,30 @@ bool MailController::openAttachmentEphemerally(const QString& name, const QStrin
         return false;
     }
     // Owner-only before any bytes are written, so the content is never
-    // briefly readable by other local users.
-    outFile.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+    // briefly readable by other local users -- and proven on the file that is
+    // now on the disk, because chmod reports success and changes nothing on a
+    // filesystem with no permission bits.
+    if (!outFile.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner)
+        || !PrivatePath::isPrivate(path)) {
+        outFile.close();
+        QFile::remove(path);
+        setLastError(i18n("KyPost will not write this attachment: it cannot be kept unreadable to other "
+                           "users of this machine."));
+        return false;
+    }
     if (!writeAllOrRemove(outFile, data)) {
         setLastError(i18n("The attachment could not be written in full (is the disk full?)."));
         return false;
     }
 
+    // Tracked only once there is something to hand over. A launch that never
+    // happened leaves no file for a viewer to read, so it leaves none here.
+    if (!m_launchAttachment(QUrl::fromLocalFile(path))) {
+        QFile::remove(path);
+        setLastError(i18n("KyPost could not open the attachment with any installed application."));
+        return false;
+    }
     m_ephemeralAttachments.append(path);
-    QDesktopServices::openUrl(QUrl::fromLocalFile(path));
 
     // There is no reliable signal for "the external viewer closed" -- the
     // handler may be a long-running process that was already open. A timer
@@ -1303,19 +1332,37 @@ bool MailController::openAttachmentEphemerally(const QString& name, const QStrin
     // short enough that it does not linger. It is also deleted on exit (see
     // clearEphemeralAttachments) so a crash-free quit leaves nothing.
     QTimer::singleShot(kEphemeralAttachmentLifetimeMs, this, [this, path]() {
-        QFile::remove(path);
-        m_ephemeralAttachments.removeAll(path);
+        // Forgetting a file we failed to delete is how "ephemeral" turns into
+        // "on disk until the disk is wiped": it stays on the list so quit
+        // retries it.
+        if (QFile::remove(path) || !QFile::exists(path))
+            m_ephemeralAttachments.removeAll(path);
+        else
+            qWarning("MailController: could not remove the temporary attachment; retrying on quit");
     });
 
     setLastError(QString());
     return true;
 }
 
+void MailController::setAttachmentLauncher(AttachmentLauncher launcher)
+{
+    if (launcher)
+        m_launchAttachment = std::move(launcher);
+}
+
 void MailController::clearEphemeralAttachments()
 {
-    for (const QString& path : m_ephemeralAttachments)
-        QFile::remove(path);
-    m_ephemeralAttachments.clear();
+    QStringList stillThere;
+    for (const QString& path : m_ephemeralAttachments) {
+        if (!QFile::remove(path) && QFile::exists(path)) {
+            qCritical("MailController: a temporary attachment could not be deleted and is still on disk "
+                       "at %s",
+                       qUtf8Printable(path));
+            stillThere.append(path);
+        }
+    }
+    m_ephemeralAttachments = stillThere;
 }
 
 void MailController::openFromNotification(const QString& messageId)

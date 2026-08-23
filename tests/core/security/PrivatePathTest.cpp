@@ -6,6 +6,8 @@
 #include <QTemporaryDir>
 #include <QTest>
 
+#include <unistd.h>
+
 // The startup hardening in app/main.cpp used to be a mkpath() and a
 // setPermissions() with both results dropped, under a comment asserting that
 // the mail database, the contact photos and the push endpoint were protected.
@@ -21,6 +23,7 @@ private slots:
     void aFreshDirectoryIsCreatedOwnerOnly();
     void anExistingWorldReadableDirectoryIsTightened();
     void aDirectoryThatCannotBeCreatedIsReportedAsNotCreated();
+    void aDirectoryThatCannotBeTightenedIsReportedAsNotPrivate();
     void aWorldReadableFileIsTightened();
     void anAbsentFileIsNotPrivate();
 };
@@ -65,6 +68,33 @@ void PrivatePathTest::aDirectoryThatCannotBeCreatedIsReportedAsNotCreated()
     blocker.close();
 
     QCOMPARE(PrivatePath::ensureDirectory(path), PrivatePath::Status::NotCreated);
+}
+
+// The status the callers fail closed on, and the only one that cannot be
+// built out of files this process owns: chmod succeeds on anything we own, so
+// the premise has to be a directory belonging to somebody else. /tmp is the
+// one such directory that is world-readable AND writable on every Linux box,
+// which matters -- if this guard were removed, a store would really land in
+// there rather than failing for an unrelated reason.
+void PrivatePathTest::aDirectoryThatCannotBeTightenedIsReportedAsNotPrivate()
+{
+    if (::geteuid() == 0)
+        QSKIP("running as root: chmod would succeed, and would chmod /tmp");
+
+    const QString shared = QStringLiteral("/tmp");
+    const QFileInfo sharedInfo(shared);
+    if (!sharedInfo.isDir() || sharedInfo.ownerId() == ::geteuid()
+        || !(sharedInfo.permissions() & QFileDevice::ReadOther)) {
+        QSKIP("no world-readable directory owned by another user on this machine");
+    }
+
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("someone-elses"));
+    QVERIFY(QFile::link(shared, path));
+
+    QCOMPARE(PrivatePath::ensureDirectory(path), PrivatePath::Status::NotPrivate);
+    QCOMPARE(QFileInfo(shared).permissions(), sharedInfo.permissions()); // and nothing was changed
 }
 
 // KUnifiedPush writes its client state with plain QSettings, so it lands 0644

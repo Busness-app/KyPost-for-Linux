@@ -11,6 +11,8 @@
 #include <QTest>
 #include <QVariant>
 
+#include <unistd.h>
+
 namespace {
 
 QByteArray testKey()
@@ -43,6 +45,21 @@ int countEmails(Database& db)
     return query.value(0).toInt();
 }
 
+// Renames and unlinks both need write permission on the DIRECTORY, so this is
+// how a filesystem-level failure is staged without a second user or a fault
+// injector. Every caller puts it back before the QTemporaryDir goes out of
+// scope, or the directory cannot be cleaned up either.
+bool makeDirectoryUnwritable(const QString& dir)
+{
+    return QFile::setPermissions(dir, QFileDevice::ReadOwner | QFileDevice::ExeOwner);
+}
+
+bool makeDirectoryWritable(const QString& dir)
+{
+    return QFile::setPermissions(dir,
+                                  QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
+}
+
 bool anyFileUnder(const QString& dir, const QByteArray& needle)
 {
     const QDir d(dir);
@@ -69,6 +86,9 @@ private slots:
     void anInterruptedSwapIsRepairedOnTheNextLaunch();
     void aHalfWrittenCopyFromADeadRunIsDiscarded();
     void runningTwiceIsHarmless();
+    void aRestoreThatCannotHappenIsReportedRatherThanCalledRecovery();
+    void aSwapThatCannotStartLeavesThePlaintextDatabaseUsable();
+    void aPlaintextCopyThatCannotBeDeletedStillLeavesTheMailReadable();
 };
 
 void DatabaseEncryptionMigrationTest::initTestCase()
@@ -217,6 +237,111 @@ void DatabaseEncryptionMigrationTest::runningTwiceIsHarmless()
     Database reopened;
     QVERIFY(reopened.open(path, testKey()));
     QCOMPARE(countEmails(reopened), 6);
+}
+
+// The failure this class exists to survive, and the one that used to be
+// reported as success: the interrupted swap above, except that putting the
+// database back does not work.
+//
+// QFile::rename()'s result was dropped and reconcile() returned void, so run()
+// went on to report Migrated/Failed for a profile whose only complete database
+// was sitting under another name -- and openProfileDatabase() would then have
+// created an empty one over the top of it.
+void DatabaseEncryptionMigrationTest::aRestoreThatCannotHappenIsReportedRatherThanCalledRecovery()
+{
+    if (::geteuid() == 0)
+        QSKIP("running as root: an unwritable directory does not stop root from renaming in it");
+
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("kypost.db"));
+    const QString superseded = path + QStringLiteral(".plaintext-old");
+    seedPlaintextProfile(path, 5);
+
+    // Interrupted between the two renames, and now the rename back cannot
+    // happen either.
+    QVERIFY(QFile::rename(path, superseded));
+    QVERIFY(makeDirectoryUnwritable(dir.path()));
+
+    DatabaseEncryptionMigration migration(path);
+    const auto status = migration.run(testKey());
+
+    QCOMPARE(status, DatabaseEncryptionMigration::Status::Stranded);
+    QVERIFY2(!QFile::exists(path), "the premise did not hold: the restore actually worked");
+    QVERIFY2(QFile::exists(superseded), "the only complete database was not left where it is");
+
+    // The mail is intact, and the next launch is what gets it back.
+    QVERIFY(makeDirectoryWritable(dir.path()));
+    DatabaseEncryptionMigration retry(path);
+    QCOMPARE(retry.run(testKey()), DatabaseEncryptionMigration::Status::Migrated);
+    Database reopened;
+    QVERIFY(reopened.open(path, testKey()));
+    QCOMPARE(countEmails(reopened), 5);
+}
+
+// The first of the two renames fails outright -- something is already at the
+// name the original moves to. Nothing has been touched at that point, so this
+// is an ordinary Failed: the plaintext database is where it always was, and
+// the next launch tries again.
+void DatabaseEncryptionMigrationTest::aSwapThatCannotStartLeavesThePlaintextDatabaseUsable()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("kypost.db"));
+    const QString superseded = path + QStringLiteral(".plaintext-old");
+    seedPlaintextProfile(path, 3);
+
+    // QFile::rename refuses an occupied destination.
+    QFile occupier(superseded);
+    QVERIFY(occupier.open(QIODevice::WriteOnly));
+    occupier.write("in the way");
+    occupier.close();
+
+    DatabaseEncryptionMigration migration(path);
+    QCOMPARE(migration.run(testKey()), DatabaseEncryptionMigration::Status::Failed);
+
+    QVERIFY2(QFile::exists(path), "the plaintext database was moved despite the swap failing");
+    Database reopened;
+    QVERIFY(reopened.open(path));
+    QCOMPARE(countEmails(reopened), 3);
+    QVERIFY2(!migration.interrupted(), "a failed attempt left the marker armed");
+}
+
+// The swap completed and the plaintext copy could not be deleted. That is an
+// exposure to shout about, but it is NOT a reason to refuse the encrypted
+// database sitting at the profile's path -- the alternative is an app with no
+// mail in it because a file could not be unlinked.
+void DatabaseEncryptionMigrationTest::aPlaintextCopyThatCannotBeDeletedStillLeavesTheMailReadable()
+{
+    if (::geteuid() == 0)
+        QSKIP("running as root: an unwritable directory does not stop root from unlinking in it");
+
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("kypost.db"));
+    const QString superseded = path + QStringLiteral(".plaintext-old");
+
+    seedPlaintextProfile(path, 7);
+    {
+        DatabaseEncryptionMigration first(path);
+        QCOMPARE(first.run(testKey()), DatabaseEncryptionMigration::Status::Migrated);
+    }
+    // Stage the leftover the cleanup is supposed to remove, then make removing
+    // it impossible.
+    QFile leftover(superseded);
+    QVERIFY(leftover.open(QIODevice::WriteOnly));
+    leftover.write("SECRETSUBJECT0");
+    leftover.close();
+    QVERIFY(makeDirectoryUnwritable(dir.path()));
+
+    DatabaseEncryptionMigration migration(path);
+    QCOMPARE(migration.run(testKey()), DatabaseEncryptionMigration::Status::NotNeeded);
+
+    Database reopened;
+    QVERIFY2(reopened.open(path, testKey()), "the encrypted database was made unusable by a failed cleanup");
+    QCOMPARE(countEmails(reopened), 7);
+
+    QVERIFY(makeDirectoryWritable(dir.path()));
 }
 
 QTEST_GUILESS_MAIN(DatabaseEncryptionMigrationTest)

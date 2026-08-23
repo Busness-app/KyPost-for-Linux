@@ -19,7 +19,10 @@
 class ContactPhotoCache
 {
 public:
-    // cacheDir is created (mkpath) if it doesn't already exist.
+    // cacheDir is created if it doesn't already exist, and made owner-only.
+    // If it cannot be BOTH, the cache disables itself: every store() and
+    // cachedPathFor() call then returns an empty string, so photos are
+    // re-fetched rather than written somewhere other users can read them.
     explicit ContactPhotoCache(const QString& cacheDir);
 
     // Absolute path to the cached file for photoRef, or an empty string if
@@ -38,4 +41,5 @@ private:
     QString fileNameFor(const QString& photoRef) const;
 
     QDir m_dir;
+    bool m_available = false;
 };
