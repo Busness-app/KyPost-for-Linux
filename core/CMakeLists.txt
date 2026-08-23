@@ -68,6 +68,7 @@ add_library(kypostcore STATIC
   security/AppLockStore.h
   security/CredentialCipher.cpp
   security/CredentialCipher.h
+  db/DatabaseEncryptionMigration.cpp
   db/ProfileDatabase.cpp
   security/DatabaseKeyStore.cpp
   security/LockoutPolicy.cpp

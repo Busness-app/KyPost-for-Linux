@@ -30,6 +30,8 @@ TestCase {
     function cleanup() {
         AppLock.wipeIncomplete = false
         AppLock.credentialsUnavailable = false
+        AppLock.databaseUnencrypted = false
+        AppLock.databaseMemoryOnly = false
         Pairing.certificateMismatch = false
         Pairing.reregistrationRejected = false
     }
@@ -83,6 +85,28 @@ TestCase {
         verify(banner !== null, "banner must instantiate")
         wait(0)
         compare(visibleMessages(banner).length, 1)
+    }
+
+    // The two database rows say different things about different situations
+    // and must not be collapsed into one another: "not encrypted on this
+    // disk" and "not saved to this disk at all" have different consequences
+    // and different fixes.
+    function test_theTwoDatabaseWarningsAreDistinct() {
+        const banner = createTemporaryObject(bannerComponent, testCase)
+        verify(banner !== null, "banner must instantiate")
+
+        AppLock.databaseMemoryOnly = true
+        wait(0)
+        let messages = visibleMessages(banner)
+        compare(messages.length, 1)
+        verify(messages[0].indexOf("Nothing is being saved") >= 0)
+
+        AppLock.databaseMemoryOnly = false
+        AppLock.databaseUnencrypted = true
+        wait(0)
+        messages = visibleMessages(banner)
+        compare(messages.length, 1)
+        verify(messages[0].indexOf("are not encrypted") >= 0)
     }
 
     function test_itIsIndependentOfEveryOtherCondition() {

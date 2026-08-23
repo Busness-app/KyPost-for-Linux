@@ -84,6 +84,30 @@ Item {
                            + "free disk space, then restart KyPost to try again.")
         },
         {
+            // Nothing this session caches is being written to this device at
+            // all, because there is nowhere to keep the key that would
+            // protect it. Said plainly, because the consequence is one the
+            // user will otherwise discover by losing their cached mail on
+            // the next restart.
+            actionLabel: "",
+            active: AppLock.databaseMemoryOnly,
+            message: i18n("KyPost cannot reach a keyring, so it has nowhere to store the key that "
+                           + "encrypts your mail on this computer. Nothing is being saved to this "
+                           + "device: your mail is loaded fresh each time and disappears when KyPost "
+                           + "closes. Start a keyring service (gnome-keyring or kwallet) and restart "
+                           + "KyPost to keep an encrypted copy here.")
+        },
+        {
+            // The database is on disk and readable by anyone with access to
+            // this account's files. Not the same as the row above and not
+            // interchangeable with it.
+            actionLabel: "",
+            active: AppLock.databaseUnencrypted,
+            message: i18n("The mail and contacts KyPost has stored on this computer are not "
+                           + "encrypted: anyone who can read your files can read them. KyPost will "
+                           + "try again to encrypt them the next time it starts.")
+        },
+        {
             actionLabel: "",
             active: AppLock.credentialsUnavailable,
             message: i18n("KyPost could not decrypt this device's stored credentials, so "
