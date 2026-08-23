@@ -1074,19 +1074,20 @@ int main(int argc, char* argv[])
     // Task 34: QML-facing bridge over the executor/pairingStore (both
     // constructed above).
     //
-    // Constructed but deliberately NOT registered as a QML singleton. See
-    // MfaController.h's STATUS note: no QML consumes it, and none can --
-    // kypost-server filters unifiedpush devices out of every MFA challenge,
-    // so a Linux device is never notified of one. The class is kept because
-    // that filter is explicitly temporary and this is the half that already
-    // works.
+    // Constructed but deliberately NOT registered as a QML singleton, and now
+    // dead rather than pending. Settled 2026-08-23: Linux cannot do MFA push.
+    // The relay excludes the unifiedpush transport on purpose -- a challenge
+    // carries sign-in metadata and UnifiedPush delivers through an
+    // unencrypted public broker -- and platform "linux" maps onto that
+    // transport, so no challenge ever reaches this device. The earlier note
+    // here called that filter temporary; it is not. See AGENTS.md section 4.
     //
     // Registering it anyway made a subsystem with no user reachable from
     // every QML file in the app, where respond() reads the pairing and fires
     // an authenticated POST. Dead code is tolerable; dead code wired to the
     // engine as `Mfa` is attack surface with nothing on the other end.
-    // Re-add the qmlRegisterSingletonInstance line in the same commit that
-    // adds the approval screen, once the backend change lands.
+    // Do not re-add the qmlRegisterSingletonInstance line. There is no
+    // approval screen coming, because there is no challenge to approve.
     MfaController mfaController(networkExecutor, pairingStore);
     Q_UNUSED(mfaController);
 

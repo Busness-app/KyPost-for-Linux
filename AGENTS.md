@@ -149,11 +149,25 @@ Added 2026-07-25 (parity work with `kypost-android`):
   at runtime. `AppRelauncher` spawns the replacement only *after*
   `app.exec()` returns, so `KDBusService(Unique)` has released
   `com.urlxl.mail` first. Don't "fix" that ordering.
-- **MFA over push is a non-goal until the backend changes.** kypost-server
-  derives `transport: "unifiedpush"` from `platform: "linux"` and filters
-  unifiedpush devices out of every MFA challenge, so a Linux device is never
-  notified. `MfaApproval.qml` was deleted for this reason; `MfaController` is
-  kept. Confirm the server filter is gone before building any MFA UI.
+- **MFA over push is a non-goal on Linux.** Settled 2026-08-23 by the user:
+  Linux cannot do MFA push. Not a backend oversight to wait out -- the server
+  excludes it deliberately, and `MFATransportEligible`'s own comment gives the
+  reason: an MFA challenge carries sign-in metadata (IP address, user agent,
+  and the match digits themselves), and UnifiedPush delivers through an
+  unencrypted public broker such as ntfy.sh. `normalizeNativeTransport` maps
+  platform `linux` to that transport, so this client is excluded by
+  construction. Those devices stay fully usable for mail notifications.
+
+  Earlier wording here said the filter was "explicitly temporary" and told
+  readers to "confirm the server filter is gone before building any MFA UI".
+  That misdescribed a privacy control as an oversight, and pointed at a
+  condition nobody should be waiting for. What would actually have to change
+  is end-to-end encryption of the push payload itself (RFC 8291 is what web
+  push uses); that is a UnifiedPush-ecosystem change, not a KyPost one.
+
+  `MfaApproval.qml` was deleted for this reason. `MfaController` and
+  `MfaResponseClient` are still in the tree and are dead: nothing constructs
+  a challenge for them to answer. Do not wire them to QML.
 - **Biometric unlock and window-content protection are non-goals** — no
   portable Linux equivalent (no `FLAG_SECURE` analogue on Wayland).
 

@@ -80,7 +80,7 @@ A row may not sit at **Missing** without an owner phase. A row may not sit at
 | Capability | Status | Notes |
 | --- | --- | --- |
 | UnifiedPush with 90 s polling fallback | Matched | |
-| MFA over push | **Blocked** | The relay derives `transport: "unifiedpush"` from `platform: "linux"` and filters those devices out of every MFA challenge. Confirm the server filter is gone before building any MFA UI. `AGENTS.md` §4. |
+| MFA over push | **Non-goal** | Settled 2026-08-23 by the user: Linux cannot do MFA push. The relay excludes it deliberately rather than by oversight -- an MFA challenge carries sign-in metadata (IP address, user agent, the match digits), and UnifiedPush delivers through an unencrypted public broker such as ntfy.sh, so `MFATransportEligible` refuses that transport and `normalizeNativeTransport` maps platform `linux` onto it. Those devices stay fully usable for mail notifications. The row previously read **Blocked** and said to confirm the filter was gone before building any MFA UI, which described a privacy control as a temporary obstacle. What would have to change is encryption of the push payload itself, in the UnifiedPush ecosystem rather than in KyPost. `MfaController`/`MfaResponseClient` remain in the tree and are dead -- see `AGENTS.md` §4. |
 
 ## 6. OpenPGP
 
