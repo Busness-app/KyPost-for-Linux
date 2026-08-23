@@ -6,7 +6,7 @@
 
 // Builds the two MIME structures a client-encrypted send is made of.
 //
-// The relay's POST /api/mail/send/pgp relays these bytes VERBATIM -- it
+// The relay's POST /api/mail/send-pgp relays these bytes VERBATIM -- it
 // synthesizes no headers and cannot read inside the ciphertext -- so whatever
 // this produces is the entire message as far as the receiving MTA is
 // concerned. handleMailSendPGP validates the shape and refuses anything that

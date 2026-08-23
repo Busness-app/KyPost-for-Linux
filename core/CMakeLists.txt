@@ -128,6 +128,8 @@ add_library(kypostcore STATIC
   net/PgpPayloadClient.h
   net/PgpResolveClient.cpp
   net/PgpResolveClient.h
+  net/PgpSendClient.cpp
+  net/PgpSendClient.h
   net/RelayMailSource.cpp
   net/RelayMailSource.h
   vcard/VCardContact.cpp

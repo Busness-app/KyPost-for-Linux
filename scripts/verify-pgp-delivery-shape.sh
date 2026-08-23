@@ -4,7 +4,7 @@
 # actually accept -- by running the relay's OWN validators over it, not a
 # second opinion written in this repo.
 #
-# POST /api/mail/send/pgp relays a delivery's bytes verbatim and refuses
+# POST /api/mail/send-pgp relays a delivery's bytes verbatim and refuses
 # anything that is not a complete RFC 5322 message. Those rules live in the
 # server's validatePGPMimeDeliveryShape / validatePGPMimeDelivery and its
 # ExtractProtectedSubject. Re-deriving them here would give exactly the second,

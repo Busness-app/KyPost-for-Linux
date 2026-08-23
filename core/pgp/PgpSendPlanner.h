@@ -8,7 +8,7 @@
 #include <QVector>
 
 // Turns one composed message into the exact set of ciphertexts the relay's
-// POST /api/mail/send/pgp expects, and the encrypted copy for Sent.
+// POST /api/mail/send-pgp expects, and the encrypted copy for Sent.
 //
 // The split matches the server's own buildPGPDeliveries, because both clients
 // have to produce the same mail:
