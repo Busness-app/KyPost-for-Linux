@@ -264,6 +264,36 @@ carries forward unchanged, independent of the Qt5 decision:
     header. `libssl-dev` is in the CI apt list; `org.kde.Platform` already
     ships it, so the Flatpak needs no module.
 
+### 4b. Recipient public keys go into the user's own GnuPG keyring
+
+Decided 2026-08-23 by the user, after the three options were put to them.
+
+Encrypting to a recipient requires gpg to hold their key. The alternatives
+were an ephemeral keyring per send (contained, but gpg keeps no record, so a
+recipient's key changing under them is invisible) and a pinning store of our
+own (detects that, but is a second and weaker copy of key-change rules gpg
+already models). The keyring was chosen: it is what every other mail client
+does, gpg owns the record, and a changed key surfaces in the user's own
+tooling rather than only inside this app.
+
+The consequences are binding on anything that touches `core/pgp/OpenPgpKeyImporter`:
+
+- **Sending mail modifies the user's keyring.** That is a side effect on state
+  this app does not own, so importing must stay idempotent -- gpg merges, so a
+  resend is a no-op -- and must never delete.
+- **The fingerprint the relay claims is checked in a scratch GNUPGHOME first.**
+  A key whose computed fingerprint does not match the claim never enters the
+  real keyring, not even briefly. Importing and then deleting would mean this
+  code deletes from a keyring it did not create, and an interrupted run would
+  leave the bad key behind.
+- **"gpg merges rather than replaces" is measured, not assumed.**
+  `OpenPgpKeyImporterTest` imports a second key and a newer copy of an existing
+  one and re-reads the keyring, because the whole custody decision rests on it.
+- **This does not make the relay trusted.** The fingerprint check catches a
+  relay whose key and whose claim about that key disagree; it cannot catch one
+  that lies consistently. Persisting into the keyring gives the user a chance
+  to notice. Say "a chance", never "prevents".
+
 ## 6. Ponytail, lazy senior dev mode
 
 Use the smallest correct change.
