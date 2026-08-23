@@ -44,6 +44,19 @@ endif()
 # sets that quieten those also hide genuine ones. Measured numbers and the
 # affinity check that replaces it are in docs/THREADING.md.
 option(KYPOST_SANITIZE "Build with AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
+
+# Where scripts/build-sqlcipher.sh installed SQLCipher.
+#
+# Empty means "no SQLCipher": the app builds and runs exactly as before,
+# Database::open() refuses any request for an encrypted database rather than
+# quietly opening a plaintext one, and the encryption tests report that they
+# were not run instead of passing vacuously.
+#
+# Never resolved from the system paths. A find_library(NAMES sqlite3) with
+# default paths would happily return the ordinary system SQLite, which
+# accepts `PRAGMA key` and silently ignores it -- see Database::open() for
+# what that costs. If it is not the copy we built, we do not want it.
+set(KYPOST_SQLCIPHER_ROOT "" CACHE PATH "Prefix containing a SQLCipher built by scripts/build-sqlcipher.sh")
 if(KYPOST_SANITIZE)
   add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer -g)
   add_link_options(-fsanitize=address,undefined)

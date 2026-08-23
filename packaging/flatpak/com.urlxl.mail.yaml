@@ -210,6 +210,42 @@ modules:
         url: https://github.com/frankosterfeld/qtkeychain/archive/refs/tags/0.17.0.tar.gz
         sha256: 3b85c3929034b0a99da777130c34d99f006fcd3a9d56564159399a33fee0e504
 
+  # SQLCipher, the encryption layer for the local mail/contacts database.
+  #
+  # Built with an explicit SONAME of libsqlite3.so.0, which is the whole
+  # reason this is a module rather than a package. Qt's stock SQLite driver
+  # plugin (libqsqlite.so, shipped in the runtime) has a DT_NEEDED on
+  # libsqlite3.so.0. Give it a library carrying that SONAME from /app/lib --
+  # which the loader searches before the runtime's /usr/lib -- and the
+  # plugin drives SQLCipher unchanged, with no vendored Qt driver, no
+  # private Qt headers and no custom plugin. Measured with LD_DEBUG=libs:
+  # exactly one libsqlite3 initialises, and it is this one. Without the
+  # SONAME, the runtime's own SQLite is mapped alongside it and the two
+  # implementations coexist in one process.
+  #
+  # SQLITE_ENABLE_COLUMN_METADATA is not optional either: Qt's driver
+  # imports sqlite3_column_table_name16, and a build without it fails to
+  # load with the singularly unhelpful "Driver not loaded".
+  #
+  # SQLITE_TEMP_STORE=2 keeps temp tables and sort spills in RAM. An
+  # encrypted database that spills plaintext to a scratch file next to
+  # itself is not an encrypted database.
+  #
+  # Kept in step with scripts/build-sqlcipher.sh, which CI runs -- the flags
+  # and the pinned version must match, or the thing CI tests is not the
+  # thing users get.
+  - name: sqlcipher
+    buildsystem: autotools
+    config-opts:
+      - --with-tempstore=yes
+      - --disable-tcl
+      - CFLAGS=-DSQLITE_HAS_CODEC -DSQLITE_TEMP_STORE=2 -DSQLITE_EXTRA_INIT=sqlcipher_extra_init -DSQLITE_EXTRA_SHUTDOWN=sqlcipher_extra_shutdown -DSQLITE_ENABLE_COLUMN_METADATA
+      - LDFLAGS=-lcrypto -Wl,-soname,libsqlite3.so.0
+    sources:
+      - type: archive
+        url: https://github.com/sqlcipher/sqlcipher/archive/refs/tags/v4.14.0.tar.gz
+        sha256: 67fb27e967a4a6968c0905691c89c908e7250dddc581b887c19ef981c737e473
+
   - name: zxing-cpp
     buildsystem: cmake-ninja
     config-opts:
@@ -322,6 +358,12 @@ modules:
     buildsystem: cmake-ninja
     config-opts:
       - -DCMAKE_BUILD_TYPE=Release
+      # Points at the sqlcipher module above, already installed into /app by
+      # the time this module configures. Without it the build is simply an
+      # unencrypted one -- Database::open() then REFUSES an encrypted
+      # database rather than quietly writing plaintext, so the failure mode
+      # is a visible one, but it is still not the build we mean to ship.
+      - -DKYPOST_SQLCIPHER_ROOT=/app
     sources:
       - type: dir
         path: ../..

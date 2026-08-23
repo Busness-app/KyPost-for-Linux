@@ -50,6 +50,7 @@ kypost_add_test(AppLockStoreTest core/security/AppLockStoreTest.cpp)
 kypost_add_test(PinPolicyTest core/security/PinPolicyTest.cpp)
 
 kypost_add_test(DatabaseTest core/db/DatabaseTest.cpp)
+kypost_add_test(DatabaseEncryptionTest core/db/DatabaseEncryptionTest.cpp)
 kypost_add_test(SecurityWipeTest core/db/SecurityWipeTest.cpp)
 kypost_add_test(EmailDaoTest core/db/EmailDaoTest.cpp)
 kypost_add_test(ContactDaoTest core/db/ContactDaoTest.cpp)

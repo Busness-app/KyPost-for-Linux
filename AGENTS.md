@@ -607,6 +607,45 @@ never once run.
   cannot fire after the user has turned the lock off. A user who asks to lock
   is not asking to lock in five minutes.
 
+## 6h. Rules added by the 2026-08-22 SQLCipher spike
+
+- **`PRAGMA key` against ordinary SQLite is not an error.** It is an
+  unrecognised pragma: silently ignored, and `QSqlQuery::exec()` returns
+  TRUE. A build linked against stock libsqlite3 runs the entire encryption
+  path, reports success at every step, and writes a database readable in a
+  text editor -- with every layer above believing the mail on that disk is
+  encrypted. Measured, in exactly that configuration. So `Database::open()`
+  never trusts the pragma that sets the key: it asks `PRAGMA cipher_version`
+  afterwards and refuses to open if the answer is empty.
+
+- **SQLCipher must carry the SONAME `libsqlite3.so.0`.** Qt's stock SQLite
+  driver plugin has a DT_NEEDED on that name. Given a library with it, the
+  plugin drives SQLCipher unchanged -- no vendored Qt driver, no private Qt
+  SQL headers, no custom plugin, none of which this repo needs and all of
+  which the first design assumed. Without it (Debian's renamed
+  `libsqlcipher.so.0`, or a build with no SONAME at all) the system SQLite is
+  mapped alongside ours and TWO sqlite implementations live in one process;
+  ours happens to win by symbol interposition, which is not something to
+  ship. Verified both ways with `LD_DEBUG=libs`, counting `calling init`
+  lines.
+
+- **`SQLITE_ENABLE_COLUMN_METADATA` is required.** Qt's driver imports
+  `sqlite3_column_table_name16`. A SQLCipher built without it makes Qt fail
+  to load its own driver and report "Driver not loaded", which says nothing
+  about the actual cause. `scripts/build-sqlcipher.sh` checks for the symbol
+  before it exits.
+
+- **A wrong-length raw key is refused, not passed on.** SQLCipher treats
+  anything that is not exactly 32 raw bytes in `x''` form as a passphrase and
+  runs PBKDF2 over it -- so a truncated key still opens a database, just a
+  different one, silently, under a different key.
+
+- **`grep -q` under `set -o pipefail` fails on success.** grep exits the
+  moment it matches, the producer gets SIGPIPE, and the pipeline reports
+  failure. `scripts/build-sqlcipher.sh` reported "built without
+  SQLITE_ENABLE_COLUMN_METADATA" against a library that had the symbol. Use
+  plain `grep ... > /dev/null`, which reads its input to the end.
+
 ## 7. DOX framework
 
 ### Core Contract

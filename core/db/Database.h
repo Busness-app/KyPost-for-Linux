@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QByteArray>
 #include <QSqlDatabase>
 #include <QString>
 #include <QStringList>
@@ -43,7 +44,36 @@ public:
     Database(const Database&) = delete;
     Database& operator=(const Database&) = delete;
 
-    bool open(const QString& path);
+    // `rawKey` empty opens an ordinary unencrypted database, exactly as
+    // before. Otherwise it must be EXACTLY 32 bytes and the database is
+    // opened encrypted, via SQLCipher.
+    //
+    // 32 raw bytes rather than a passphrase, so the key goes in as
+    // `PRAGMA key = "x'<hex>'"`. Two reasons, and the second is the one that
+    // matters: SQLCipher takes that form as the key material directly with no
+    // PBKDF2 pass over it, AND there is no quoting problem -- a passphrase
+    // containing an apostrophe would otherwise have to be escaped into a
+    // PRAGMA, which is string-concatenated SQL with a secret in it.
+    //
+    // FAILS CLOSED, and this is the whole reason the function checks anything
+    // at all. `PRAGMA key` against an ORDINARY SQLite is not an error: it is
+    // an unrecognised pragma, silently ignored, and QSqlQuery::exec()
+    // returns TRUE. Measured: a build linked against stock libsqlite3 runs
+    // `PRAGMA key`, reports success, and writes a database whose contents are
+    // readable in a text editor -- while every layer above believes the mail
+    // on that disk is encrypted. So a request for an encrypted database is
+    // honoured only if `PRAGMA cipher_version` then answers with a version,
+    // and refused otherwise. Nothing here trusts the return value of the
+    // PRAGMA that sets the key.
+    bool open(const QString& path, const QByteArray& rawKey = {});
+
+    // Exactly the length open() requires of a non-empty `rawKey`.
+    static constexpr int kRawKeyBytes = 32;
+
+    // Whether this build can open encrypted databases at all -- i.e. whether
+    // it was linked against SQLCipher. False makes open() refuse a non-empty
+    // key rather than fall back to plaintext.
+    static bool encryptionAvailable();
     QSqlDatabase& handle();
 
     // Deletes every row from every user table, leaving the schema and
@@ -66,6 +96,10 @@ public:
     bool wipeAllTables();
 
 private:
+    // Sets the key, then proves both that SQLCipher is what is on the other
+    // end and that the key actually opens this file. See open()'s comment.
+    bool applyEncryptionKey(const QByteArray& rawKey);
+
     QSqlDatabase m_db;
     QString m_connectionName;
 };
