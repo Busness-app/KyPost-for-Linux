@@ -1,13 +1,31 @@
 #include "stores/ContactPhotoCache.h"
 
+#include "security/PrivatePath.h"
+
 #include <QCryptographicHash>
+#include <QDebug>
 #include <QFile>
 #include <QFileInfo>
 
+// Contact photos are pictures of the people the user knows, so this cache
+// gets the same owner-only treatment as everything else under the data
+// directory -- and, unlike before, says so when it does not get it. The
+// unchecked mkpath() this replaces could not tell a usable cache from a
+// directory that was never created: store() failed on every call and looked
+// exactly like a cache miss.
 ContactPhotoCache::ContactPhotoCache(const QString& cacheDir)
     : m_dir(cacheDir)
 {
-    m_dir.mkpath(QStringLiteral("."));
+    switch (PrivatePath::ensureDirectory(cacheDir)) {
+    case PrivatePath::Status::Ready:
+        break;
+    case PrivatePath::Status::NotCreated:
+        qWarning("ContactPhotoCache: could not create the photo cache directory; photos will not be cached");
+        break;
+    case PrivatePath::Status::NotPrivate:
+        qWarning("ContactPhotoCache: the photo cache directory is readable by other users on this machine");
+        break;
+    }
 }
 
 QString ContactPhotoCache::fileNameFor(const QString& photoRef) const

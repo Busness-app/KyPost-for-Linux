@@ -83,6 +83,8 @@ add_library(kypostcore STATIC
   security/LockoutPolicy.h
   security/PinPolicy.cpp
   security/PinPolicy.h
+  security/PrivatePath.cpp
+  security/PrivatePath.h
   security/CredentialSealer.h
   stores/SettingsStore.cpp
   stores/SettingsStore.h

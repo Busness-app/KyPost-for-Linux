@@ -71,7 +71,15 @@ MailFetchOutcome FolderRepository::applyList(const RelayRequestPlan& plan, const
 
     // Replace rather than upsert: a folder deleted on the server is only
     // observable as an absence from this list.
-    m_folderDao.replaceParentSnapshot(parent, result.folders, kSourceMode);
+    //
+    // Checked, not fire-and-forget. replaceParentSnapshot() deletes this
+    // parent's rows before it inserts the new ones, so a failure there is not
+    // "the sidebar is a little stale" -- it can be "the sidebar is empty" or
+    // "the sidebar still lists a folder that no longer exists". Reporting
+    // Success on top of that is how a user ends up clicking a mailbox the
+    // server does not have.
+    if (!m_folderDao.replaceParentSnapshot(parent, result.folders, kSourceMode))
+        return { MailRepositoryOutcome::CacheWriteFailed, QString() };
     return { MailRepositoryOutcome::Success, QString() };
 }
 

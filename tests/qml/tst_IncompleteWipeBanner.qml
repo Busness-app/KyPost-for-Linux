@@ -32,6 +32,7 @@ TestCase {
         AppLock.credentialsUnavailable = false
         AppLock.databaseUnencrypted = false
         AppLock.databaseMemoryOnly = false
+        AppLock.dataDirectoryUnprotected = false
         Pairing.certificateMismatch = false
         Pairing.reregistrationRejected = false
     }

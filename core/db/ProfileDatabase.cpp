@@ -131,6 +131,9 @@ ProfileDatabaseMode openProfileDatabase(Database& database, DatabaseKeyStore& ke
         return ProfileDatabaseMode::InMemoryNoKeyStorage;
 
     case ProfileDatabaseMode::FailedToOpen:
+    // Never produced by chooseProfileDatabaseMode() -- it is a decision about
+    // the data directory, taken before this function is reached.
+    case ProfileDatabaseMode::InMemoryUnprotectedDirectory:
         break;
     }
 

@@ -98,6 +98,17 @@ Item {
                            + "KyPost to keep an encrypted copy here.")
         },
         {
+            // Memory-only like the row above, but the fix is a chmod rather
+            // than a keyring -- so it gets its own sentence instead of
+            // borrowing one that would send the user to the wrong place.
+            actionLabel: "",
+            active: AppLock.dataDirectoryUnprotected,
+            message: i18n("The folder KyPost keeps your mail and contacts in can be read by other "
+                           + "accounts on this computer, and KyPost could not lock it down. Nothing "
+                           + "is being saved to this device this session. Make that folder private "
+                           + "to you (chmod 700) and restart KyPost to keep a copy here.")
+        },
+        {
             // The database is on disk and readable by anyone with access to
             // this account's files. Not the same as the row above and not
             // interchangeable with it.

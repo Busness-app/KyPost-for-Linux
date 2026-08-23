@@ -40,6 +40,37 @@ std::optional<Group> GroupDao::findById(const QString& id) const
     return groupFromQuery(query);
 }
 
+bool GroupDao::deleteAll()
+{
+    QSqlQuery query(m_db);
+    return query.exec(QStringLiteral("DELETE FROM groups"));
+}
+
+// Same shape as FolderDao::replaceParentSnapshot: /api/groups answers with
+// the account's whole group list, so a group deleted server-side is only
+// ever observable as an absence from it. An upsert loop can never see that
+// absence, which is why a deleted group used to stay in the local name-cache
+// forever and keep labelling contacts with a group they are no longer in.
+bool GroupDao::replaceSnapshot(const QVector<Group>& groups)
+{
+    if (!m_db.transaction())
+        return false;
+
+    if (!deleteAll()) {
+        m_db.rollback();
+        return false;
+    }
+
+    for (const Group& group : groups) {
+        if (!insertOrReplace(group)) {
+            m_db.rollback();
+            return false;
+        }
+    }
+
+    return m_db.commit();
+}
+
 QVector<Group> GroupDao::findAll() const
 {
     QSqlQuery query(m_db);

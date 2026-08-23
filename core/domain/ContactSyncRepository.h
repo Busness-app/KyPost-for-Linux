@@ -8,6 +8,7 @@
 #include "net/RelayAuth.h"         // RelayEndpoint
 
 #include <QSet>
+#include <QSqlDatabase>
 #include <QString>
 #include <QVector>
 #include <optional>
@@ -29,7 +30,22 @@ struct ContactSyncSummary
 // PairingChanged: the reply was authorised by a pairing this device no longer
 // has. Nothing was written -- see PairingIdentity in DevicePairing.h. Not an
 // error; the request did exactly what it was told.
-enum class ContactSyncStatus { Success, NotPaired, Unauthorized, ServiceUnavailable, Retry, PairingChanged };
+//
+// CacheWriteFailed: the relay's answer was fine and nothing is wrong with the
+// pairing -- the local database or the cursor file refused the write, so the
+// response was rolled back rather than half-applied. The pending queue
+// survives and the cursor never ends up ahead of the contacts, so the next
+// sync asks for the same window again. Same value, same meaning, as
+// MailRepositoryOutcome::CacheWriteFailed.
+enum class ContactSyncStatus {
+    Success,
+    NotPaired,
+    Unauthorized,
+    ServiceUnavailable,
+    Retry,
+    PairingChanged,
+    CacheWriteFailed
+};
 
 struct ContactSyncOutcome
 {
@@ -40,7 +56,10 @@ struct ContactSyncOutcome
     // Temp-uid -> real-uid pairs from this sync()'s reconciliation pass,
     // for callers (e.g. a native-contact link table) that must repoint
     // references away from a temp uid that's now dead in the local cache.
-    // Empty on any early-return path (NotPaired, network error, tooOld).
+    // Empty on any early-return path (NotPaired, network error, tooOld) --
+    // and on a CacheWriteFailed that rolled back. The one exception is a
+    // CacheWriteFailed from the cursor write, which happens after the commit:
+    // see applySync().
     QVector<ContactReconciliationAssignment> uidReassignments;
 };
 
@@ -65,9 +84,13 @@ struct ContactDedupeOutcome
 class ContactSyncRepository
 {
 public:
+    // db must be the same connection contactDao and pendingDao write
+    // through: it is what every mutation here opens a transaction on, and a
+    // different handle would make those transactions cover nothing while
+    // still looking like they do.
     ContactSyncRepository(ContactSyncClient& client, ContactDao& contactDao,
                            PendingContactChangeDao& pendingDao, CursorStore& cursorStore,
-                           PairingStore& pairingStore);
+                           PairingStore& pairingStore, QSqlDatabase& db);
 
     QVector<Contact> contacts() const; // contactDao.findAll()
 
@@ -88,12 +111,16 @@ public:
     // WithoutBraces)), caches it under that uid immediately, and enqueues a
     // create (wire copy has uid=="", per ContactSyncClient's documented
     // "empty uid marks a create" contract) for the next sync().
-    QString queueCreate(Contact contact);
+    //
+    // Both writes, or neither: an empty return means nothing was saved. The
+    // caller must say so rather than showing the contact as saved -- see the
+    // .cpp for why half of this is worse than none of it.
+    [[nodiscard]] QString queueCreate(Contact contact);
 
     // contact.uid must already be a real server uid. Updates the cache
     // immediately and enqueues the wire copy as-is (uid+rev present,
-    // deleted=false) for the next sync().
-    void queueUpdate(const Contact& contact);
+    // deleted=false) for the next sync(). False means neither write landed.
+    [[nodiscard]] bool queueUpdate(const Contact& contact);
 
     // Removes the row from the local cache immediately. Enqueues a
     // tombstone ({uid, rev, deleted=true}, every other field default) for
@@ -101,7 +128,11 @@ public:
     // synced (i.e. there is a still-pending queued create for this same uid
     // and nothing else): in that case, the pending create row is deleted
     // outright instead of enqueuing a delete, since the server never saw it.
-    void queueDelete(const QString& uid, qint64 rev);
+    //
+    // False means the contact is still there and still queued exactly as it
+    // was -- the whole thing rolls back, because a delete that removed the
+    // row but lost the tombstone comes back on the next pull.
+    [[nodiscard]] bool queueDelete(const QString& uid, qint64 rev);
 
     ContactSyncOutcome sync();
 
@@ -157,4 +188,5 @@ private:
     PendingContactChangeDao& m_pendingDao;
     CursorStore& m_cursorStore;
     PairingStore& m_pairingStore;
+    QSqlDatabase& m_db;
 };

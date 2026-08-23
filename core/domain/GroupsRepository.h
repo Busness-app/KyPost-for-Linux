@@ -34,13 +34,20 @@ public:
     QVector<Group> groups() const; // groupDao.findAll()
 
     // No-op when not paired. On any fetch error (401, transport failure,
-    // decode failure, ...) this silently gives up and leaves the existing
-    // cache untouched -- never crashes, never propagates the failure to the
-    // caller -- matching this feature's "GroupsClient must degrade
-    // gracefully on 401/error" Global Constraint. The next sync cycle
-    // simply retries; no delta cursor means a retry is always a full,
+    // decode failure, ...) this gives up and leaves the existing cache
+    // untouched -- never crashes -- matching this feature's "GroupsClient
+    // must degrade gracefully on 401/error" Global Constraint. The next sync
+    // cycle simply retries; no delta cursor means a retry is always a full,
     // correct refresh.
-    void refresh();
+    //
+    // Returns whether the cache now matches a response: false for not
+    // paired, a fetch error, a re-pair mid-flight, OR a failed cache write.
+    // That last one used to be unreportable -- the DAO's result was dropped
+    // -- so a half-written name-cache and a correct one looked identical from
+    // here. Callers are not required to show it to the user (a stale name
+    // cache is not data loss) but they ARE required to stop calling it a
+    // refresh that happened.
+    bool refresh();
 
     // Three-phase form, same shape as every other repository here. Phase 1 is
     // just the pairing read; there is no cursor, but the plan does carry the
@@ -53,7 +60,7 @@ public:
     // out. Group names are the previous account's data, the group table has no
     // subscriber column, and pairing a replacement account has just emptied it
     // -- see PairingIdentity in DevicePairing.h.
-    void applyRefresh(const RelayRequestPlan& plan, const GroupsFetchResult& result);
+    bool applyRefresh(const RelayRequestPlan& plan, const GroupsFetchResult& result);
 
 private:
     GroupsClient& m_client;

@@ -26,6 +26,10 @@ public:
 
     bool insertOrReplace(const QString& messageId, qint64 seq, const QString& receivedAt,
                           bool consumed);
+
+    // Every record or none, in one transaction. See the .cpp for why a pull
+    // batch must not be applied row-by-row.
+    [[nodiscard]] bool insertBatch(const QVector<PushRecord>& records);
     std::optional<PushRecord> findById(const QString& messageId) const;
     QVector<PushRecord> findUnconsumed() const;
     bool existsWithSeq(qint64 seq) const;

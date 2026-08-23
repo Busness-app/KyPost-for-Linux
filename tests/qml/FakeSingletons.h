@@ -25,6 +25,7 @@ class FakeAppLock : public QObject
     Q_PROPERTY(bool wipeIncomplete MEMBER m_wipeIncomplete NOTIFY lockedChanged)
     Q_PROPERTY(bool databaseUnencrypted MEMBER m_databaseUnencrypted NOTIFY lockedChanged)
     Q_PROPERTY(bool databaseMemoryOnly MEMBER m_databaseMemoryOnly NOTIFY lockedChanged)
+    Q_PROPERTY(bool dataDirectoryUnprotected MEMBER m_dataDirectoryUnprotected NOTIFY lockedChanged)
 
 public:
     using QObject::QObject;
@@ -56,6 +57,7 @@ private:
     bool m_wipeIncomplete = false;
     bool m_databaseUnencrypted = false;
     bool m_databaseMemoryOnly = false;
+    bool m_dataDirectoryUnprotected = false;
 };
 
 class FakePairing : public QObject

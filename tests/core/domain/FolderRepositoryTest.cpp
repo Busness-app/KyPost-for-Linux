@@ -11,6 +11,7 @@
 #include "../net/FakeRelayServer.h"
 
 #include <QNetworkAccessManager>
+#include <QSqlQuery>
 #include <QTemporaryDir>
 #include <QTest>
 
@@ -26,6 +27,7 @@ private slots:
     void cachedFoldersSortsByPath();
     void applyListDiscardsAReplyTheCurrentPairingDidNotAuthorise();
     void applyMutationDiscardsAReplyTheCurrentPairingDidNotAuthorise();
+    void applyListReportsAFailedSnapshotWriteInsteadOfSuccess();
 
 private:
     static void savePairing(PairingStore& pairingStore, quint16 port);
@@ -277,6 +279,48 @@ void FolderRepositoryTest::applyMutationDiscardsAReplyTheCurrentPairingDidNotAut
     // returns, and it names a mailbox on an account that is no longer here.
     QVERIFY(outcome.folder.isEmpty());
     QVERIFY(folderDao.findAll().isEmpty());
+}
+
+
+// replaceParentSnapshot() deletes this parent's rows before inserting the new
+// ones, so "it failed" can mean the sidebar is now empty, or still listing a
+// mailbox the server has deleted. Reporting Success on top of that is how a
+// user ends up clicking a folder that is not there.
+void FolderRepositoryTest::applyListReportsAFailedSnapshotWriteInsteadOfSuccess()
+{
+    Database db;
+    QVERIFY(db.open(QStringLiteral(":memory:")));
+    FolderDao folderDao(db.handle());
+
+    QTemporaryDir secureDir;
+    QVERIFY(secureDir.isValid());
+    SecureStoreFile secureStore(secureDir.path());
+    PairingStore pairingStore(secureStore);
+    savePairing(pairingStore, 1); // nothing is sent in this test
+
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    FolderClient client(http);
+    FolderRepository repository(client, folderDao, pairingStore);
+
+    const std::optional<RelayRequestPlan> plan = repository.planRequest();
+    QVERIFY(plan.has_value());
+
+    // Make every write fail, the bluntest honest way: take the table away.
+    {
+        QSqlQuery drop(db.handle());
+        QVERIFY(drop.exec(QStringLiteral("DROP TABLE folders")));
+    }
+
+    FolderListResult listing;
+    listing.parent = QStringLiteral("Archive");
+    listing.folders = QVector<MailFolder>{ MailFolder{ QStringLiteral("Archive/2026"),
+                                                        QStringLiteral("Archive"), true } };
+
+    const MailFetchOutcome outcome = repository.applyList(*plan, QStringLiteral("Archive"), listing);
+    QCOMPARE(outcome.outcome, MailRepositoryOutcome::CacheWriteFailed);
+    // No English sentence from core/: the wording belongs to app/.
+    QVERIFY(outcome.detail.isEmpty());
 }
 
 QTEST_GUILESS_MAIN(FolderRepositoryTest)

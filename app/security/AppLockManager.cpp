@@ -495,6 +495,11 @@ bool AppLockManager::databaseMemoryOnly() const
     return m_databaseMode == ProfileDatabaseMode::InMemoryNoKeyStorage;
 }
 
+bool AppLockManager::dataDirectoryUnprotected() const
+{
+    return m_databaseMode == ProfileDatabaseMode::InMemoryUnprotectedDirectory;
+}
+
 void AppLockManager::setDatabaseMode(ProfileDatabaseMode mode)
 {
     if (m_databaseMode == mode)

@@ -84,6 +84,7 @@ class AppLockManager : public QObject
     // one more registered singleton for two booleans is not worth the wiring.
     Q_PROPERTY(bool databaseUnencrypted READ databaseUnencrypted NOTIFY databaseModeChanged)
     Q_PROPERTY(bool databaseMemoryOnly READ databaseMemoryOnly NOTIFY databaseModeChanged)
+    Q_PROPERTY(bool dataDirectoryUnprotected READ dataDirectoryUnprotected NOTIFY databaseModeChanged)
 
     // How many consecutive failed attempts erase this device, or
     // LockoutPolicy::kWipeNever for "do not erase". Settings binds this to
@@ -205,6 +206,11 @@ public:
 
     bool databaseUnencrypted() const;
     bool databaseMemoryOnly() const;
+    // Also memory-only, but for a reason with a different fix: the data
+    // directory is readable by other accounts on this machine and could not
+    // be tightened, so this session refuses to write mail or contacts into
+    // it. Distinct from databaseMemoryOnly, which is about the keyring.
+    bool dataDirectoryUnprotected() const;
     // Host-set at startup from openProfileDatabase()'s answer. Not
     // Q_INVOKABLE: QML must not be able to claim the database is encrypted.
     void setDatabaseMode(ProfileDatabaseMode mode);

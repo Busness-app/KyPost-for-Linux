@@ -26,6 +26,7 @@
 #include <QNetworkAccessManager>
 #include <QSet>
 #include <QSignalSpy>
+#include <QSqlQuery>
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QTemporaryDir>
@@ -158,6 +159,7 @@ private slots:
     void updateContactReplacesEmailsPhonesAddressesWholesale();
     void isSyncedReflectsPendingState();
     void createContactRejectsBlankName();
+    void aContactThatCouldNotBeSavedIsReportedAsNotSaved();
     void updateContactRejectsBlankName();
     void syncWithoutPairingSetsNotPairedMessage();
     void syncSuccessRefreshesGroupsCache();
@@ -227,7 +229,7 @@ void ContactsControllerTest::updateContactReplacesEmailsPhonesAddressesWholesale
     ContactPhotoCache photoCache(photoCacheDir.path());
     ContactPhotoRepository photoRepository(photoClient, photoCache, pairingStore);
 
-    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore);
+    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore, db.handle());
 
     Contact seed;
     seed.uid = QStringLiteral("srv-1");
@@ -312,7 +314,7 @@ void ContactsControllerTest::isSyncedReflectsPendingState()
     ContactPhotoCache photoCache(photoCacheDir.path());
     ContactPhotoRepository photoRepository(photoClient, photoCache, pairingStore);
 
-    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore);
+    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore, db.handle());
     NetworkExecutor executor(3000);
     ContactsController controller(repository, groupsRepository, photoRepository, executor);
     ExecutorShutdownGuard shutdownGuard{ executor };
@@ -365,7 +367,7 @@ void ContactsControllerTest::createContactRejectsBlankName()
     ContactPhotoCache photoCache(photoCacheDir.path());
     ContactPhotoRepository photoRepository(photoClient, photoCache, pairingStore);
 
-    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore);
+    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore, db.handle());
     NetworkExecutor executor(3000);
     ContactsController controller(repository, groupsRepository, photoRepository, executor);
     ExecutorShutdownGuard shutdownGuard{ executor };
@@ -415,7 +417,7 @@ void ContactsControllerTest::updateContactRejectsBlankName()
     ContactPhotoCache photoCache(photoCacheDir.path());
     ContactPhotoRepository photoRepository(photoClient, photoCache, pairingStore);
 
-    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore);
+    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore, db.handle());
 
     Contact seed;
     seed.uid = QStringLiteral("srv-1");
@@ -470,7 +472,7 @@ void ContactsControllerTest::syncWithoutPairingSetsNotPairedMessage()
     ContactPhotoCache photoCache(photoCacheDir.path());
     ContactPhotoRepository photoRepository(photoClient, photoCache, pairingStore);
 
-    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore);
+    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore, db.handle());
     NetworkExecutor executor(3000);
     ContactsController controller(repository, groupsRepository, photoRepository, executor);
     ExecutorShutdownGuard shutdownGuard{ executor };
@@ -543,7 +545,7 @@ void ContactsControllerTest::syncSuccessRefreshesGroupsCache()
     ContactPhotoCache photoCache(photoCacheDir.path());
     ContactPhotoRepository photoRepository(photoClient, photoCache, pairingStore);
 
-    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore);
+    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore, db.handle());
     NetworkExecutor executor(3000);
     ContactsController controller(repository, groupsRepository, photoRepository, executor);
     ExecutorShutdownGuard shutdownGuard{ executor };
@@ -615,7 +617,7 @@ void ContactsControllerTest::loadSortsSelfContactFirst()
     ContactPhotoCache photoCache(photoCacheDir.path());
     ContactPhotoRepository photoRepository(photoClient, photoCache, pairingStore);
 
-    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore);
+    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore, db.handle());
     NetworkExecutor executor(3000);
     ContactsController controller(repository, groupsRepository, photoRepository, executor);
     ExecutorShutdownGuard shutdownGuard{ executor };
@@ -667,7 +669,7 @@ void ContactsControllerTest::createAndUpdateContactRoundTripExtendedFields()
     ContactPhotoCache photoCache(photoCacheDir.path());
     ContactPhotoRepository photoRepository(photoClient, photoCache, pairingStore);
 
-    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore);
+    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore, db.handle());
     NetworkExecutor executor(3000);
     ContactsController controller(repository, groupsRepository, photoRepository, executor);
     ExecutorShutdownGuard shutdownGuard{ executor };
@@ -820,7 +822,7 @@ void ContactsControllerTest::allGroupsReturnsCachedGroupsAsIdNameMaps()
     ContactPhotoCache photoCache(photoCacheDir.path());
     ContactPhotoRepository photoRepository(photoClient, photoCache, pairingStore);
 
-    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore);
+    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore, db.handle());
     NetworkExecutor executor(3000);
     ContactsController controller(repository, groupsRepository, photoRepository, executor);
     ExecutorShutdownGuard shutdownGuard{ executor };
@@ -901,7 +903,7 @@ void ContactsControllerTest::dedupeSuccessWithMergesChainsIntoSyncAndReloadsMode
     ContactPhotoCache photoCache(photoCacheDir.path());
     ContactPhotoRepository photoRepository(photoClient, photoCache, pairingStore);
 
-    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore);
+    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore, db.handle());
     NetworkExecutor executor(3000);
     ContactsController controller(repository, groupsRepository, photoRepository, executor);
     ExecutorShutdownGuard shutdownGuard{ executor };
@@ -965,7 +967,7 @@ void ContactsControllerTest::dedupeSuccessWithZeroMergedSkipsSyncButReloadsModel
     ContactPhotoCache photoCache(photoCacheDir.path());
     ContactPhotoRepository photoRepository(photoClient, photoCache, pairingStore);
 
-    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore);
+    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore, db.handle());
     NetworkExecutor executor(3000);
     ContactsController controller(repository, groupsRepository, photoRepository, executor);
     ExecutorShutdownGuard shutdownGuard{ executor };
@@ -1016,7 +1018,7 @@ void ContactsControllerTest::dedupeUnauthorizedSetsLastErrorNotStatusMessage()
     ContactPhotoCache photoCache(photoCacheDir.path());
     ContactPhotoRepository photoRepository(photoClient, photoCache, pairingStore);
 
-    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore);
+    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore, db.handle());
     NetworkExecutor executor(3000);
     ContactsController controller(repository, groupsRepository, photoRepository, executor);
     ExecutorShutdownGuard shutdownGuard{ executor };
@@ -1071,7 +1073,7 @@ void ContactsControllerTest::searchContactsMatchesAcrossMultipleEmailsPerContact
     QVERIFY(photoCacheDir.isValid());
     ContactPhotoCache photoCache(photoCacheDir.path());
     ContactPhotoRepository photoRepository(photoClient, photoCache, pairingStore);
-    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore);
+    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore, db.handle());
     NetworkExecutor executor(3000);
     ContactsController controller(repository, groupsRepository, photoRepository, executor);
     ExecutorShutdownGuard shutdownGuard{ executor };
@@ -1118,7 +1120,7 @@ void ContactsControllerTest::searchContactsIsCaseInsensitiveSubstring()
     QVERIFY(photoCacheDir.isValid());
     ContactPhotoCache photoCache(photoCacheDir.path());
     ContactPhotoRepository photoRepository(photoClient, photoCache, pairingStore);
-    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore);
+    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore, db.handle());
     NetworkExecutor executor(3000);
     ContactsController controller(repository, groupsRepository, photoRepository, executor);
     ExecutorShutdownGuard shutdownGuard{ executor };
@@ -1166,7 +1168,7 @@ void ContactsControllerTest::searchContactsRanksPrefixMatchesFirst()
     QVERIFY(photoCacheDir.isValid());
     ContactPhotoCache photoCache(photoCacheDir.path());
     ContactPhotoRepository photoRepository(photoClient, photoCache, pairingStore);
-    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore);
+    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore, db.handle());
     NetworkExecutor executor(3000);
     ContactsController controller(repository, groupsRepository, photoRepository, executor);
     ExecutorShutdownGuard shutdownGuard{ executor };
@@ -1212,7 +1214,7 @@ void ContactsControllerTest::searchContactsRespectsLimit()
     QVERIFY(photoCacheDir.isValid());
     ContactPhotoCache photoCache(photoCacheDir.path());
     ContactPhotoRepository photoRepository(photoClient, photoCache, pairingStore);
-    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore);
+    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore, db.handle());
     NetworkExecutor executor(3000);
     ContactsController controller(repository, groupsRepository, photoRepository, executor);
     ExecutorShutdownGuard shutdownGuard{ executor };
@@ -1257,7 +1259,7 @@ void ContactsControllerTest::searchContactsEmptyQueryReturnsEverythingUpToLimit(
     QVERIFY(photoCacheDir.isValid());
     ContactPhotoCache photoCache(photoCacheDir.path());
     ContactPhotoRepository photoRepository(photoClient, photoCache, pairingStore);
-    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore);
+    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore, db.handle());
     NetworkExecutor executor(3000);
     ContactsController controller(repository, groupsRepository, photoRepository, executor);
     ExecutorShutdownGuard shutdownGuard{ executor };
@@ -1299,13 +1301,64 @@ void ContactsControllerTest::searchContactsZeroOrNegativeLimitIsUnbounded()
     QVERIFY(photoCacheDir.isValid());
     ContactPhotoCache photoCache(photoCacheDir.path());
     ContactPhotoRepository photoRepository(photoClient, photoCache, pairingStore);
-    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore);
+    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore, db.handle());
     NetworkExecutor executor(3000);
     ContactsController controller(repository, groupsRepository, photoRepository, executor);
     ExecutorShutdownGuard shutdownGuard{ executor };
 
     QCOMPARE(controller.searchContacts(QStringLiteral("match"), 0).size(), 10);
     QCOMPARE(controller.searchContacts(QStringLiteral("match"), -1).size(), 10);
+}
+
+
+// The UI must not say "saved" over a database that refused the write. The
+// contact pane closes on a successful save, so a false success here is a
+// contact the user believes they have and does not.
+void ContactsControllerTest::aContactThatCouldNotBeSavedIsReportedAsNotSaved()
+{
+    Database db;
+    QVERIFY(db.open(QStringLiteral(":memory:")));
+    ContactDao contactDao(db.handle());
+    GroupDao groupDao(db.handle());
+    PendingContactChangeDao pendingDao(db.handle());
+
+    QTemporaryDir cursorDir;
+    QVERIFY(cursorDir.isValid());
+    CursorStore cursorStore(cursorDir.filePath(QStringLiteral("cursors.ini")));
+
+    QTemporaryDir secureDir;
+    QVERIFY(secureDir.isValid());
+    SecureStoreFile secureStore(secureDir.path());
+    PairingStore pairingStore(secureStore); // never saved -- nothing here syncs
+
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    ContactSyncClient client(http);
+    GroupsClient groupsClient(http);
+    GroupsRepository groupsRepository(groupsClient, groupDao, pairingStore);
+    ContactPhotoClient photoClient(http);
+    QTemporaryDir photoCacheDir;
+    QVERIFY(photoCacheDir.isValid());
+    ContactPhotoCache photoCache(photoCacheDir.path());
+    ContactPhotoRepository photoRepository(photoClient, photoCache, pairingStore);
+
+    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore, db.handle());
+
+    NetworkExecutor executor(3000);
+    ContactsController controller(repository, groupsRepository, photoRepository, executor);
+    ExecutorShutdownGuard shutdownGuard{ executor };
+
+    // Every write fails from here on, the bluntest honest way.
+    {
+        QSqlQuery drop(db.handle());
+        QVERIFY(drop.exec(QStringLiteral("DROP TABLE pending_contact_changes")));
+    }
+
+    QVariantMap fields;
+    fields[QStringLiteral("fn")] = QStringLiteral("Ada Lovelace");
+
+    QVERIFY2(controller.createContact(fields).isEmpty(), "a contact that was not saved came back with a uid");
+    QVERIFY2(!controller.lastError().isEmpty(), "the save failed silently");
 }
 
 QTEST_GUILESS_MAIN(ContactsControllerTest)

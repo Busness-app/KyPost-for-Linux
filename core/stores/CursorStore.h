@@ -22,10 +22,10 @@ public:
     // own. Keying by subscriber makes the second case miss the lookup and
     // fall back to since=0, which is the correct answer by construction.
     QString mailCursor(const QString& subscriberId, const QString& folder) const;
-    void setMailCursor(const QString& subscriberId, const QString& folder, const QString& cursor);
+    [[nodiscard]] bool setMailCursor(const QString& subscriberId, const QString& folder, const QString& cursor);
 
     QString contactBaseCursor() const;
-    void setContactBaseCursor(const QString& cursor);
+    [[nodiscard]] bool setContactBaseCursor(const QString& cursor);
 
     // Independent of mailCursor/contactBaseCursor -- not touched by reset(),
     // which stays scoped to mail+contact (see PushRepository, task 23).
@@ -33,20 +33,26 @@ public:
     // PushNotificationClient::pull's cursor is always a numeric seq, never a
     // bare-string form.
     qint64 notificationCursor() const; // 0 if never set
-    void setNotificationCursor(qint64 cursor);
+    [[nodiscard]] bool setNotificationCursor(qint64 cursor);
 
     // Clears every mail cursor and the contact cursor back to empty/absent,
     // leaving the notification cursor alone. Storage primitive for
     // ContactSyncRepository's tooOld-response reconciliation, which is a
     // contacts-only event.
-    void reset();
+    [[nodiscard]] bool reset();
 
-    // Everything, notification cursor included, for the wipe paths. Reports
-    // whether the file actually took the change: QSettings swallows a failed
-    // write (read-only file, full disk) and reports it only through status(),
-    // and a wipe that silently left cursors.ini intact is a wipe that lied.
-    bool wipeAll();
+    // Everything, notification cursor included, for the wipe paths.
+    [[nodiscard]] bool wipeAll();
 
 private:
+    // Flushes the pending change and reports whether the FILE took it, not
+    // whether the in-memory copy did. Every mutator above returns this, and
+    // every caller must treat false as a failed sync: QSettings swallows a
+    // failed write (read-only file, full disk) and surfaces it only through
+    // status(), so an unchecked setter is a cursor that lies to the next
+    // launch. Deliberately blunt about cost -- one fsync-ish write per
+    // cursor move, which happens once per sync cycle, not per row.
+    bool flush();
+
     QSettings m_settings;
 };

@@ -14,7 +14,9 @@
 
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QDir>
 #include <QNetworkAccessManager>
+#include <QSqlQuery>
 #include <QTemporaryDir>
 #include <QTest>
 
@@ -42,6 +44,11 @@ private slots:
     void dedupeServiceUnavailableFrom503MapsStatus();
     void deletingAnUnsyncedContactDropsItsLaterEditsToo();
     void applySyncDiscardsAReplyTheCurrentPairingDidNotAuthorise();
+    void aLocalCreateThatCannotBeQueuedIsNotSavedAtAll();
+    void aDeleteThatCannotEnqueueItsTombstoneKeepsTheContact();
+    void applySyncKeepsTheQueueAndTheCursorWhenTheCacheWriteFails();
+    void applySyncReportsFailureWhenTheCursorCannotBePersisted();
+    void aTooOldWipeThatFailsNeverLeavesTheCursorAhead();
 
 private:
     static void savePairing(PairingStore& pairingStore, quint16 port);
@@ -80,7 +87,7 @@ void ContactSyncRepositoryTest::syncWithoutPairingReturnsNotPaired()
     HttpClient http(manager);
     ContactSyncClient client(http);
 
-    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore);
+    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore, db.handle());
 
     const ContactSyncOutcome outcome = repository.sync();
     QCOMPARE(outcome.status, ContactSyncStatus::NotPaired);
@@ -112,7 +119,7 @@ void ContactSyncRepositoryTest::fullSyncAssignsUidWithoutDuplicating()
     HttpClient http(manager);
     ContactSyncClient client(http);
 
-    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore);
+    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore, db.handle());
 
     Contact created;
     created.fn = QStringLiteral("Ada");
@@ -177,7 +184,7 @@ void ContactSyncRepositoryTest::serverDeleteRemovesLocalContactViaPull()
     HttpClient http(manager);
     ContactSyncClient client(http);
 
-    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore);
+    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore, db.handle());
 
     const ContactSyncOutcome outcome = repository.sync();
     QCOMPARE(outcome.status, ContactSyncStatus::Success);
@@ -218,9 +225,9 @@ void ContactSyncRepositoryTest::localDeleteOfSyncedContactSendsTombstone()
     HttpClient http(manager);
     ContactSyncClient client(http);
 
-    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore);
+    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore, db.handle());
 
-    repository.queueDelete(QStringLiteral("srv-9"), 1);
+    QVERIFY(repository.queueDelete(QStringLiteral("srv-9"), 1));
     QVERIFY(!contactDao.findById(QStringLiteral("srv-9")).has_value());
     QCOMPARE(pendingDao.findAll().size(), 1);
 
@@ -257,14 +264,14 @@ void ContactSyncRepositoryTest::unsyncedLocalDeleteLeavesNoTombstone()
     HttpClient http(manager);
     ContactSyncClient client(http);
 
-    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore);
+    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore, db.handle());
 
     Contact created;
     created.fn = QStringLiteral("Draft Person");
     const QString tempUid = repository.queueCreate(created);
     QCOMPARE(pendingDao.findAll().size(), 1);
 
-    repository.queueDelete(tempUid, 0);
+    QVERIFY(repository.queueDelete(tempUid, 0));
 
     QVERIFY(!contactDao.findById(tempUid).has_value());
     QVERIFY(pendingDao.findAll().isEmpty());
@@ -303,7 +310,7 @@ void ContactSyncRepositoryTest::serverEditUpdatesExistingContact()
     HttpClient http(manager);
     ContactSyncClient client(http);
 
-    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore);
+    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore, db.handle());
 
     const ContactSyncOutcome outcome = repository.sync();
     QCOMPARE(outcome.status, ContactSyncStatus::Success);
@@ -356,7 +363,7 @@ void ContactSyncRepositoryTest::serverIsSelfFlagSurvivesSync()
     HttpClient http(manager);
     ContactSyncClient client(http);
 
-    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore);
+    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore, db.handle());
 
     const ContactSyncOutcome outcome = repository.sync();
     QCOMPARE(outcome.status, ContactSyncStatus::Success);
@@ -410,7 +417,7 @@ void ContactSyncRepositoryTest::serverFullSyncAppliesExtendedFields()
     HttpClient http(manager);
     ContactSyncClient client(http);
 
-    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore);
+    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore, db.handle());
 
     const ContactSyncOutcome outcome = repository.sync();
     QCOMPARE(outcome.status, ContactSyncStatus::Success);
@@ -484,7 +491,7 @@ void ContactSyncRepositoryTest::serverEditPreservesExtendedFieldsWhenOmitted()
     HttpClient http(manager);
     ContactSyncClient client(http);
 
-    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore);
+    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore, db.handle());
 
     const ContactSyncOutcome outcome = repository.sync();
     QCOMPARE(outcome.status, ContactSyncStatus::Success);
@@ -525,9 +532,9 @@ void ContactSyncRepositoryTest::tooOldResetsCursorAndCache()
     QTemporaryDir cursorDir;
     QVERIFY(cursorDir.isValid());
     CursorStore cursorStore(cursorDir.filePath(QStringLiteral("cursors.ini")));
-    cursorStore.setContactBaseCursor(QStringLiteral("99"));
-    cursorStore.setMailCursor(QStringLiteral("sub-1"), QStringLiteral("INBOX"),
-                              QStringLiteral("12345")); // unrelated -- must survive
+    QVERIFY(cursorStore.setContactBaseCursor(QStringLiteral("99")));
+    QVERIFY(cursorStore.setMailCursor(QStringLiteral("sub-1"), QStringLiteral("INBOX"),
+                                      QStringLiteral("12345"))); // unrelated -- must survive
 
     QTemporaryDir secureDir;
     QVERIFY(secureDir.isValid());
@@ -539,7 +546,7 @@ void ContactSyncRepositoryTest::tooOldResetsCursorAndCache()
     HttpClient http(manager);
     ContactSyncClient client(http);
 
-    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore);
+    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore, db.handle());
 
     const ContactSyncOutcome outcome = repository.sync();
     QCOMPARE(outcome.status, ContactSyncStatus::Success);
@@ -579,7 +586,7 @@ void ContactSyncRepositoryTest::findByUidReturnsContactWhenPresent()
     HttpClient http(manager);
     ContactSyncClient client(http);
 
-    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore);
+    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore, db.handle());
 
     const std::optional<Contact> found = repository.findByUid(QStringLiteral("srv-1"));
     QVERIFY(found.has_value());
@@ -606,7 +613,7 @@ void ContactSyncRepositoryTest::findByUidReturnsNulloptWhenAbsent()
     HttpClient http(manager);
     ContactSyncClient client(http);
 
-    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore);
+    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore, db.handle());
 
     QVERIFY(!repository.findByUid(QStringLiteral("does-not-exist")).has_value());
 }
@@ -631,7 +638,7 @@ void ContactSyncRepositoryTest::pendingUidsReflectsQueuedChanges()
     HttpClient http(manager);
     ContactSyncClient client(http);
 
-    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore);
+    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore, db.handle());
 
     // Untouched uid: not pending.
     QVERIFY(!repository.isPending(QStringLiteral("never-touched")));
@@ -654,7 +661,7 @@ void ContactSyncRepositoryTest::pendingUidsReflectsQueuedChanges()
     QVERIFY(!repository.isPending(QStringLiteral("srv-1")));
 
     existing.fn = QStringLiteral("Existing, Edited");
-    repository.queueUpdate(existing);
+    QVERIFY(repository.queueUpdate(existing));
     QVERIFY(repository.isPending(QStringLiteral("srv-1")));
     QCOMPARE(repository.pendingUids().size(), 2);
 
@@ -687,7 +694,7 @@ void ContactSyncRepositoryTest::dedupeWithoutPairingReturnsNotPaired()
     HttpClient http(manager);
     ContactSyncClient client(http);
 
-    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore);
+    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore, db.handle());
 
     const ContactDedupeOutcome outcome = repository.dedupe();
     QCOMPARE(outcome.status, ContactDedupeStatus::NotPaired);
@@ -722,7 +729,7 @@ void ContactSyncRepositoryTest::dedupeSuccessReturnsMergedCountAndGroupsWithoutT
     HttpClient http(manager);
     ContactSyncClient client(http);
 
-    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore);
+    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore, db.handle());
 
     const ContactDedupeOutcome outcome = repository.dedupe();
     QCOMPARE(outcome.status, ContactDedupeStatus::Success);
@@ -764,7 +771,7 @@ void ContactSyncRepositoryTest::dedupeUnauthorizedFrom401MapsStatus()
     HttpClient http(manager);
     ContactSyncClient client(http);
 
-    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore);
+    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore, db.handle());
 
     const ContactDedupeOutcome outcome = repository.dedupe();
     QCOMPARE(outcome.status, ContactDedupeStatus::Unauthorized);
@@ -793,7 +800,7 @@ void ContactSyncRepositoryTest::dedupeServiceUnavailableFrom503MapsStatus()
     HttpClient http(manager);
     ContactSyncClient client(http);
 
-    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore);
+    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore, db.handle());
 
     const ContactDedupeOutcome outcome = repository.dedupe();
     QCOMPARE(outcome.status, ContactDedupeStatus::ServiceUnavailable);
@@ -825,7 +832,7 @@ void ContactSyncRepositoryTest::deletingAnUnsyncedContactDropsItsLaterEditsToo()
     QNetworkAccessManager manager;
     HttpClient http(manager);
     ContactSyncClient client(http);
-    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore);
+    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore, db.handle());
 
     Contact created;
     created.fn = QStringLiteral("Temp Person");
@@ -836,11 +843,11 @@ void ContactSyncRepositoryTest::deletingAnUnsyncedContactDropsItsLaterEditsToo()
     Contact edited = created;
     edited.uid = tempUid;
     edited.org = QStringLiteral("Acme");
-    repository.queueUpdate(edited);
+    QVERIFY(repository.queueUpdate(edited));
     QCOMPARE(pendingDao.findAll().size(), 2);
 
     // ...then decides to remove it.
-    repository.queueDelete(tempUid, 0);
+    QVERIFY(repository.queueDelete(tempUid, 0));
 
     // Nothing queued survives: no create, no edit, and no tombstone for a
     // contact the server never heard of.
@@ -867,7 +874,7 @@ void ContactSyncRepositoryTest::applySyncDiscardsAReplyTheCurrentPairingDidNotAu
     QTemporaryDir cursorDir;
     QVERIFY(cursorDir.isValid());
     CursorStore cursorStore(cursorDir.filePath(QStringLiteral("cursors.ini")));
-    cursorStore.setContactBaseCursor(QStringLiteral("55"));
+    QVERIFY(cursorStore.setContactBaseCursor(QStringLiteral("55")));
 
     QTemporaryDir secureDir;
     QVERIFY(secureDir.isValid());
@@ -878,7 +885,7 @@ void ContactSyncRepositoryTest::applySyncDiscardsAReplyTheCurrentPairingDidNotAu
     QNetworkAccessManager manager;
     HttpClient http(manager);
     ContactSyncClient client(http);
-    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore);
+    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore, db.handle());
 
     const std::optional<ContactSyncRepository::ContactSyncPlan> plan = repository.planSync();
     QVERIFY(plan.has_value());
@@ -926,6 +933,255 @@ void ContactSyncRepositoryTest::applySyncDiscardsAReplyTheCurrentPairingDidNotAu
     QVERIFY(pairingStore.save(original));
     QCOMPARE(repository.applySync(*plan, changed).status, ContactSyncStatus::Success);
     QVERIFY(contactDao.findById(QStringLiteral("uid-previous-account")).has_value());
+}
+
+
+// ---------------------------------------------------------------------------
+// Storage failures. Every test below takes a table or a file away and then
+// asks what the repository CLAIMS -- because the whole class of bug here is a
+// green test suite over an app that quietly lost the user's data.
+//
+// The failure is injected by dropping the table (the bluntest honest way,
+// same as MailRepositoryTest) or by putting a directory where the cursor file
+// belongs. Both fail for root too, which chmod does not.
+// ---------------------------------------------------------------------------
+
+// Saving a contact is two writes: the row the user can see, and the queue
+// entry that will eventually carry it to the server. With only the first,
+// the contact exists on this device and nowhere else, forever, and the UI
+// says "saved".
+void ContactSyncRepositoryTest::aLocalCreateThatCannotBeQueuedIsNotSavedAtAll()
+{
+    Database db;
+    QVERIFY(db.open(QStringLiteral(":memory:")));
+    ContactDao contactDao(db.handle());
+    PendingContactChangeDao pendingDao(db.handle());
+
+    QTemporaryDir cursorDir;
+    QVERIFY(cursorDir.isValid());
+    CursorStore cursorStore(cursorDir.filePath(QStringLiteral("cursors.ini")));
+
+    QTemporaryDir secureDir;
+    QVERIFY(secureDir.isValid());
+    SecureStoreFile secureStore(secureDir.path());
+    PairingStore pairingStore(secureStore);
+
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    ContactSyncClient client(http);
+    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore, db.handle());
+
+    {
+        QSqlQuery drop(db.handle());
+        QVERIFY(drop.exec(QStringLiteral("DROP TABLE pending_contact_changes")));
+    }
+
+    Contact created;
+    created.fn = QStringLiteral("Ada");
+
+    QVERIFY2(repository.queueCreate(created).isEmpty(), "a create that could not be queued reported a uid");
+    QVERIFY2(contactDao.findAll().isEmpty(),
+             "the contact was cached anyway -- it can never sync and nothing says so");
+
+    // The same rule for an edit to an already-synced contact.
+    Contact existing;
+    existing.uid = QStringLiteral("srv-1");
+    existing.rev = 3;
+    existing.fn = QStringLiteral("Grace");
+    QVERIFY(contactDao.insertOrReplace(existing));
+
+    Contact edited = existing;
+    edited.fn = QStringLiteral("Grace Hopper");
+    QVERIFY(!repository.queueUpdate(edited));
+    QCOMPARE(contactDao.findById(QStringLiteral("srv-1"))->fn, QStringLiteral("Grace"));
+}
+
+// The resurrected-contact bug from the other direction: drop the row, lose
+// the tombstone, and the next pull hands the contact straight back -- with
+// nothing queued to tell the server it was ever deleted.
+void ContactSyncRepositoryTest::aDeleteThatCannotEnqueueItsTombstoneKeepsTheContact()
+{
+    Database db;
+    QVERIFY(db.open(QStringLiteral(":memory:")));
+    ContactDao contactDao(db.handle());
+    PendingContactChangeDao pendingDao(db.handle());
+
+    QTemporaryDir cursorDir;
+    QVERIFY(cursorDir.isValid());
+    CursorStore cursorStore(cursorDir.filePath(QStringLiteral("cursors.ini")));
+
+    QTemporaryDir secureDir;
+    QVERIFY(secureDir.isValid());
+    SecureStoreFile secureStore(secureDir.path());
+    PairingStore pairingStore(secureStore);
+
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    ContactSyncClient client(http);
+    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore, db.handle());
+
+    Contact synced;
+    synced.uid = QStringLiteral("srv-9");
+    synced.rev = 2;
+    synced.fn = QStringLiteral("Katherine");
+    QVERIFY(contactDao.insertOrReplace(synced));
+
+    {
+        QSqlQuery drop(db.handle());
+        QVERIFY(drop.exec(QStringLiteral("DROP TABLE pending_contact_changes")));
+    }
+
+    QVERIFY2(!repository.queueDelete(QStringLiteral("srv-9"), 2), "a delete with no tombstone reported success");
+    QVERIFY2(contactDao.findById(QStringLiteral("srv-9")).has_value(),
+             "the contact was removed locally with nothing queued to remove it on the server");
+}
+
+// The cursor is a promise that everything up to it has been applied. A
+// response that failed to land must not move it, and the queue that was
+// pushed must survive so the next sync pushes it again.
+void ContactSyncRepositoryTest::applySyncKeepsTheQueueAndTheCursorWhenTheCacheWriteFails()
+{
+    Database db;
+    QVERIFY(db.open(QStringLiteral(":memory:")));
+    ContactDao contactDao(db.handle());
+    PendingContactChangeDao pendingDao(db.handle());
+
+    QTemporaryDir cursorDir;
+    QVERIFY(cursorDir.isValid());
+    CursorStore cursorStore(cursorDir.filePath(QStringLiteral("cursors.ini")));
+    QVERIFY(cursorStore.setContactBaseCursor(QStringLiteral("55")));
+
+    QTemporaryDir secureDir;
+    QVERIFY(secureDir.isValid());
+    SecureStoreFile secureStore(secureDir.path());
+    PairingStore pairingStore(secureStore);
+    savePairing(pairingStore, 1); // nothing is sent in this test
+
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    ContactSyncClient client(http);
+    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore, db.handle());
+
+    Contact edit;
+    edit.uid = QStringLiteral("srv-5");
+    edit.rev = 1;
+    edit.fn = QStringLiteral("Edited By The User");
+    QVERIFY(repository.queueUpdate(edit));
+
+    const std::optional<ContactSyncRepository::ContactSyncPlan> plan = repository.planSync();
+    QVERIFY(plan.has_value());
+    QCOMPARE(plan->pending.size(), 1);
+
+    {
+        QSqlQuery drop(db.handle());
+        QVERIFY(drop.exec(QStringLiteral("DROP TABLE contacts")));
+    }
+
+    Contact fromServer;
+    fromServer.uid = QStringLiteral("srv-6");
+    fromServer.rev = 1;
+    fromServer.fn = QStringLiteral("Someone New");
+
+    ContactSyncResult result;
+    result.cursor = 99;
+    result.changed = QVector<Contact>{ fromServer };
+
+    const ContactSyncOutcome outcome = repository.applySync(*plan, result);
+    QCOMPARE(outcome.status, ContactSyncStatus::CacheWriteFailed);
+    // No English sentence from core/: the wording belongs to app/.
+    QVERIFY(outcome.detail.isEmpty());
+
+    QCOMPARE(cursorStore.contactBaseCursor(), QStringLiteral("55"));
+    QCOMPARE(pendingDao.findAll().size(), 1); // the user's edit is still queued
+}
+
+// The other half of the same promise. The transaction commits, the cursor
+// write does not: reporting Success here would leave this session believing
+// a cursor the next launch has never seen.
+void ContactSyncRepositoryTest::applySyncReportsFailureWhenTheCursorCannotBePersisted()
+{
+    Database db;
+    QVERIFY(db.open(QStringLiteral(":memory:")));
+    ContactDao contactDao(db.handle());
+    PendingContactChangeDao pendingDao(db.handle());
+
+    QTemporaryDir cursorDir;
+    QVERIFY(cursorDir.isValid());
+    const QString blocked = cursorDir.filePath(QStringLiteral("cursors.ini"));
+    QVERIFY(QDir().mkpath(blocked)); // a directory here: no file can be written
+
+    CursorStore cursorStore(blocked);
+
+    QTemporaryDir secureDir;
+    QVERIFY(secureDir.isValid());
+    SecureStoreFile secureStore(secureDir.path());
+    PairingStore pairingStore(secureStore);
+    savePairing(pairingStore, 1);
+
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    ContactSyncClient client(http);
+    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore, db.handle());
+
+    const std::optional<ContactSyncRepository::ContactSyncPlan> plan = repository.planSync();
+    QVERIFY(plan.has_value());
+
+    Contact fromServer;
+    fromServer.uid = QStringLiteral("srv-7");
+    fromServer.rev = 1;
+    fromServer.fn = QStringLiteral("Someone New");
+
+    ContactSyncResult result;
+    result.cursor = 99;
+    result.changed = QVector<Contact>{ fromServer };
+
+    QCOMPARE(repository.applySync(*plan, result).status, ContactSyncStatus::CacheWriteFailed);
+    // The rows did land -- the failure is the cursor, and the next sync
+    // re-pulls this window and upserts over itself. That is the safe
+    // direction; the reverse is not.
+    QVERIFY(contactDao.findById(QStringLiteral("srv-7")).has_value());
+}
+
+// tooOld deletes every contact. If the cursor survives that wipe, the next
+// pull asks for a delta against rows this device no longer has, and the
+// address book stays empty with nothing to fix it.
+void ContactSyncRepositoryTest::aTooOldWipeThatFailsNeverLeavesTheCursorAhead()
+{
+    Database db;
+    QVERIFY(db.open(QStringLiteral(":memory:")));
+    ContactDao contactDao(db.handle());
+    PendingContactChangeDao pendingDao(db.handle());
+
+    QTemporaryDir cursorDir;
+    QVERIFY(cursorDir.isValid());
+    CursorStore cursorStore(cursorDir.filePath(QStringLiteral("cursors.ini")));
+    QVERIFY(cursorStore.setContactBaseCursor(QStringLiteral("55")));
+
+    QTemporaryDir secureDir;
+    QVERIFY(secureDir.isValid());
+    SecureStoreFile secureStore(secureDir.path());
+    PairingStore pairingStore(secureStore);
+    savePairing(pairingStore, 1);
+
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    ContactSyncClient client(http);
+    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore, db.handle());
+
+    const std::optional<ContactSyncRepository::ContactSyncPlan> plan = repository.planSync();
+    QVERIFY(plan.has_value());
+
+    {
+        QSqlQuery drop(db.handle());
+        QVERIFY(drop.exec(QStringLiteral("DROP TABLE contacts")));
+    }
+
+    ContactSyncResult tooOld;
+    tooOld.tooOld = true;
+
+    QCOMPARE(repository.applySync(*plan, tooOld).status, ContactSyncStatus::CacheWriteFailed);
+    QVERIFY2(cursorStore.contactBaseCursor().isEmpty(),
+             "the cursor outlived the wipe it was supposed to be reset with");
 }
 
 QTEST_GUILESS_MAIN(ContactSyncRepositoryTest)

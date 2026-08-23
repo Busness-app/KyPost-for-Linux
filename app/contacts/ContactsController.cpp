@@ -11,6 +11,7 @@
 
 #include <KLocalizedString>
 
+#include <QDebug>
 #include <QUrl>
 #include <QVariantList>
 #include <algorithm>
@@ -316,6 +317,14 @@ void ContactsController::applySyncOutcome(const ContactSyncOutcome& outcome)
         setStatusMessage(QString());
         setLastError(outcome.detail.isEmpty() ? i18n("Sync failed, try again") : outcome.detail);
         break;
+    case ContactSyncStatus::CacheWriteFailed:
+        // Nothing wrong with the relay or the pairing: this device could not
+        // store the answer, so it was rolled back rather than half-applied.
+        // The queued changes are still queued and the cursor did not move, so
+        // the retry this asks for is a real retry, not a hope.
+        setStatusMessage(QString());
+        setLastError(i18n("Could not save synced contacts to this device"));
+        break;
     case ContactSyncStatus::PairingChanged:
         // The reply belonged to the account that was paired when the request
         // went out, and the repository discarded it rather than write it into
@@ -372,7 +381,12 @@ void ContactsController::refreshGroupsCache()
         [endpoint = plan->endpoint](HttpClient& http) { return GroupsRepository::fetchWith(http, endpoint); },
         [this, plan = *plan](const GroupsFetchResult& result) {
             popBusy();
-            m_groupsRepository.applyRefresh(plan, result);
+            // Not shown to the user (see this function's comment above), but
+            // not swallowed either: false here means the name-cache does not
+            // match any response the server gave us, and the only way to
+            // notice that in the field is the journal.
+            if (!m_groupsRepository.applyRefresh(plan, result))
+                qWarning("ContactsController: the contact-group name cache was not refreshed");
         });
 }
 
@@ -535,7 +549,15 @@ QString ContactsController::createContact(const QVariantMap& fields)
     contact.fn = fn;
     applyFieldsToContact(contact, fields);
 
+    // Empty means the local database refused one or both writes and the
+    // whole thing rolled back. Saying "saved" here is how a contact ends up
+    // visible on this device and nowhere else -- or not visible at all.
     const QString newUid = m_repository.queueCreate(contact);
+    if (newUid.isEmpty()) {
+        setLastError(i18n("Could not save this contact to the local database"));
+        load();
+        return QString();
+    }
     setLastError(QString());
     load();
     return newUid;
@@ -561,7 +583,11 @@ bool ContactsController::updateContact(const QString& uid, const QVariantMap& fi
     contact.fn = fn;
     applyFieldsToContact(contact, fields);
 
-    m_repository.queueUpdate(contact);
+    if (!m_repository.queueUpdate(contact)) {
+        setLastError(i18n("Could not save this contact to the local database"));
+        load();
+        return false;
+    }
     setLastError(QString());
     load();
     return true;
@@ -571,7 +597,11 @@ bool ContactsController::deleteContact(const QString& uid, qint64 rev)
 {
     // No guard -- see createContact() above.
 
-    m_repository.queueDelete(uid, rev);
+    if (!m_repository.queueDelete(uid, rev)) {
+        setLastError(i18n("Could not delete this contact from the local database"));
+        load();
+        return false;
+    }
     setLastError(QString());
     load();
     return true;

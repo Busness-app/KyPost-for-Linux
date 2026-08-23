@@ -103,8 +103,8 @@ void LocalDataWipeTest::wipeEverythingClearsCachesPairingAndLock()
     writeDummyDatabase(dir.filePath(QStringLiteral("contact-photos/abc.jpg")));
 
     CursorStore cursorStore(dir.filePath(QStringLiteral("cursors.ini")));
-    cursorStore.setMailCursor(QStringLiteral("sub-1"), QStringLiteral("INBOX"), QStringLiteral("4242"));
-    cursorStore.setNotificationCursor(77);
+    QVERIFY(cursorStore.setMailCursor(QStringLiteral("sub-1"), QStringLiteral("INBOX"), QStringLiteral("4242")));
+    QVERIFY(cursorStore.setNotificationCursor(77));
     LocalDataWipe wipe(database, pairingStore, appLockStore, settingsStore, cursorStore, dir.path(), dbPath, {});
     const LocalDataWipeResult result = wipe.wipeEverything();
     QVERIFY(result.complete());
@@ -146,8 +146,8 @@ void LocalDataWipeTest::wipeEverythingTakesThePreRenameDatabasesToo()
     writeDummyDatabase(dir.filePath(QStringLiteral("llamamail.db-shm")));
 
     CursorStore cursorStore(dir.filePath(QStringLiteral("cursors.ini")));
-    cursorStore.setMailCursor(QStringLiteral("sub-1"), QStringLiteral("INBOX"), QStringLiteral("4242"));
-    cursorStore.setNotificationCursor(77);
+    QVERIFY(cursorStore.setMailCursor(QStringLiteral("sub-1"), QStringLiteral("INBOX"), QStringLiteral("4242")));
+    QVERIFY(cursorStore.setNotificationCursor(77));
     LocalDataWipe wipe(database, pairingStore, appLockStore, settingsStore, cursorStore, dir.path(), dbPath, legacy);
     const LocalDataWipeResult result = wipe.wipeEverything();
     QVERIFY(result.legacyDatabasesRemoved);
@@ -175,8 +175,8 @@ void LocalDataWipeTest::wipeEverythingKeepsTheLiveDatabaseFileUsable()
     SettingsStore settingsStore(dir.filePath(QStringLiteral("settings.ini")));
 
     CursorStore cursorStore(dir.filePath(QStringLiteral("cursors.ini")));
-    cursorStore.setMailCursor(QStringLiteral("sub-1"), QStringLiteral("INBOX"), QStringLiteral("4242"));
-    cursorStore.setNotificationCursor(77);
+    QVERIFY(cursorStore.setMailCursor(QStringLiteral("sub-1"), QStringLiteral("INBOX"), QStringLiteral("4242")));
+    QVERIFY(cursorStore.setNotificationCursor(77));
     LocalDataWipe wipe(database, pairingStore, appLockStore, settingsStore, cursorStore, dir.path(), dbPath, {});
     QVERIFY(wipe.wipeEverything().complete());
 
@@ -207,8 +207,8 @@ void LocalDataWipeTest::wipeEverythingReportsAnUnremovablePairingCredential()
     QVERIFY(pairingStore.save(pairing));
 
     CursorStore cursorStore(dir.filePath(QStringLiteral("cursors.ini")));
-    cursorStore.setMailCursor(QStringLiteral("sub-1"), QStringLiteral("INBOX"), QStringLiteral("4242"));
-    cursorStore.setNotificationCursor(77);
+    QVERIFY(cursorStore.setMailCursor(QStringLiteral("sub-1"), QStringLiteral("INBOX"), QStringLiteral("4242")));
+    QVERIFY(cursorStore.setNotificationCursor(77));
     LocalDataWipe wipe(database, pairingStore, appLockStore, settingsStore, cursorStore, dir.path(), dbPath, {});
     const LocalDataWipeResult result = wipe.wipeEverything();
 
@@ -240,8 +240,8 @@ void LocalDataWipeTest::hostileLocationWipeUnlinksTheLiveDatabaseButKeepsThePair
     QVERIFY(appLockStore.setPin(QStringLiteral("419273")));
 
     CursorStore cursorStore(dir.filePath(QStringLiteral("cursors.ini")));
-    cursorStore.setMailCursor(QStringLiteral("sub-1"), QStringLiteral("INBOX"), QStringLiteral("4242"));
-    cursorStore.setNotificationCursor(77);
+    QVERIFY(cursorStore.setMailCursor(QStringLiteral("sub-1"), QStringLiteral("INBOX"), QStringLiteral("4242")));
+    QVERIFY(cursorStore.setNotificationCursor(77));
     LocalDataWipe wipe(database, pairingStore, appLockStore, settingsStore, cursorStore, dir.path(), dbPath, {});
     const LocalDataWipeResult result = wipe.wipeOnDiskDataOnly();
     QVERIFY(result.complete());
@@ -289,10 +289,10 @@ void LocalDataWipeTest::wipeEverythingErasesTheSyncCursors()
     const QString cursorsPath = dir.filePath(QStringLiteral("cursors.ini"));
     {
         CursorStore seed(cursorsPath);
-        seed.setMailCursor(QStringLiteral("sub-1"), QStringLiteral("INBOX"), QStringLiteral("4242"));
-        seed.setMailCursor(QStringLiteral("sub-1"), QStringLiteral("Work/Legal"), QStringLiteral("99"));
-        seed.setContactBaseCursor(QStringLiteral("rev-7"));
-        seed.setNotificationCursor(77);
+        QVERIFY(seed.setMailCursor(QStringLiteral("sub-1"), QStringLiteral("INBOX"), QStringLiteral("4242")));
+        QVERIFY(seed.setMailCursor(QStringLiteral("sub-1"), QStringLiteral("Work/Legal"), QStringLiteral("99")));
+        QVERIFY(seed.setContactBaseCursor(QStringLiteral("rev-7")));
+        QVERIFY(seed.setNotificationCursor(77));
     }
 
     {
