@@ -1483,6 +1483,15 @@ MailController::ClientEncryptedOutcome runClientEncryptedSend(
             && imported.status != PgpImportStatus::Unchanged) {
             // A key whose fingerprint disagrees with what the relay claimed
             // about it is not one to encrypt to.
+            //
+            // WHEN IT CLAIMED ONE. `fingerprint` is omitempty on the wire and
+            // a pinned contact key can reach us without it, so this comparison
+            // does not always happen and requiring it would refuse sends that
+            // are perfectly possible. It was never a defence against a hostile
+            // relay in any case -- one that wants to substitute a key sends a
+            // matching fingerprint with it, or none at all. What it catches is
+            // a relay whose key and whose claim disagree, which is a bug or a
+            // partial compromise rather than a determined one.
             outcome.namedRecipients.append(key.address);
             outcome.detail = imported.detail;
             continue;
@@ -1659,12 +1668,22 @@ void MailController::finishClientEncryptedSend(quint64 token, const ClientEncryp
     emit sendCompleted(token, false);
 }
 
+bool MailController::decryptedStillOurs() const
+{
+    if (m_decryptedMessageId.isEmpty())
+        return false;
+    return m_pairingStore.stillCurrent(m_decryptedIdentity);
+}
+
 void MailController::forgetDecrypted()
 {
+    // Reads the MEMBERS, not the getters: the getters answer empty once the
+    // account has been replaced, which is exactly when there is most to clear.
     if (m_decryptedMessageId.isEmpty() && m_decryptedHtml.isEmpty() && m_decryptedPlain.isEmpty()
         && m_decryptFailure.isEmpty() && m_decryptedSignature.isEmpty()) {
         return;
     }
+    m_decryptedIdentity = {};
     m_decryptedMessageId.clear();
     m_decryptedHtml.clear();
     m_decryptedPlain.clear();
@@ -1758,6 +1777,7 @@ void MailController::applyDecryptResult(const PairingIdentity& identity, const Q
         return;
     }
 
+    m_decryptedIdentity = identity;
     m_decryptedMessageId = messageId;
     m_decryptedHtml = body.html;
     m_decryptedPlain = body.plain;

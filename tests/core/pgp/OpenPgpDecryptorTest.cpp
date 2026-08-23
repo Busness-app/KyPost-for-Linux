@@ -22,6 +22,7 @@ private slots:
     void rubbishIsReportedAsMalformedRatherThanShown();
     void emptyInputIsMalformed();
     void aPlaintextOverTheCeilingIsRefusedWholesale();
+    void aTamperedCiphertextYieldsNothingAtAll();
 
 private:
     GnupgFixture m_fixture;
@@ -122,6 +123,40 @@ void OpenPgpDecryptorTest::aPlaintextOverTheCeilingIsRefusedWholesale()
     // And the same message decrypts fine when it is allowed to.
     QCOMPARE(OpenPgpDecryptor().decrypt(ciphertext, m_fixture.path()).status,
              PgpDecryptStatus::Decrypted);
+}
+
+// The EFAIL primitive, closed at the engine boundary -- and pinned here
+// because the behaviour is invisible from the outside.
+//
+// `gpg --decrypt` on a manipulated message PRINTS THE PLAINTEXT, warns
+// "encrypted message has been manipulated!", and signals the failure only
+// through its exit status. A reader that took gpg's stdout would render an
+// attacker-modified message as genuine, which is exactly the shape EFAIL
+// exploits: modify the ciphertext so the decrypted body contains an
+// exfiltration URL, and let the mail client fetch it.
+//
+// gpgme does NOT behave that way -- it reports the integrity failure as an
+// error, and this decryptor discards the output. Measured, not assumed; the
+// CLI's behaviour makes the opposite the natural guess.
+void OpenPgpDecryptorTest::aTamperedCiphertextYieldsNothingAtAll()
+{
+    const QByteArray secret = "the-plaintext-an-attacker-wants\n";
+    const QByteArray ciphertext = m_fixture.encryptToTestKey(secret);
+    QVERIFY(!ciphertext.isEmpty());
+    // It really does decrypt untouched, or the assertion below proves nothing.
+    QCOMPARE(OpenPgpDecryptor().decrypt(ciphertext, m_fixture.path()).status,
+             PgpDecryptStatus::Decrypted);
+
+    const QByteArray tampered = m_fixture.tamperedCopyOf(ciphertext);
+    QVERIFY2(!tampered.isEmpty(), "could not build a tampered copy");
+    QVERIFY2(tampered != ciphertext, "the tampering changed nothing");
+
+    const PgpDecryptResult result = OpenPgpDecryptor().decrypt(tampered, m_fixture.path());
+
+    QVERIFY2(result.status != PgpDecryptStatus::Decrypted,
+             "a manipulated message was handed up as genuine");
+    QVERIFY2(result.plaintext.isEmpty(),
+             "a manipulated message leaked plaintext even though it was refused");
 }
 
 QTEST_GUILESS_MAIN(OpenPgpDecryptorTest)

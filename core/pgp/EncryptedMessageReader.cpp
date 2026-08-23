@@ -121,9 +121,13 @@ PgpReadResult EncryptedMessageReader::read(const QUrl& serverBaseUrl, const Rela
     // The keys a signature may be credited to, into the keyring so gpg can
     // check against them (AGENTS.md 4b -- the same custody decision as the
     // send path). Only keys the relay ALREADY bound to this message's sender
-    // are imported, so an unsolicited message cannot add arbitrary keys to
+    // are imported, so an unsolicited MESSAGE cannot add arbitrary keys to
     // somebody's keyring: it can at most add the one its own address is
-    // already associated with.
+    // already associated with. That bound is on the sender, not on the relay
+    // -- the relay is the party asserting the association, so a hostile one
+    // can still put a key of its choosing here. Public, merged, and never
+    // reachable as an encryption target (those come from the resolve
+    // response by fingerprint), so the cost is clutter rather than exposure.
     //
     // A conflicting key is skipped rather than tried. The relay saw more than
     // one claiming this address and cannot say which is right; importing them

@@ -951,6 +951,15 @@ int main(int argc, char* argv[])
                          notificationDispatcher.setContentHidden(appLockManager.locked());
                      });
 
+    // A decrypted message belongs to the account it was fetched for, and an
+    // IMAP UID is not evidence of which account that was -- "5" exists again
+    // in the next one. MailController refuses to hand the body out once the
+    // pairing has moved, so this is not what makes that safe; this is what
+    // actually frees the memory rather than leaving it held for the life of
+    // the process.
+    QObject::connect(&pairingController, &PairingController::pairingChanged, &mailController,
+                     [&mailController]() { mailController.forgetDecrypted(); });
+
     // Third leak of the same kind, and the one with the least excuse: a
     // decrypted OpenPGP message is held in MailController's memory and
     // nowhere else, so nothing on disk needs clearing -- but locking the app
