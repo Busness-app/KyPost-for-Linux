@@ -87,7 +87,7 @@ A row may not sit at **Missing** without an owner phase. A row may not sit at
 | Capability | Status | Notes |
 | --- | --- | --- |
 | Public-key QR exchange, encrypted-message awareness | Matched | |
-| Device enrolment, private-key custody, client-side decrypt/sign/encrypt | **Under review — decision re-opened 2026-08-22** | `AGENTS.md` §4 currently reads "No PGP private key on this client, ever", and client-protected mail is routed to webmail. That decision has been re-opened at the user's direction. **It is not yet reversed**: until §4 is edited, the ban stands and no private-key code may land. Reversing it means a separate project — keyring-protected key storage, memory clearing, authenticated enrolment, payload bounds, PGP/MIME parsing, and a security test suite proportional to holding users' private keys. |
+| Device enrolment, private-key custody, client-side decrypt/sign/encrypt | **Approved, not built** | The "no PGP private key on this client, ever" rule was **reversed 2026-08-22** at the maintainer's direction; `AGENTS.md` §4 records the reversal and §4a records the rules any implementation must meet. One decision still open before code can start: the **custody model** — delegate to the user's `gpg-agent` via GPGME (keys stay where the user already keeps them, pinentry handles passphrases, smartcards work for free, this app never holds key material) versus bespoke in-app custody as `kypost-android` has to do. Both are viable here: gpgmepp is in `org.kde.Platform` and `gpg-agent` is a recognised Flatpak socket type. Until that is recorded, no key-handling code may land. |
 
 ## 7. Presentation
 
