@@ -61,6 +61,43 @@ QByteArray contentTypeForMode(const QString& mode)
         : QByteArrayLiteral("text/plain; charset=utf-8");
 }
 
+// A filename safe to sit inside a quoted-string parameter.
+//
+// Line breaks go first (mimeHeaderValue's job everywhere else), then the two
+// characters that can end or escape a quoted string. A name carrying a quote
+// would otherwise close the parameter early and let the rest be read as
+// further parameters -- the same shape as header injection, one level down.
+//
+// RFC 2231 continuation encoding is NOT implemented, so a non-ASCII name
+// travels as raw UTF-8 inside the quotes. That is technically non-conformant
+// and universally understood; the alternative worth having is 2231, not
+// mangling the user's filename into ASCII.
+QString quotedFilename(const QString& raw)
+{
+    QString value = raw;
+    value.replace(QLatin1Char('\r'), QLatin1Char(' '));
+    value.replace(QLatin1Char('\n'), QLatin1Char(' '));
+    value.remove(QLatin1Char('"'));
+    value.remove(QLatin1Char('\\'));
+    value = value.trimmed();
+    return value.isEmpty() ? QStringLiteral("attachment") : value;
+}
+
+// base64 wrapped at the conventional 76 characters. One unbroken line is legal
+// base64 and is not legal MIME: RFC 5322 caps a line at 998 octets, and a
+// 25 MB attachment on one line is refused or truncated by things along the way.
+QByteArray wrappedBase64(const QByteArray& data)
+{
+    const QByteArray encoded = data.toBase64();
+    QByteArray out;
+    out.reserve(encoded.size() + encoded.size() / 76 * 2 + 2);
+    for (qsizetype at = 0; at < encoded.size(); at += 76) {
+        out += encoded.mid(at, 76);
+        out += "\r\n";
+    }
+    return out;
+}
+
 } // namespace
 
 QString mimeHeaderValue(const QString& raw)
@@ -131,6 +168,21 @@ QByteArray protectedContent(const OutgoingMessage& message, const QString& bound
     // is written unconditionally rather than assumed to be at the end of the
     // body.
     out += "\r\n";
+
+    for (const MailAttachmentUpload& attachment : message.attachments) {
+        const QByteArray name = quotedFilename(attachment.name).toUtf8();
+        const QByteArray type = attachment.mimeType.trimmed().isEmpty()
+            ? QByteArrayLiteral("application/octet-stream")
+            : mimeHeaderValue(attachment.mimeType).toUtf8();
+
+        out += "--" + boundaryUtf8 + "\r\n";
+        out += "Content-Type: " + type + "; name=\"" + name + "\"\r\n";
+        out += "Content-Transfer-Encoding: base64\r\n";
+        out += "Content-Disposition: attachment; filename=\"" + name + "\"\r\n";
+        out += "\r\n";
+        out += wrappedBase64(attachment.data);
+    }
+
     out += "--" + boundaryUtf8 + "--\r\n";
     return out;
 }

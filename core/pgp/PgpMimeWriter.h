@@ -1,8 +1,11 @@
 #pragma once
 
+#include "net/RelayMailSource.h" // MailAttachmentUpload -- {name, mimeType, data}
+
 #include <QByteArray>
 #include <QString>
 #include <QStringList>
+#include <QVector>
 
 // Builds the two MIME structures a client-encrypted send is made of.
 //
@@ -35,6 +38,14 @@ struct OutgoingMessage
     // RFC 5322 date, passed in rather than read from the clock: core/ stays
     // testable, and the caller already knows when it is sending.
     QString date;
+
+    // Attachments travel INSIDE the encrypted part, as ordinary MIME parts of
+    // the protected content -- so their names and their bytes are encrypted
+    // along with the message. Putting them on the outer envelope would leave
+    // every filename readable to the relay and to every hop after it, which
+    // for a message somebody chose to encrypt is often the most telling thing
+    // about it.
+    QVector<MailAttachmentUpload> attachments;
 };
 
 // What the outer, unencrypted envelope carries in place of the real subject.
@@ -75,6 +86,9 @@ QString randomMimeBoundary(const QByteArray& mustNotOccurIn = {});
 // The plaintext entity that gets encrypted: Protected Headers v1, the
 // "memoryhole" convention draft-ietf-lamps-header-protection describes and
 // that Thunderbird, Mutt and K-9 both emit and consume.
+//
+// Attachments become further parts of the same multipart/mixed, base64 with
+// the conventional 76-character wrap.
 //
 // The real subject appears twice on purpose -- once on the wrapper's own
 // headers so an aware client shows it, and once in a leading

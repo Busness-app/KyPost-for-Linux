@@ -8,7 +8,9 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QFile>
 #include <QSignalSpy>
+#include <QTemporaryDir>
 #include <QTest>
 
 namespace {
@@ -66,7 +68,7 @@ private slots:
     void theRecipientCanOpenWhatTheRelayRelayed();
     void aRecipientWithNoUsableKeyStopsTheSendAndIsNamed();
     void aKeyTheRelaySaysIsUnusableIsNotUsedEvenThoughItLooksFine();
-    void attachmentsAreRefusedRatherThanDropped();
+    void anAttachmentTravelsInsideTheCiphertext();
     void aSendForAReplacedAccountIsNotReportedAsSent();
 
 private:
@@ -221,21 +223,58 @@ void MailEncryptedSendTest::aKeyTheRelaySaysIsUnusableIsNotUsedEvenThoughItLooks
     QVERIFY2(sendRequestBodyOf(fake.receivedRequests()).isEmpty(), "the message was sent anyway");
 }
 
-// Enforced in C++, not only in Compose.qml. Sending the message without the
-// files and reporting success is a data loss the sender never sees.
-void MailEncryptedSendTest::attachmentsAreRefusedRatherThanDropped()
+// Attachments travel INSIDE the encrypted part, so the relay never learns the
+// filename -- which for mail somebody chose to encrypt is often the most
+// telling thing about it.
+void MailEncryptedSendTest::anAttachmentTravelsInsideTheCiphertext()
 {
-    FakeRelayServer fake(httpResponse(200, "OK", R"({"ok":true})"));
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("redundancy-list.txt"));
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    file.write("everyone in row three\n");
+    file.close();
+
+    FakeRelayServer fake(httpResponse(200, "OK", R"({"ok":true,"sentSaved":true})"));
+    fake.setResponseForPath("/api/pgp/bootstrap", bootstrapResponse(QStringLiteral("me@example.com")));
+    fake.setResponseForPath("/api/pgp/recipients/resolve",
+                             resolveResponse(QStringLiteral("you@example.com"), m_recipientKey,
+                                              m_recipientFingerprint));
+
     DecryptHarness harness;
     QVERIFY(harness.build(fake));
 
-    const quint64 token = harness.controller->sendClientEncrypted(
-        QStringLiteral("you@example.com"), QString(), QString(), QStringLiteral("Subject"),
-        QString::fromUtf8(kSecret), { QStringLiteral("/tmp/whatever.pdf") });
+    QSignalSpy completed(harness.controller.get(), &MailController::sendCompleted);
+    harness.controller->sendClientEncrypted(QStringLiteral("you@example.com"), QString(), QString(),
+                                             QStringLiteral("Subject"), QString::fromUtf8(kSecret),
+                                             { path });
+    QTRY_VERIFY_WITH_TIMEOUT(completed.count() == 1, 30000);
+    QVERIFY2(completed.at(0).at(1).toBool(), qPrintable(harness.controller->lastError()));
 
-    QCOMPARE(token, quint64(0));
-    QVERIFY(!harness.controller->lastError().isEmpty());
-    QVERIFY2(fake.receivedRequests().isEmpty(), "a request was made for a refused send");
+    const QJsonObject body = sendRequestBodyOf(fake.receivedRequests());
+    const QByteArray raw = QJsonDocument(body).toJson(QJsonDocument::Compact);
+    QVERIFY2(!raw.contains("redundancy-list"), "the attachment's filename reached the relay in clear");
+    QVERIFY2(!raw.contains("everyone in row three"), "the attachment's bytes reached the relay in clear");
+
+    // And the recipient really gets it.
+    const QString delivery =
+        body.value(QStringLiteral("deliveries")).toArray().at(0).toObject()
+            .value(QStringLiteral("ciphertext")).toString();
+    const QByteArray bytes = delivery.toUtf8();
+    const qsizetype begin = bytes.indexOf("-----BEGIN PGP MESSAGE-----");
+    const qsizetype end = bytes.indexOf("-----END PGP MESSAGE-----");
+    QVERIFY(begin >= 0 && end > begin);
+    const PgpDecryptResult opened = OpenPgpDecryptor().decrypt(
+        bytes.mid(begin, end - begin + qstrlen("-----END PGP MESSAGE-----")), m_recipient.path());
+
+    QCOMPARE(opened.status, PgpDecryptStatus::Decrypted);
+    QVERIFY2(opened.plaintext.contains("redundancy-list.txt"),
+             "the attachment did not reach the recipient");
+    QVERIFY2(opened.plaintext.contains("Content-Disposition: attachment"),
+             "the part is not marked as an attachment");
+    QVERIFY2(opened.plaintext.contains(QByteArray("everyone in row three\n").toBase64()),
+             "the attachment's bytes are not in the encrypted part");
 }
 
 // pinentry waits for the user indefinitely, so this window is wider here than

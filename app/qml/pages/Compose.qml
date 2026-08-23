@@ -218,12 +218,6 @@ Item {
                 // own MIME and does not write multipart bodies yet, so an
                 // attachment cannot travel; sending the message without it
                 // would be a data loss the sender never sees.
-                // C++ refuses this too, and that is the enforcement -- this
-                // only puts the message next to the field the user has to fix.
-                if (root.attachmentPaths.length > 0) {
-                    root.validationError = i18n("Attachments cannot be sent on an end-to-end encrypted message yet. Remove them, or continue in webmail.")
-                    return
-                }
                 root.mySendToken = MailApp.sendClientEncrypted(toField.joinedText, ccField.joinedText,
                                                                bccField.joinedText, subjectField.text,
                                                                result.html, root.attachmentPaths)
@@ -534,7 +528,9 @@ Item {
             Layout.fillWidth: true
             textFormat: Text.PlainText
             visible: MailApp.pgpCanSendFromThisDevice
-            text: i18n("This message will be encrypted and signed on this computer with your own key.")
+            text: root.attachmentPaths.length > 0
+                  ? i18n("This message and its attachments will be encrypted and signed on this computer with your own key.")
+                  : i18n("This message will be encrypted and signed on this computer with your own key.")
             color: Theme.ink
             font.family: Theme.fontUi
             font.pixelSize: 12
