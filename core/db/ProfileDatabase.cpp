@@ -1,6 +1,7 @@
 #include "db/ProfileDatabase.h"
 
 #include "db/Database.h"
+#include "db/DatabaseEncryptionMigration.h"
 
 #include <QFile>
 #include <QFileInfo>
@@ -26,24 +27,21 @@ ProfileDatabaseMode chooseProfileDatabaseMode(const ProfileDatabaseInputs& input
 
     switch (inputs.keyStatus) {
     case DatabaseKeyStore::Status::Found:
-        // A key exists, so this profile is an encrypted one. Whether the file
-        // on disk has caught up is a separate question -- an unconverted file
-        // alongside an existing key means a migration was interrupted, which
-        // is not something this function repairs. Reported as plaintext so
-        // the caller can see the disagreement rather than have it hidden.
-        if (inputs.databaseFileExists && !inputs.databaseFileIsEncrypted)
-            return ProfileDatabaseMode::PlaintextOnDisk;
+        // A key exists, so this profile is an encrypted one. A file that has
+        // not caught up -- a conversion interrupted part-way -- is finished
+        // by openProfileDatabase(); the intent either way is encryption.
         return ProfileDatabaseMode::EncryptedOnDisk;
 
     case DatabaseKeyStore::Status::Absent:
-        // No key, and a database already here: a profile from before
-        // encryption existed. Opened as it is, because refusing would not
-        // remove the plaintext already on this disk -- it would only take the
-        // user's mail away while leaving the exposure exactly where it was.
-        if (inputs.databaseFileExists)
-            return ProfileDatabaseMode::PlaintextOnDisk;
-        // No key and no database: a new profile, and the one case where a
-        // key gets minted.
+        // No key, whether or not a database is already here.
+        //
+        // An existing plaintext profile is CONVERTED rather than left as it
+        // was (user's call, 2026-08-22): most people never open Settings, so
+        // an opt-in would leave most mail in plaintext indefinitely. The
+        // conversion itself is written so that losing the mail is never the
+        // failure mode -- see DatabaseEncryptionMigration -- and if it does
+        // fail, openProfileDatabase() falls back to opening the untouched
+        // plaintext database rather than leaving the user with nothing.
         return ProfileDatabaseMode::EncryptedOnDisk;
 
     case DatabaseKeyStore::Status::Unreadable:
@@ -101,6 +99,22 @@ ProfileDatabaseMode openProfileDatabase(Database& database, DatabaseKeyStore& ke
                                                                   : ProfileDatabaseMode::FailedToOpen;
             }
         }
+        // Convert an existing plaintext profile before opening it. Safe to
+        // call unconditionally: it is a no-op when there is nothing to
+        // convert, and it repairs the leftovers of an interrupted run.
+        DatabaseEncryptionMigration migration(path);
+        if (migration.run(material) == DatabaseEncryptionMigration::Status::Failed
+            && QFileInfo::exists(path) && !databaseFileIsEncrypted(path)) {
+            // The conversion did not happen and the plaintext database is
+            // still there, untouched. Opening it is strictly better than
+            // handing the user an app with no mail in it; the next launch
+            // tries again. Reported honestly so the UI can say so.
+            qCritical("ProfileDatabase: this profile's database could not be encrypted; opening it as it is");
+            if (!database.open(path))
+                return ProfileDatabaseMode::FailedToOpen;
+            return ProfileDatabaseMode::PlaintextOnDisk;
+        }
+
         if (!database.open(path, material))
             return ProfileDatabaseMode::FailedToOpen;
         return ProfileDatabaseMode::EncryptedOnDisk;

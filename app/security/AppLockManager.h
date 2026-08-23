@@ -1,5 +1,7 @@
 #pragma once
 
+#include "db/ProfileDatabase.h"
+
 #include <QObject>
 #include <QTimer>
 #include <QString>
@@ -71,6 +73,17 @@ class AppLockManager : public QObject
     // succeed; the UI's job is to stop the user believing data is gone when
     // it is not.
     Q_PROPERTY(bool wipeIncomplete READ wipeIncomplete NOTIFY wipeIncompleteChanged)
+
+    // How this profile's database ended up open. Two separate facts because
+    // they need two separate things said about them: "your mail is on this
+    // disk unencrypted" and "your mail is not being saved at all" are
+    // different situations with different fixes.
+    //
+    // On AppLockManager rather than a singleton of their own: this is the
+    // object the UI already asks about the security state of the device, and
+    // one more registered singleton for two booleans is not worth the wiring.
+    Q_PROPERTY(bool databaseUnencrypted READ databaseUnencrypted NOTIFY databaseModeChanged)
+    Q_PROPERTY(bool databaseMemoryOnly READ databaseMemoryOnly NOTIFY databaseModeChanged)
 
     // How many consecutive failed attempts erase this device, or
     // LockoutPolicy::kWipeNever for "do not erase". Settings binds this to
@@ -189,6 +202,12 @@ public:
     Q_INVOKABLE bool setWipeAfterAttempts(int attempts, const QString& currentPin);
 
     bool wipeIncomplete() const;
+
+    bool databaseUnencrypted() const;
+    bool databaseMemoryOnly() const;
+    // Host-set at startup from openProfileDatabase()'s answer. Not
+    // Q_INVOKABLE: QML must not be able to claim the database is encrypted.
+    void setDatabaseMode(ProfileDatabaseMode mode);
     // Host-set, at startup, from the interrupted-wipe recovery attempt. Not
     // Q_INVOKABLE: QML must never be able to clear this.
     void setWipeIncomplete(bool incomplete);
@@ -199,6 +218,7 @@ signals:
     void lockoutChanged();
     void credentialsUnavailableChanged();
     void wipeIncompleteChanged();
+    void databaseModeChanged();
     void lockPendingChanged();
 
     // Emitted when failed attempts reach the wipe threshold. The host owns
@@ -245,6 +265,7 @@ private:
     // rate-limit the next one, and a relaunch is a cheap recovery.
     bool m_attemptRecordingBroken = false;
     bool m_wipeIncomplete = false;
+    ProfileDatabaseMode m_databaseMode = ProfileDatabaseMode::PlaintextOnDisk;
     QTimer m_graceTimer;
     // In-process floor under the persisted counter, so even a store that
     // accepts writes and silently loses them still caps guessing per launch.

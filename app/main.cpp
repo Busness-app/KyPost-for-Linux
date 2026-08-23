@@ -19,6 +19,7 @@
 #include "db/Database.h"
 #include "db/EmailDao.h"
 #include "db/FolderDao.h"
+#include "db/ProfileDatabase.h"
 #include "db/SecurityWipe.h"
 #include "db/GroupDao.h"
 #include "db/PendingContactChangeDao.h"
@@ -31,6 +32,7 @@
 #include "domain/KeywordRepository.h"
 #include "domain/FolderRepository.h"
 #include "security/AppLockStore.h"
+#include "security/DatabaseKeyStore.h"
 #include "security/WipeTripwire.h"
 #include "domain/MailRepository.h"
 #include "domain/PairingStore.h"
@@ -422,47 +424,12 @@ int main(int argc, char* argv[])
     // repository, controller and QML singleton, and there is no supported
     // way to re-point it at a different database at runtime.
 
-    Database database;
-    if (hostileLocation) {
-        // Defensive: if a previous run crashed between "write the flag" and
-        // "delete the file", there could still be a database on disk holding
-        // exactly what this mode exists to prevent.
-        SecurityWipe::removeDatabaseFiles(newDbPath);
-        for (const QString& legacyDbPath : legacyDbPaths)
-            SecurityWipe::removeDatabaseFiles(legacyDbPath);
-        SecurityWipe::clearCacheDirectory(dataDir + QStringLiteral("/contact-photos"));
-        if (!database.open(QStringLiteral(":memory:")))
-            qFatal("main: Database::open failed for in-memory database");
-    } else if (!database.open(newDbPath)) {
-        qFatal("main: Database::open failed for %s", qPrintable(newDbPath));
-    }
-
-    // extended-contact-fields Task 3: on-disk cache for fetched contact
-    // photo bytes, keyed by Contact::photoRef -- reuses the same
-    // AppDataLocation dataDir already resolved for the SQLite database
-    // above, in its own "contact-photos" subdirectory (see
-    // core/stores/ContactPhotoCache.h's doc comment for why no invalidation
-    // logic is needed here).
-    ContactPhotoCache contactPhotoCache(dataDir + QStringLiteral("/contact-photos"));
-
-    // 2. DAOs, each borrowing database.handle(). PushDao has no
-    // Phase 6 caller yet -- constructed anyway per the task-31 brief, since
-    // it's part of the schema Phase 2 already built and future phases
-    // will need it wired here rather than re-deriving this block.
-    EmailDao emailDao(database.handle());
-    ContactDao contactDao(database.handle());
-    PushDao pushDao(database.handle());
-    PendingContactChangeDao pendingContactChangeDao(database.handle());
-    // extended-contact-fields Task 2: local name-cache for backend contact
-    // groups (see core/db/migrations/003_extended_contact_fields.sql's
-    // appended `groups` table).
-    GroupDao groupDao(database.handle());
-    // Server-side mailbox list (subfolders under Archive). The table and DAO
-    // existed since the initial schema but were never constructed here, so
-    // the sidebar showed only the six hardcoded standard folders.
-    FolderDao folderDao(database.handle());
-
-    // 3. SecureStoreKeychain -- the app/platform/ Secret-Service-backed
+    // The secret store is opened and probed BEFORE the database, because the
+    // database's encryption key lives in it. The ordering matters for more
+    // than tidiness: each blocked keychain call costs ~25 seconds at startup
+    // (SecureStoreKeychain.h's measurements) and the canary below exists to
+    // pay that at most once, so nothing may ask the store a question ahead of
+    // it.
     // SecureStore built in Phase 2 (SecureStoreFile is for tests/UT only).
     // Reuses the same "com.urlxl.mail" service name KDBusService and
     // UnifiedPushConnector already use above, for consistency.
@@ -533,6 +500,74 @@ int main(int argc, char* argv[])
         else
             qWarning("main: could not remove the orphaned ntfy topic from the secret store");
     }
+
+    Database database;
+    // Which of the four ways the database ended up open. Reported to the UI
+    // further down; FailedToOpen never reaches it, since that path is fatal.
+    ProfileDatabaseMode profileDatabaseMode = ProfileDatabaseMode::PlaintextOnDisk;
+    if (hostileLocation) {
+        // Defensive: if a previous run crashed between "write the flag" and
+        // "delete the file", there could still be a database on disk holding
+        // exactly what this mode exists to prevent.
+        SecurityWipe::removeDatabaseFiles(newDbPath);
+        for (const QString& legacyDbPath : legacyDbPaths)
+            SecurityWipe::removeDatabaseFiles(legacyDbPath);
+        SecurityWipe::clearCacheDirectory(dataDir + QStringLiteral("/contact-photos"));
+        if (!database.open(QStringLiteral(":memory:")))
+            qFatal("main: Database::open failed for in-memory database");
+    } else {
+        // Encrypted where it can be, and never silently plaintext where it
+        // was meant to be encrypted. openProfileDatabase() owns the whole
+        // decision -- including converting a profile that predates
+        // encryption, and refusing to reopen an encrypted one in the clear --
+        // because main() has no seam a test can reach and this is the last
+        // place that should be deciding anything.
+        DatabaseKeyStore databaseKeyStore(secureStore);
+        profileDatabaseMode = openProfileDatabase(database, databaseKeyStore, newDbPath);
+        switch (profileDatabaseMode) {
+        case ProfileDatabaseMode::EncryptedOnDisk:
+            break;
+        case ProfileDatabaseMode::PlaintextOnDisk:
+            qWarning("main: this profile's database is NOT encrypted");
+            break;
+        case ProfileDatabaseMode::InMemoryNoKeyStorage:
+            // The user's mail is on the relay and will be re-fetched; what is
+            // not acceptable is writing it to this disk in the clear when
+            // there is nowhere to keep the key that would protect it.
+            qCritical("main: no key storage is available, so this session's mail is being kept in "
+                       "memory only and will not be saved to this device");
+            break;
+        case ProfileDatabaseMode::FailedToOpen:
+            qFatal("main: could not open the database at %s", qPrintable(newDbPath));
+        }
+    }
+
+    // extended-contact-fields Task 3: on-disk cache for fetched contact
+    // photo bytes, keyed by Contact::photoRef -- reuses the same
+    // AppDataLocation dataDir already resolved for the SQLite database
+    // above, in its own "contact-photos" subdirectory (see
+    // core/stores/ContactPhotoCache.h's doc comment for why no invalidation
+    // logic is needed here).
+    ContactPhotoCache contactPhotoCache(dataDir + QStringLiteral("/contact-photos"));
+
+    // 2. DAOs, each borrowing database.handle(). PushDao has no
+    // Phase 6 caller yet -- constructed anyway per the task-31 brief, since
+    // it's part of the schema Phase 2 already built and future phases
+    // will need it wired here rather than re-deriving this block.
+    EmailDao emailDao(database.handle());
+    ContactDao contactDao(database.handle());
+    PushDao pushDao(database.handle());
+    PendingContactChangeDao pendingContactChangeDao(database.handle());
+    // extended-contact-fields Task 2: local name-cache for backend contact
+    // groups (see core/db/migrations/003_extended_contact_fields.sql's
+    // appended `groups` table).
+    GroupDao groupDao(database.handle());
+    // Server-side mailbox list (subfolders under Archive). The table and DAO
+    // existed since the initial schema but were never constructed here, so
+    // the sidebar showed only the six hardcoded standard folders.
+    FolderDao folderDao(database.handle());
+
+    // 3. SecureStoreKeychain -- the app/platform/ Secret-Service-backed
 
     // 4. CursorStore -- reuses settingsDir (already computed for
     // SettingsStore above), not a second directory-resolution block.
@@ -731,6 +766,7 @@ int main(int argc, char* argv[])
     // this launch either -- the one state in which the user has been told
     // their data is gone while it is still here.
     appLockManager.setWipeIncomplete(wipeRecovery.wasInterrupted && !wipeRecovery.nowErased);
+    appLockManager.setDatabaseMode(profileDatabaseMode);
     qmlRegisterSingletonInstance<AppLockManager>(
         "com.urlxl.mail", 1, 0, "AppLock", &appLockManager);
 
