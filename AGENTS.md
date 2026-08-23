@@ -547,6 +547,32 @@ never once run.
   a user with no lock to "Unlock KyPost first", and a protection that is
   stated here instead of falling out of an unrelated check two layers down.
 
+- **A wipe that is not recorded before it starts cannot be known to have
+  failed.** The wipe-after-ten-attempts path relaunches either way, and a
+  wipe killed part-way writes nothing at all -- the code that would have
+  logged it is the code that did not run. `WipeTripwire` goes down before the
+  first byte is erased and comes up only after a wipe that reported every
+  component gone; anything else leaves it armed, and finding it at startup
+  means "do it again". Retrying is safe because every step of `LocalDataWipe`
+  is idempotent.
+
+- **Recovery runs before anything reads the state the recovery changes.**
+  A completed recovery erases the stored PIN, so it happens above
+  `AppLockManager`'s construction in `main()`. Built first, it would be
+  holding the pre-wipe answer to "is there a lock".
+
+- **`Item.visible` reports EFFECTIVE visibility, so a component may not
+  compute its own visibility from it.** `StatusBanner` read
+  `visible: height > 0` at the root while each row read
+  `implicitHeight: visible ? h : 0`. A row inside an invisible root reports
+  visible=false whatever its own binding says, so it contributed no height,
+  so the root stayed invisible. A closed loop with a stable answer of "never
+  show anything" -- every warning that component carries, including the
+  certificate-mismatch banner, was unreachable. Measured, not deduced: the
+  three tests in `tst_IncompleteWipeBanner.qml` fail against the old binding
+  in both the already-true-at-creation case and the false-to-true case. Ask
+  the MODEL what is active; never the laid-out geometry.
+
 ## 7. DOX framework
 
 ### Core Contract

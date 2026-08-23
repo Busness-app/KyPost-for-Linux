@@ -72,6 +72,8 @@ kypost_add_test(PairingStoreSealTest core/domain/PairingStoreSealTest.cpp)
 # The two data-destruction paths, which lived as untestable lambdas inside
 # main() until they were extracted into core/domain/LocalDataWipe.
 kypost_add_test(LocalDataWipeTest core/domain/LocalDataWipeTest.cpp)
+kypost_add_test(TrackedWipeTest core/domain/TrackedWipeTest.cpp)
+kypost_add_test(WipeTripwireTest core/security/WipeTripwireTest.cpp)
 kypost_add_test(PgpMessageStateTest core/domain/PgpMessageStateTest.cpp)
 kypost_add_test(PgpComposeStateTest core/domain/PgpComposeStateTest.cpp)
 kypost_add_test(KeywordRepositoryTest core/domain/KeywordRepositoryTest.cpp)

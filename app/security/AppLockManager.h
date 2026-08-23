@@ -60,6 +60,17 @@ class AppLockManager : public QObject
     // silently implying they have forgotten their own PIN.
     Q_PROPERTY(bool storeUnavailable READ storeUnavailable NOTIFY lockStateChanged)
 
+    // A wipe was started on this device and has never reported completing.
+    //
+    // The wipe-after-ten-failed-attempts path relaunches whether or not the
+    // wipe worked, and a wipe interrupted part-way writes nothing at all --
+    // so without this the next launch looks entirely ordinary while sitting
+    // on top of whatever survived. The host runs the recovery attempt at
+    // startup (core/domain/TrackedWipe) and sets this when it did not
+    // succeed; the UI's job is to stop the user believing data is gone when
+    // it is not.
+    Q_PROPERTY(bool wipeIncomplete READ wipeIncomplete NOTIFY wipeIncompleteChanged)
+
 public:
     AppLockManager(AppLockStore& store, SettingsStore& settingsStore, CredentialSealer& sealer,
                    QObject* parent = nullptr);
@@ -125,11 +136,17 @@ public:
     // the lock is disabled.
     Q_INVOKABLE void lockNow();
 
+    bool wipeIncomplete() const;
+    // Host-set, at startup, from the interrupted-wipe recovery attempt. Not
+    // Q_INVOKABLE: QML must never be able to clear this.
+    void setWipeIncomplete(bool incomplete);
+
 signals:
     void lockedChanged();
     void lockStateChanged();
     void lockoutChanged();
     void credentialsUnavailableChanged();
+    void wipeIncompleteChanged();
 
     // Emitted when failed attempts reach the wipe threshold. The host owns
     // what "wipe" means (database, caches, pairing) -- this class knows only
@@ -174,6 +191,7 @@ private:
     // cleared: a store that failed to record a guess cannot be trusted to
     // rate-limit the next one, and a relaunch is a cheap recovery.
     bool m_attemptRecordingBroken = false;
+    bool m_wipeIncomplete = false;
     // In-process floor under the persisted counter, so even a store that
     // accepts writes and silently loses them still caps guessing per launch.
     int m_sessionFailedAttempts = 0;
