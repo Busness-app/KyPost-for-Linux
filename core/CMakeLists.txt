@@ -209,6 +209,19 @@ if(KYPOST_SQLCIPHER_ROOT)
     PATHS "${KYPOST_SQLCIPHER_ROOT}/lib"
     NO_DEFAULT_PATH  # see the cache variable's comment: the system copy is not a fallback
     REQUIRED)
+  # Proof, at configure time, that the library really is SQLCipher rather
+  # than an ordinary SQLite that happens to sit at that prefix. sqlite3_key
+  # exists only in SQLCipher. Without this the mistake surfaces at RUNTIME,
+  # as Database::open() refusing to open anything -- correct, but a long way
+  # from the person who pointed KYPOST_SQLCIPHER_ROOT at the wrong place.
+  include(CheckLibraryExists)
+  check_library_exists("${KYPOST_SQLCIPHER_LIBRARY}" sqlite3_key "" KYPOST_SQLCIPHER_HAS_KEY)
+  if(NOT KYPOST_SQLCIPHER_HAS_KEY)
+    message(FATAL_ERROR
+      "${KYPOST_SQLCIPHER_LIBRARY} has no sqlite3_key: this is a plain SQLite, not SQLCipher. "
+      "Build one with scripts/build-sqlcipher.sh and point KYPOST_SQLCIPHER_ROOT at its prefix.")
+  endif()
+
   target_link_libraries(kypostcore PUBLIC "${KYPOST_SQLCIPHER_LIBRARY}")
   # So the running binary finds it without LD_LIBRARY_PATH, and finds it
   # BEFORE the Qt plugin asks for a libsqlite3 of its own.

@@ -177,10 +177,31 @@ bool Database::applyEncryptionKey(const QByteArray& rawKey)
     return true;
 }
 
+#ifdef KYPOST_HAVE_SQLCIPHER
+// Declared here rather than by including sqlite3.h: this file needs exactly
+// one thing out of the library, and pulling the whole header in would put a
+// SQLCipher include path in front of every consumer of Database.h.
+extern "C" const char* sqlite3_libversion();
+#endif
+
 bool Database::encryptionAvailable()
 {
 #ifdef KYPOST_HAVE_SQLCIPHER
-    return true;
+    // A real call, and it is load-bearing rather than decorative.
+    //
+    // Linking the library is not enough to make it LOAD. Debian and Ubuntu
+    // pass -Wl,--as-needed by default, and nothing else in this codebase
+    // references a sqlite3 symbol -- every SQL call goes through Qt's driver
+    // plugin, not through us -- so the linker drops the DT_NEEDED entry as
+    // unused. The RUNPATH survives, pointing at a library that is then never
+    // mapped; Qt's plugin resolves its own libsqlite3.so.0 from the system,
+    // and `PRAGMA key` becomes the silent no-op this class exists to catch.
+    //
+    // That is not hypothetical: it is what CI did on the first run of this
+    // feature while the same build passed on a distribution that does not
+    // default to --as-needed. Reproduced by adding the flag locally, then
+    // fixed here. One honest reference to the library keeps it.
+    return sqlite3_libversion() != nullptr;
 #else
     return false;
 #endif

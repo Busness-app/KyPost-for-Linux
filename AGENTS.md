@@ -635,6 +635,23 @@ never once run.
   about the actual cause. `scripts/build-sqlcipher.sh` checks for the symbol
   before it exits.
 
+- **Linking a library does not make it load.** Debian and Ubuntu pass
+  `-Wl,--as-needed` by default. Nothing in this codebase references a sqlite3
+  symbol -- every SQL call goes through Qt's driver plugin, not through us --
+  so the linker dropped the `libsqlite3.so.0` DT_NEEDED as unused. RUNPATH
+  survived, pointing at a library that was never mapped; Qt's plugin resolved
+  its own sqlite from the system, and `PRAGMA key` became the silent no-op
+  above. CI failed on exactly this while the same commit passed on a distro
+  that does not default to `--as-needed`. `Database::encryptionAvailable()`
+  now makes one real call into the library, which is what keeps it. Verified
+  by adding the flag locally and watching the DT_NEEDED disappear and come
+  back.
+
+- **Prove a dependency is what it claims at configure time, not at runtime.**
+  `check_library_exists(... sqlite3_key ...)` fails the build with a message
+  naming the path, rather than leaving `Database::open()` to refuse
+  everything later with no clue as to which prefix was wrong.
+
 - **A wrong-length raw key is refused, not passed on.** SQLCipher treats
   anything that is not exactly 32 raw bytes in `x''` form as a passphrase and
   runs PBKDF2 over it -- so a truncated key still opens a database, just a
