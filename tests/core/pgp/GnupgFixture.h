@@ -63,6 +63,116 @@ public:
 
     QString path() const { return m_home.path(); }
 
+    // Generates a SECOND identity in this same home, so a test has two keys to
+    // tell apart.
+    bool generateKey(const QString& uid) const
+    {
+        return run(QStringLiteral("gpg"),
+                    { QStringLiteral("--batch"), QStringLiteral("--pinentry-mode"),
+                      QStringLiteral("loopback"), QStringLiteral("--passphrase"), QString(),
+                      QStringLiteral("--quick-generate-key"), uid, QStringLiteral("default"),
+                      QStringLiteral("default"), QStringLiteral("never") });
+    }
+
+    // The armored PUBLIC key for a uid -- what the relay would hand a client.
+    QByteArray exportPublicKey(const QString& uid) const
+    {
+        QProcess gpg;
+        gpg.setProcessEnvironment(environment());
+        gpg.start(QStringLiteral("gpg"),
+                   { QStringLiteral("--batch"), QStringLiteral("--armor"),
+                     QStringLiteral("--export"), uid });
+        if (!gpg.waitForStarted(10000) || !gpg.waitForFinished(30000) || gpg.exitCode() != 0)
+            return {};
+        return gpg.readAllStandardOutput();
+    }
+
+    QString fingerprintOf(const QString& uid) const { return firstFingerprint(m_home.path(), uid); }
+
+    // Adds a user ID to an existing key, so a test has a genuinely NEWER copy
+    // of the same key to import over the old one.
+    bool addUid(const QString& uid, const QString& extraUid) const
+    {
+        return run(QStringLiteral("gpg"),
+                    { QStringLiteral("--batch"), QStringLiteral("--pinentry-mode"),
+                      QStringLiteral("loopback"), QStringLiteral("--passphrase"), QString(),
+                      QStringLiteral("--quick-add-uid"), uid, extraUid });
+    }
+
+    // Every PRIMARY key fingerprint in a keyring, so a test can assert that
+    // importing one key did not disturb another.
+    //
+    // Primary only. In --with-colons output an `fpr:` record follows both
+    // `pub:` and `sub:`, so collecting every one of them counts a modern key
+    // twice -- it has an encryption subkey -- and "one key was imported" then
+    // reads as two.
+    static QStringList fingerprintsIn(const QString& home)
+    {
+        QProcess gpg;
+        QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+        env.insert(QStringLiteral("GNUPGHOME"), home);
+        gpg.setProcessEnvironment(env);
+        gpg.start(QStringLiteral("gpg"), { QStringLiteral("--batch"), QStringLiteral("--with-colons"),
+                                            QStringLiteral("--fingerprint"),
+                                            QStringLiteral("--list-keys") });
+        if (!gpg.waitForStarted(10000) || !gpg.waitForFinished(30000))
+            return {};
+        QStringList fingerprints;
+        bool afterPrimary = false;
+        const QString output = QString::fromUtf8(gpg.readAllStandardOutput());
+        for (const QString& line : output.split(QLatin1Char('\n'))) {
+            if (line.startsWith(QStringLiteral("pub:")))
+                afterPrimary = true;
+            else if (line.startsWith(QStringLiteral("sub:")))
+                afterPrimary = false;
+            else if (afterPrimary && line.startsWith(QStringLiteral("fpr:"))) {
+                fingerprints.append(line.section(QLatin1Char(':'), 9, 9));
+                afterPrimary = false;
+            }
+        }
+        fingerprints.removeDuplicates();
+        return fingerprints;
+    }
+
+    // The user IDs on a key, so the merge test can show the old one survived.
+    static QStringList uidsIn(const QString& home, const QString& fingerprint)
+    {
+        QProcess gpg;
+        QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+        env.insert(QStringLiteral("GNUPGHOME"), home);
+        gpg.setProcessEnvironment(env);
+        gpg.start(QStringLiteral("gpg"), { QStringLiteral("--batch"), QStringLiteral("--with-colons"),
+                                            QStringLiteral("--list-keys"), fingerprint });
+        if (!gpg.waitForStarted(10000) || !gpg.waitForFinished(30000))
+            return {};
+        QStringList uids;
+        const QString output = QString::fromUtf8(gpg.readAllStandardOutput());
+        for (const QString& line : output.split(QLatin1Char('\n'))) {
+            if (line.startsWith(QStringLiteral("uid:")))
+                uids.append(line.section(QLatin1Char(':'), 9, 9));
+        }
+        return uids;
+    }
+
+    static QString firstFingerprint(const QString& home, const QString& uid)
+    {
+        QProcess gpg;
+        QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+        env.insert(QStringLiteral("GNUPGHOME"), home);
+        gpg.setProcessEnvironment(env);
+        gpg.start(QStringLiteral("gpg"), { QStringLiteral("--batch"), QStringLiteral("--with-colons"),
+                                            QStringLiteral("--fingerprint"),
+                                            QStringLiteral("--list-keys"), uid });
+        if (!gpg.waitForStarted(10000) || !gpg.waitForFinished(30000) || gpg.exitCode() != 0)
+            return {};
+        const QString output = QString::fromUtf8(gpg.readAllStandardOutput());
+        for (const QString& line : output.split(QLatin1Char('\n'))) {
+            if (line.startsWith(QStringLiteral("fpr:")))
+                return line.section(QLatin1Char(':'), 9, 9);
+        }
+        return {};
+    }
+
     // gpg-agent starts on demand against a throwaway home and would
     // otherwise outlive the directory it is watching.
     static void killAgent(const QString& home)

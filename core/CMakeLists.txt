@@ -73,6 +73,7 @@ add_library(kypostcore STATIC
   pgp/OpenPgpDecryptor.cpp
   pgp/MimeBodyReader.cpp
   pgp/PgpMimeWriter.cpp
+  pgp/OpenPgpKeyImporter.cpp
   pgp/EncryptedMessageReader.cpp
   security/DatabaseKeyStore.cpp
   security/LockoutPolicy.cpp
@@ -123,6 +124,8 @@ add_library(kypostcore STATIC
   net/PgpRecipientChecker.h
   net/PgpPayloadClient.cpp
   net/PgpPayloadClient.h
+  net/PgpResolveClient.cpp
+  net/PgpResolveClient.h
   net/RelayMailSource.cpp
   net/RelayMailSource.h
   vcard/VCardContact.cpp
