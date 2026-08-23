@@ -48,6 +48,7 @@ private slots:
     void hostileLocationRefusesToOpenNonAllowlistedAttachmentTypes();
     void hostileLocationForcesTheExtensionToMatchTheDeclaredType();
     void findByMessageIdReturnsMapForCachedEmailAndEmptyMapWhenMissing();
+    void aNotificationForAMessageInTwoMailboxesAsksWhichOne();
     void allKeywordSettingsReflectsInboxCacheAndSetKeywordVisibleRoundTrips();
     void sendMailEmitsPickupFallbackRequiredWithTheServersAddressList();
     void confirmPickupFallbackSendResendsTheIdenticalBodyWithTheOptIn();
@@ -562,6 +563,78 @@ void MailControllerTest::findByMessageIdReturnsMapForCachedEmailAndEmptyMapWhenM
     QCOMPARE(found.value(QStringLiteral("keywords")).toStringList(), QStringList{ QStringLiteral("Work") });
 
     QVERIFY(controller.findByMessageId(QStringLiteral("no-such-id")).isEmpty());
+}
+
+// A push envelope carries no mailbox, and a message id is not unique across
+// them. Until 2026-08-23 this fell through to a refresh that cannot
+// disambiguate anything and then to a blank detail page: the user tapped View
+// and got nothing to act on, for a question only they can answer.
+void MailControllerTest::aNotificationForAMessageInTwoMailboxesAsksWhichOne()
+{
+    Database db;
+    QVERIFY(db.open(QStringLiteral(":memory:")));
+    EmailDao emailDao(db.handle());
+
+    // The same id in two mailboxes, which is what migration 006 made possible.
+    Email inboxCopy;
+    inboxCopy.messageId = QStringLiteral("m-shared");
+    inboxCopy.folder = QStringLiteral("INBOX");
+    inboxCopy.subject = QStringLiteral("Inbox copy");
+    QVERIFY(emailDao.insertOrReplace(inboxCopy));
+    Email archiveCopy = inboxCopy;
+    archiveCopy.folder = QStringLiteral("Archive");
+    QVERIFY(emailDao.insertOrReplace(archiveCopy));
+
+    FakeRelayServer fake(httpResponse(200, "OK", R"({"tabs":[],"byTab":{}})"));
+
+    QTemporaryDir secureDir;
+    QVERIFY(secureDir.isValid());
+    SecureStoreFile secureStore(secureDir.path());
+    PairingStore pairingStore(secureStore);
+    savePairing(pairingStore, fake.port());
+
+    QTemporaryDir cursorDir;
+    QVERIFY(cursorDir.isValid());
+    CursorStore cursorStore(cursorDir.filePath(QStringLiteral("cursor.ini")));
+    QTemporaryDir settingsDir;
+    QVERIFY(settingsDir.isValid());
+    SettingsStore settingsStore(settingsDir.filePath(QStringLiteral("settings.ini")));
+    KeywordRepository keywordRepository(settingsStore);
+
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    RelayMailSource source(http);
+    PgpBootstrapClient bootstrapClient(http);
+    PgpRecipientChecker recipientChecker(http);
+    MailRepository mailRepository(source, emailDao, pairingStore, cursorStore);
+    FolderDao folderDao(db.handle());
+    FolderClient folderClient(http);
+    FolderRepository folderRepository(folderClient, folderDao, pairingStore);
+
+    NetworkExecutor executor(3000);
+    MailController controller(mailRepository, source, keywordRepository, pairingStore, folderRepository,
+                               settingsStore, bootstrapClient, recipientChecker, executor);
+    ExecutorShutdownGuard shutdownGuard{ executor };
+
+    QSignalSpy ambiguous(&controller, &MailController::notificationEmailAmbiguous);
+    QSignalSpy resolved(&controller, &MailController::notificationEmailResolved);
+
+    controller.openFromNotification(QStringLiteral("m-shared"));
+
+    QCOMPARE(ambiguous.count(), 1);
+    QCOMPARE(ambiguous.at(0).at(0).toString(), QStringLiteral("m-shared"));
+    // Both mailboxes, so the user can pick the one they meant.
+    QCOMPARE(ambiguous.at(0).at(1).toStringList(),
+             QStringList({ QStringLiteral("Archive"), QStringLiteral("INBOX") }));
+
+    // Not answered as "resolved with no folder" -- that is the not-found
+    // outcome, which the roots render as a terminal error.
+    QCOMPARE(resolved.count(), 0);
+
+    // And no request was made. A delta cannot remove an ambiguity that is
+    // already in the cache, so spending a round trip to arrive at the same
+    // question is just a slower way to ask it.
+    QVERIFY2(fake.receivedRequest().isEmpty(), "a refresh was made for a question it cannot answer");
 }
 
 void MailControllerTest::allKeywordSettingsReflectsInboxCacheAndSetKeywordVisibleRoundTrips()

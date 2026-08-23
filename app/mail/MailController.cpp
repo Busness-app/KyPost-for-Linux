@@ -311,14 +311,28 @@ void MailController::finishRefresh(const MailRefreshPlan& plan, const InboxFetch
         const QString pendingId = m_pendingNotificationMessageId;
         m_pendingNotificationMessageId.clear();
         const std::optional<Email> found = m_mailRepository.findCachedEmail(pendingId);
-        if (!found.has_value()) {
-            // Worded here rather than left to the roots: this is the one
-            // outcome the user cannot act on by waiting, and a blank detail
-            // page said nothing at all.
-            setLastError(i18n("That message could not be found. It may have been moved or deleted, "
-                               "or it may be in a folder KyPost has not synced."));
+        // The refresh can CREATE the ambiguity: the message was not cached
+        // when the notification arrived, and the sync that fetched it found it
+        // in more than one mailbox. Same question, so the same answer.
+        //
+        // NOT an early return. The coalesced-refresh block below still has to
+        // run, or a refresh requested while this one was in flight is dropped
+        // and the app simply stops syncing until something else asks.
+        const QStringList ambiguous =
+            found.has_value() ? QStringList() : m_mailRepository.foldersHolding(pendingId);
+        if (ambiguous.size() > 1) {
+            setLastError(QString());
+            emit notificationEmailAmbiguous(pendingId, ambiguous);
+        } else {
+            if (!found.has_value()) {
+                // Worded here rather than left to the roots: this is the one
+                // outcome the user cannot act on by waiting, and a blank
+                // detail page said nothing at all.
+                setLastError(i18n("That message could not be found. It may have been moved or "
+                                   "deleted, or it may be in a folder KyPost has not synced."));
+            }
+            emit notificationEmailResolved(pendingId, found.has_value() ? found->folder : QString());
         }
-        emit notificationEmailResolved(pendingId, found.has_value() ? found->folder : QString());
     }
 
     if (m_refreshPending) {
@@ -1309,14 +1323,24 @@ void MailController::openFromNotification(const QString& messageId)
     if (messageId.isEmpty())
         return;
 
-    // Already here: answer without a round trip. Note this also covers the
-    // ambiguous case (the same id cached under two mailboxes), where
-    // findCachedEmail deliberately refuses -- that falls through to the
-    // refresh below and then to an empty answer, which is the honest one. A
-    // refresh cannot disambiguate it either, but it costs one request and
-    // leaves the user no worse off than the blank page they get today.
+    // Already here: answer without a round trip.
     if (const std::optional<Email> cached = m_mailRepository.findCachedEmail(messageId)) {
         emit notificationEmailResolved(messageId, cached->folder);
+        return;
+    }
+
+    // Cached in several mailboxes. findCachedEmail refuses to pick one, and it
+    // is right to -- opening the Archive copy of a message the notification
+    // announced in INBOX is a wrong-message bug. But refusing is not an
+    // answer on its own: this used to fall through to a refresh that cannot
+    // disambiguate anything and then to a blank page.
+    //
+    // Asked BEFORE the refresh, and no request is made: a delta cannot remove
+    // an ambiguity that is already in the cache, so spending a round trip to
+    // arrive at the same question is just a slower way to ask it.
+    if (const QStringList folders = m_mailRepository.foldersHolding(messageId); folders.size() > 1) {
+        setLastError(QString());
+        emit notificationEmailAmbiguous(messageId, folders);
         return;
     }
 
@@ -1350,13 +1374,11 @@ QVariantMap MailController::findByMessageId(const QString& messageId) const
     // silently open the wrong one, so MailRepository::findCachedEmail
     // refuses; see its header.
     //
-    // ponytail: both roots render the empty result as a blank detail page,
-    // which is right for "not synced yet" and unhelpful for "ambiguous" --
-    // the user clicks View and gets nothing, with no way to act. Upgrade
-    // path: return the ambiguity as a distinct value (or expose a
-    // folder-taking overload) and have MobileRoot/DesktopRoot show the
-    // folder chooser instead of the blank page. Left out of the sync
-    // correctness pass because it is UI work, not a data-layer fix.
+    // Resolved 2026-08-23. An ambiguous id is no longer an empty result:
+    // openFromNotification() asks MailRepository::foldersHolding() and emits
+    // notificationEmailAmbiguous(), which both roots answer with
+    // NotificationFolderDialog. This function still returns an empty map for
+    // both cases, and that is fine -- its callers already know the folder.
     const std::optional<Email> email = m_mailRepository.findCachedEmail(messageId);
     if (!email.has_value())
         return {};

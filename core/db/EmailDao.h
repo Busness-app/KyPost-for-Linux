@@ -4,6 +4,7 @@
 
 #include <QSqlDatabase>
 #include <QString>
+#include <QStringList>
 #include <QVector>
 #include <optional>
 
@@ -28,6 +29,17 @@ public:
     // there is no information here with which to break the tie. The caller
     // surfaces "refresh and try again" instead.
     std::optional<Email> findUniqueById(const QString& messageId) const;
+
+    // Every folder holding this messageId, sorted, so a caller can tell the
+    // three cases apart: none (not cached), one (open it), several (ask).
+    //
+    // findUniqueById() answers only the middle case and collapses the other
+    // two into nullopt, which is right for callers that just want the row and
+    // wrong for the one that has to explain itself to a user. The id stopped
+    // being globally unique in migration 006 -- the PRIMARY KEY is
+    // (folder, message_id), because the relay serves the same id from every
+    // mailbox that holds it.
+    QStringList foldersContaining(const QString& messageId) const;
 
     QVector<Email> findByFolder(const QString& folder) const;
     QVector<Email> findAll() const;

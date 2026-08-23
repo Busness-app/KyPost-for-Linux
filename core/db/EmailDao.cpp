@@ -124,6 +124,24 @@ std::optional<Email> EmailDao::findUniqueById(const QString& messageId) const
     return first;
 }
 
+QStringList EmailDao::foldersContaining(const QString& messageId) const
+{
+    QSqlQuery query(m_db);
+    // DISTINCT and ordered: the same folder cannot appear twice for one id
+    // (it is half the primary key), but ordering makes the answer stable, and
+    // a chooser whose entries move between openings is its own bug.
+    query.prepare(QStringLiteral(
+        "SELECT DISTINCT folder FROM emails WHERE message_id = :message_id ORDER BY folder"));
+    query.bindValue(QStringLiteral(":message_id"), messageId);
+    if (!query.exec())
+        return {};
+
+    QStringList folders;
+    while (query.next())
+        folders.append(query.value(0).toString());
+    return folders;
+}
+
 QVector<Email> EmailDao::findByFolder(const QString& folder) const
 {
     QSqlQuery query(m_db);

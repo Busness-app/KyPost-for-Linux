@@ -473,6 +473,17 @@ signals:
     // there is what this whole path exists to stop.
     void notificationEmailResolved(const QString& messageId, const QString& folder);
 
+    // The id a notification carried is cached in more than one mailbox, and
+    // nothing here can break the tie -- the UnifiedPush envelope carries no
+    // mailbox at all (PushPayloadParser.h).
+    //
+    // Its own signal rather than an empty notificationEmailResolved, because
+    // the two need opposite UI. "Not found" is terminal and the roots show the
+    // error; this one the user can settle in one tap, and rendering it as a
+    // blank page -- which is what happened until 2026-08-23 -- gave them
+    // nothing to act on for a question only they can answer.
+    void notificationEmailAmbiguous(const QString& messageId, const QStringList& folders);
+
 private:
     void applyFilter(); // recomputes m_model from m_currentFolderEmails + m_selectedKeyword
     // Re-reads the current folder's cache into the model. Shared by

@@ -58,6 +58,11 @@ std::optional<Email> MailRepository::cachedEmail(const QString& folder, const QS
     return m_emailDao.findById(folder, messageId);
 }
 
+QStringList MailRepository::foldersHolding(const QString& messageId) const
+{
+    return m_emailDao.foldersContaining(messageId);
+}
+
 std::optional<MailRefreshPlan> MailRepository::planRefresh(const QString& folder, bool forceFullResync) const
 {
     const std::optional<DevicePairing> pairing = m_pairingStore.load();
