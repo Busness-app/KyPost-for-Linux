@@ -23,6 +23,7 @@ class PgpQrControllerTest : public QObject
 private slots:
     void refreshMyQrCodeWithoutPairingSetsNotPairedError();
     void refreshMyQrCodeSuccessPopulatesUrlAndExpiresAt();
+    void myQrCodeIsNotOfferedForAnAccountThisDeviceNoLongerHas();
     void refreshMyQrCodeNoPgpIdentitySetsFriendlyMessage();
     void myQrImageDataUrlIsEmptyBeforeRefreshAndPopulatedAfter();
     void scanQrPayloadRejectsNonPgpQrUrl();
@@ -112,6 +113,50 @@ void PgpQrControllerTest::refreshMyQrCodeSuccessPopulatesUrlAndExpiresAt()
     QCOMPARE(controller.myQrUrl(), QStringLiteral("https://example.com/api/pgp/qr/key?t=tok-1"));
     QCOMPARE(controller.myQrExpiresAt(), QStringLiteral("2026-07-17T12:02:00Z"));
     QVERIFY(dataSpy.count() >= 1);
+}
+
+// The QR encodes a key-exchange token for THIS account. After the account is
+// replaced, the screen keeps showing the previous one's -- nothing re-fetches
+// it and nothing clears it -- so a correspondent who scans it exchanges keys
+// with the account this device just removed, believing it is the current one.
+//
+// Same shape as the other stale-reply sites: what is on screen belongs to an
+// account that is gone, and nothing about it says so.
+void PgpQrControllerTest::myQrCodeIsNotOfferedForAnAccountThisDeviceNoLongerHas()
+{
+    const QByteArray body =
+        R"({"token":"tok-1","expiresAt":"2026-07-17T12:02:00Z","url":"https://example.com/api/pgp/qr/key?t=tok-1"})";
+    FakeRelayServer fake(httpResponse(200, "OK", body));
+
+    QTemporaryDir secureDir;
+    QVERIFY(secureDir.isValid());
+    SecureStoreFile secureStore(secureDir.path());
+    PairingStore pairingStore(secureStore);
+    savePairing(pairingStore, fake.port());
+
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    PgpQrClient client(http);
+    PgpQrRepository repository(client, pairingStore);
+    NetworkExecutor executor(3000);
+    PgpQrController controller(repository, executor);
+
+    controller.refreshMyQrCode();
+    QTRY_VERIFY_WITH_TIMEOUT(!controller.isBusy(), 5000);
+    QVERIFY(!controller.myQrUrl().isEmpty());
+
+    // A different account on this device.
+    DevicePairing replacement;
+    replacement.subscriberId = QStringLiteral("sub-2");
+    replacement.deviceSecret = QStringLiteral("secret-2");
+    replacement.serverBaseUrl = QStringLiteral("http://127.0.0.1:%1").arg(fake.port());
+    replacement.deviceId = QStringLiteral("dev-2");
+    QVERIFY(pairingStore.save(replacement));
+
+    QVERIFY2(controller.myQrUrl().isEmpty(),
+             "the previous account's key-exchange QR is still on offer");
+    QVERIFY2(controller.myQrExpiresAt().isEmpty(),
+             "the previous account's QR expiry is still shown");
 }
 
 void PgpQrControllerTest::refreshMyQrCodeNoPgpIdentitySetsFriendlyMessage()

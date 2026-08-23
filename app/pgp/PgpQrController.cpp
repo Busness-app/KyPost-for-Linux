@@ -38,14 +38,21 @@ QString PgpQrController::lastError() const
     return m_lastError;
 }
 
+// Whether the QR held here still belongs to the account this device is paired
+// to. See the member's comment for why this is a read-time check.
+bool PgpQrController::myQrStillOurs() const
+{
+    return !m_myQrUrl.isEmpty() && m_repository.stillCurrent(m_myQrIdentity);
+}
+
 QString PgpQrController::myQrUrl() const
 {
-    return m_myQrUrl;
+    return myQrStillOurs() ? m_myQrUrl : QString();
 }
 
 QString PgpQrController::myQrExpiresAt() const
 {
-    return m_myQrExpiresAt;
+    return myQrStillOurs() ? m_myQrExpiresAt : QString();
 }
 
 QString PgpQrController::scannedName() const
@@ -119,6 +126,9 @@ void PgpQrController::applyTokenOutcome(const PgpQrTokenOutcome& outcome)
     switch (outcome.status) {
     case PgpQrTokenStatus::Success:
         setLastError(QString());
+        // Stamped with the account it was issued for, so a later read can
+        // tell whether that account is still this device's.
+        m_myQrIdentity = m_repository.currentIdentity();
         m_myQrUrl = outcome.url;
         m_myQrExpiresAt = outcome.expiresAt;
         emit myQrDataChanged();
@@ -143,11 +153,14 @@ void PgpQrController::applyTokenOutcome(const PgpQrTokenOutcome& outcome)
 
 QString PgpQrController::myQrImageDataUrl() const
 {
-    if (m_myQrUrl.isEmpty())
+    // Through the guarded accessor: rendering the raw member would draw a
+    // scannable code for an account this device no longer has.
+    const QString url = myQrUrl();
+    if (url.isEmpty())
         return QString();
 
     const ZXing::CreatorOptions creatorOptions(ZXing::BarcodeFormat::QRCode);
-    const ZXing::Barcode barcode = ZXing::CreateBarcodeFromText(m_myQrUrl.toStdString(), creatorOptions);
+    const ZXing::Barcode barcode = ZXing::CreateBarcodeFromText(url.toStdString(), creatorOptions);
     if (!barcode.isValid())
         return QString();
 

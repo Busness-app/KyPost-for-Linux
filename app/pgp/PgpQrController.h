@@ -1,5 +1,6 @@
 #pragma once
 
+#include "domain/DevicePairing.h"
 #include "domain/PgpQrRepository.h"
 #include "models/Contact.h"
 #include "net/PgpQrClient.h"
@@ -110,6 +111,17 @@ private:
     NetworkExecutor& m_executor;
     bool m_isBusy = false;
     QString m_lastError;
+    // Which account the QR below belongs to.
+    //
+    // Checked on every READ rather than cleared on a signal. The QR encodes a
+    // key-exchange token for one account, and after a replacement nothing
+    // re-fetches it and nothing clears it -- so a correspondent scanning what
+    // is on screen would exchange keys with the account this device just
+    // removed. Guarding the reads makes that impossible whether or not
+    // anything remembered to clear it.
+    bool myQrStillOurs() const;
+
+    PairingIdentity m_myQrIdentity;
     QString m_myQrUrl;
     QString m_myQrExpiresAt;
     QString m_scannedName;

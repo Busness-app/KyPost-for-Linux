@@ -81,3 +81,13 @@ PgpQrTokenOutcome PgpQrRepository::fetchMyToken()
 
     return { PgpQrTokenStatus::Success, result.token, result.expiresAt, result.url, QString() };
 }
+
+PairingIdentity PgpQrRepository::currentIdentity() const
+{
+    return m_pairingStore.currentIdentity();
+}
+
+bool PgpQrRepository::stillCurrent(const PairingIdentity& identity) const
+{
+    return m_pairingStore.stillCurrent(identity);
+}
