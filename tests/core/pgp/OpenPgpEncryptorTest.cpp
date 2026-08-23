@@ -27,6 +27,7 @@ private slots:
     void aStrangerCannotReadIt();
     void everyRecipientOfATwoWayMessageCanReadIt();
     void oneMissingRecipientKeyFailsTheWholeMessage();
+    void aRecipientWhoseKeyGpgHoldsButRefusesAlsoFailsTheWholeMessage();
     void aSenderWithNoSecretKeySendsNothingRatherThanSendingItUnsigned();
     void thereIsNothingToEncryptWithNoRecipients();
     void emptyInputIsRefused();
@@ -37,6 +38,10 @@ private:
     GnupgFixture m_sender;   // holds sender@example.com (secret)
     GnupgFixture m_recipient; // holds recipient@example.com (secret)
     GnupgFixture m_second;    // holds second@example.com (secret)
+    // A correspondent whose key is in the sender's keyring and which gpg will
+    // not encrypt to. Expired, which is the ordinary way that happens.
+    GnupgFixture m_expired;
+    QString m_expiredFingerprint;
     QString m_recipientFingerprint;
     QString m_secondFingerprint;
 };
@@ -70,6 +75,9 @@ void OpenPgpEncryptorTest::initTestCase()
     m_secondFingerprint = importInto(m_sender.path(), m_second, QStringLiteral("second@example.com"));
     QVERIFY(!m_recipientFingerprint.isEmpty());
     QVERIFY(!m_secondFingerprint.isEmpty());
+
+    if (m_expired.buildExpired(QStringLiteral("Expired <expired@example.com>")))
+        m_expiredFingerprint = importInto(m_sender.path(), m_expired, QStringLiteral("expired@example.com"));
 }
 
 void OpenPgpEncryptorTest::cleanupTestCase()
@@ -77,6 +85,7 @@ void OpenPgpEncryptorTest::cleanupTestCase()
     GnupgFixture::killAgent(m_sender.path());
     GnupgFixture::killAgent(m_recipient.path());
     GnupgFixture::killAgent(m_second.path());
+    GnupgFixture::killAgent(m_expired.path());
 }
 
 // The whole point, end to end, and note what the sender's keyring holds: an
@@ -177,6 +186,32 @@ void OpenPgpEncryptorTest::oneMissingRecipientKeyFailsTheWholeMessage()
     QVERIFY2(encrypted.armoredCiphertext.isEmpty(),
              "ciphertext was produced for a message that could not reach everyone");
     QVERIFY2(encrypted.unusableRecipients.contains(absent),
+             "the user is not told WHICH recipient could not be encrypted to");
+}
+
+// The OTHER way a recipient can be unreachable, and the one the pre-flight
+// key lookup cannot see: gpg HOLDS the key and refuses to encrypt to it.
+//
+// The sibling test above uses a fingerprint that is not in the keyring at all,
+// so gpgme_get_key fails and the pre-flight check catches it -- which means
+// that test says nothing about what happens when encryption itself reports an
+// invalid recipient. Found by scripts/verify-guards.sh: neutralising the
+// post-encryption check left that test green.
+//
+// Expired is the ordinary way a held key becomes unusable.
+void OpenPgpEncryptorTest::aRecipientWhoseKeyGpgHoldsButRefusesAlsoFailsTheWholeMessage()
+{
+    if (m_expiredFingerprint.isEmpty())
+        QSKIP("could not build an expired key -- the refused-recipient path is NOT covered");
+
+    const PgpEncryptResult encrypted =
+        signAndEncrypt("half a message\n", QStringLiteral("sender@example.com"),
+                        { m_recipientFingerprint, m_expiredFingerprint }, m_sender.path());
+
+    QCOMPARE(encrypted.status, PgpEncryptStatus::RecipientKeyUnusable);
+    QVERIFY2(encrypted.armoredCiphertext.isEmpty(),
+             "ciphertext was produced for a message that could not reach everyone");
+    QVERIFY2(!encrypted.unusableRecipients.isEmpty(),
              "the user is not told WHICH recipient could not be encrypted to");
 }
 

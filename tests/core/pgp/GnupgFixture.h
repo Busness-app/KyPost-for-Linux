@@ -65,6 +65,26 @@ public:
 
     QString path() const { return m_home.path(); }
 
+    // A key that is ALREADY EXPIRED, for the case gpg holds a key and still
+    // refuses to encrypt to it.
+    //
+    // Generated under a faked clock rather than with a short lifetime and a
+    // wait: a test that sleeps for a key to expire is slow and depends on the
+    // wall clock, and this one has to be deterministic to be worth having.
+    bool buildExpired(const QString& uid)
+    {
+        if (!m_home.isValid())
+            return false;
+        QFile::setPermissions(m_home.path(), QFileDevice::ReadOwner | QFileDevice::WriteOwner
+                                   | QFileDevice::ExeOwner);
+        return run(QStringLiteral("gpg"),
+                    { QStringLiteral("--batch"), QStringLiteral("--faked-system-time"),
+                      QStringLiteral("20200101T000000"), QStringLiteral("--pinentry-mode"),
+                      QStringLiteral("loopback"), QStringLiteral("--passphrase"), QString(),
+                      QStringLiteral("--quick-generate-key"), uid, QStringLiteral("default"),
+                      QStringLiteral("default"), QStringLiteral("1d") });
+    }
+
     // Generates a SECOND identity in this same home, so a test has two keys to
     // tell apart.
     bool generateKey(const QString& uid) const
