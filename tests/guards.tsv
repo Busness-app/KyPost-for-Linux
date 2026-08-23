@@ -1,0 +1,89 @@
+# Security guards, and the edit that removes each one.
+#
+# Read by scripts/verify-guards.sh. Tab-separated, four fields:
+#
+#   file <TAB> search <TAB> replace <TAB> ctest-target:test-name
+#
+# The point is not the list. The point is that a guard here is proven to be
+# LOAD-BEARING: remove it and the named test must go red. A test that stays
+# green when its guard is gone is measuring something else, and there is no way
+# to tell that apart from a passing test by looking at a passing test.
+#
+# This exists because that happened. Twice on 2026-08-23 a hand-applied
+# neutralisation silently did not match the source -- once because the
+# replacement text ignored an if-init-statement -- so nothing was neutralised,
+# the test passed, and the guard was recorded as proven when nothing had been
+# proven at all. The script refuses a search string that does not appear, which
+# is the whole fix: a neutralisation that cannot be applied is a failure, not a
+# pass.
+#
+# `search` must be a single line and must appear EXACTLY ONCE in the file.
+#
+# Not every guard in the codebase is here. These are the ones where being wrong
+# means reading somebody else's mail, sending plaintext, or handing a message to
+# the wrong account.
+
+# --- the decrypted message must not outlive its account -----------------
+app/mail/MailController.h	    QString decryptedMessageId() const { return decryptedStillOurs() ? m_decryptedMessageId : QString(); }	    QString decryptedMessageId() const { return m_decryptedMessageId; }	MailDecryptionTest:aDecryptedMessageIsNotVisibleAfterTheAccountIsReplaced
+
+# --- a reply for a replaced account is never displayed -------------------
+#
+# NOT LISTED, deliberately: the same guard on the DECRYPT path
+# (applyDecryptResult's stillCurrent check) cannot be proven from outside.
+# Remove it and aReplyForAReplacedAccountIsNeverShown stays green, because the
+# read-time guard above already refuses to hand the plaintext out -- the entry
+# directly above is what covers that property.
+#
+# The apply-time check is still worth having and is not dead: without it the
+# plaintext is stored in memory rather than discarded, unreachable through the
+# getters but present. No black-box test can see that difference, so it is
+# recorded here instead of pretended at. This harness reported it as STILL
+# GREEN, which is how it came to be written down.
+
+# --- and the same guard on the SEND path, which is a different line ------
+app/mail/MailController.cpp	            if (!m_pairingStore.stillCurrent(identity)) {	            if (false) {	MailEncryptedSendTest:aSendForAReplacedAccountIsNotReportedAsSent
+
+# --- the QR belongs to one account ---------------------------------------
+app/pgp/PgpQrController.cpp	    return myQrStillOurs() ? m_myQrUrl : QString();	    return m_myQrUrl;	PgpQrControllerTest:myQrCodeIsNotOfferedForAnAccountThisDeviceNoLongerHas
+
+# --- a signature is credited only to a key bound to the sender -----------
+core/pgp/EncryptedMessageReader.cpp	    return PgpSignatureVerdict::ValidFromUnknownKey;	    return PgpSignatureVerdict::ValidFromSender;	EncryptedMessageReaderTest:aValidSignatureFromAKeyNobodyBindsToTheSenderIsNotCreditedToThem
+
+# --- a key the relay flags as conflicting is not used to verify ----------
+core/pgp/EncryptedMessageReader.cpp	        if (key.conflict)	        if (false)	EncryptedMessageReaderTest:aConflictingKeyIsNotUsedToVerify
+
+# --- the relay's claimed fingerprint is checked before the real keyring ---
+core/pgp/OpenPgpKeyImporter.cpp	        && observed.compare(expectedFingerprint, Qt::CaseInsensitive) != 0) {	        && false) {	OpenPgpKeyImporterTest:aFingerprintThatDoesNotMatchIsRefusedBeforeTheKeyringIsTouched
+
+# --- a message is never encrypted to only some of its recipients ---------
+# The PRE-flight lookup: a fingerprint that is not in the keyring at all.
+core/pgp/OpenPgpEncryptor.cpp	            out.unusableRecipients.append(fingerprint);	            ;	OpenPgpEncryptorTest:oneMissingRecipientKeyFailsTheWholeMessage
+
+# The POST-encryption check: gpg holds the key and refuses it anyway. A
+# separate guard from the one above, and it needed its own test -- the
+# missing-key test stayed green without it, which is what this harness is for.
+core/pgp/OpenPgpEncryptor.cpp	            out.unusableRecipients.append(QString::fromUtf8(invalid->fpr));	            ;	OpenPgpEncryptorTest:aRecipientWhoseKeyGpgHoldsButRefusesAlsoFailsTheWholeMessage
+
+# --- each blind recipient gets their own ciphertext ----------------------
+core/pgp/PgpSendPlanner.cpp	        if (!encryptInto({ bccFingerprints.at(i) }, { bcc.at(i) }, plan))	        if (!encryptInto(toCcFingerprints, { bcc.at(i) }, plan))	PgpSendPlannerTest:aBccRecipientIsNotNamedInAnybodyElsesDelivery
+
+# --- nothing is built when a recipient has no key ------------------------
+core/pgp/PgpSendPlanner.cpp	    if (!plan.recipientsWithoutKeys.isEmpty()) {	    if (false) {	PgpSendPlannerTest:nothingIsBuiltWhenOneRecipientOfManyIsMissingAKey
+
+# --- the real subject never leaves the ciphertext ------------------------
+core/net/PgpSendRequest.cpp	    body[QStringLiteral("subject")] = kOuterPlaceholderSubject;	    body[QStringLiteral("subject")] = QStringLiteral("the real one");	PgpSendClientTest:theRealSubjectIsNeverSent
+
+# --- a Sent copy is claimed encrypted only when it is --------------------
+core/net/PgpSendRequest.cpp	    if (!plan.sentCopy.isEmpty()) {	    if (true) {	PgpSendClientTest:noSentCopyIsNeverClaimedAsEncrypted
+
+# --- an absent "usable" flag is not consent ------------------------------
+core/net/PgpResolveClient.cpp	    key.usable = object.value(QStringLiteral("usable")).toBool();	    key.usable = object.value(QStringLiteral("usable")).toBool(true);	PgpResolveClientTest:anAbsentUsableFlagIsNotConsent
+
+# --- a MIME boundary is not a prefix of another --------------------------
+core/pgp/MimeBodyReader.cpp	        if (!terminated) {	        if (false) {	MimeBodyReaderTest:nestedBoundariesThatPrefixEachOtherDoNotTruncate
+
+# --- a header value cannot inject another header -------------------------
+core/pgp/PgpMimeWriter.cpp	    value.remove(QLatin1Char('"'));		PgpMimeWriterTest:aFilenameCannotEscapeItsQuotedString
+
+# --- an ambiguous notification asks rather than guesses ------------------
+app/mail/MailController.cpp	    if (const QStringList folders = m_mailRepository.foldersHolding(messageId); folders.size() > 1) {	    if (const QStringList folders = m_mailRepository.foldersHolding(messageId); false) {	MailControllerTest:aNotificationForAMessageInTwoMailboxesAsksWhichOne

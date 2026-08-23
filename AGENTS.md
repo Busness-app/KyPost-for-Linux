@@ -308,6 +308,35 @@ The consequences are binding on anything that touches `core/pgp/OpenPgpKeyImport
   that lies consistently. Persisting into the keyring gives the user a chance
   to notice. Say "a chance", never "prevents".
 
+### 5a. A guard is not proven until removing it turns a test red
+
+`scripts/verify-guards.sh` does that for every guard in `tests/guards.tsv`:
+neutralises one at a time, requires the named test to fail, and puts the file
+back. Run it after touching anything in the table, and add an entry when you
+add a guard whose failure means reading somebody else's mail, sending
+plaintext, or handing a message to the wrong account.
+
+It exists because doing this by hand is unreliable in a specific way. Twice on
+2026-08-23 a hand-applied neutralisation did not match the source -- once
+because the replacement ignored an if-init-statement -- so nothing was
+neutralised, the test passed, and the guard went into a commit message as
+"proven by neutralisation" having proven nothing. A neutralisation that cannot
+be applied is indistinguishable from a passing test unless something checks,
+so the script checks: an absent or ambiguous search line is a FAILURE, and so
+is a replacement that leaves the bytes unchanged.
+
+Search lines are matched WHOLE, indentation included. A deeper-indented copy
+of the same statement is a different guard, and substring matching reported
+the two as one ambiguous entry.
+
+The first run found two real things, which is the argument for having it:
+`oneMissingRecipientKeyFailsTheWholeMessage` proved only the pre-flight key
+lookup and stayed green when the post-encryption `invalid_recipients` check was
+removed -- a second, uncovered branch, now tested with an expired key. And the
+decrypt path's `stillCurrent` check cannot be proven from outside at all,
+because the read-time guard already refuses to hand the plaintext out; that is
+recorded in the manifest rather than papered over.
+
 ## 6. Ponytail, lazy senior dev mode
 
 Use the smallest correct change.
