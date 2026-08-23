@@ -208,6 +208,28 @@ Item {
                 return
             }
             root.validationError = ""
+
+            // A client-custody account whose key is in THIS machine's gpg:
+            // encrypt and sign here rather than handing the user to webmail.
+            // C++ owns both halves of that decision -- the account's custody
+            // mode and whether there is a usable gpg -- so this is one test.
+            if (MailApp.pgpCanSendFromThisDevice) {
+                // Refused rather than silently dropped. This path builds its
+                // own MIME and does not write multipart bodies yet, so an
+                // attachment cannot travel; sending the message without it
+                // would be a data loss the sender never sees.
+                // C++ refuses this too, and that is the enforcement -- this
+                // only puts the message next to the field the user has to fix.
+                if (root.attachmentPaths.length > 0) {
+                    root.validationError = i18n("Attachments cannot be sent on an end-to-end encrypted message yet. Remove them, or continue in webmail.")
+                    return
+                }
+                root.mySendToken = MailApp.sendClientEncrypted(toField.joinedText, ccField.joinedText,
+                                                               bccField.joinedText, subjectField.text,
+                                                               result.html, root.attachmentPaths)
+                return
+            }
+
             // Returns a token, not a result. 0 means it was refused before any
             // request was built (not paired, or an attachment that could not
             // be read or is over the cap) -- MailApp.lastError says which.
@@ -482,7 +504,10 @@ Item {
         ColumnLayout {
             Layout.fillWidth: true
             spacing: 6
-            visible: MailApp.pgpHandoffToWebmail
+            // Only when this machine CANNOT do the work. When it can, the
+            // ordinary Send button encrypts and signs here and there is
+            // nothing to hand off.
+            visible: MailApp.pgpHandoffToWebmail && !MailApp.pgpCanSendFromThisDevice
 
             Text {
                 Layout.fillWidth: true
@@ -502,6 +527,33 @@ Item {
                 }
                 Item { Layout.fillWidth: true }
             }
+        }
+
+        Text {
+            objectName: "clientEncryptNotice"
+            Layout.fillWidth: true
+            textFormat: Text.PlainText
+            visible: MailApp.pgpCanSendFromThisDevice
+            text: i18n("This message will be encrypted and signed on this computer with your own key.")
+            color: Theme.ink
+            font.family: Theme.fontUi
+            font.pixelSize: 12
+            wrapMode: Text.WordWrap
+        }
+
+        Text {
+            objectName: "missingSentCopyNotice"
+            Layout.fillWidth: true
+            textFormat: Text.PlainText
+            // The message went out; the outbox will not have it. Said plainly
+            // rather than logged, because the user cannot discover it any
+            // other way.
+            visible: MailApp.lastSendMissingSentCopy
+            text: i18n("Sent. A copy could not be saved to your Sent folder, because it can only be stored encrypted to your own key.")
+            color: Theme.ink
+            font.family: Theme.fontUi
+            font.pixelSize: 12
+            wrapMode: Text.WordWrap
         }
 
         Text {

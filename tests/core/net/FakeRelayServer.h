@@ -63,6 +63,20 @@ public:
     // the second one needs the state the first one produced.
     void setResponse(QByteArray response) { m_response = std::move(response); }
 
+    // Answers requests whose path contains `needle` with `response`, ahead of
+    // the default. For a flow that hits several endpoints in one asynchronous
+    // run -- the client-encrypted send fetches an identity, resolves keys and
+    // then posts -- setResponse() cannot work: the test thread has no moment
+    // between the calls at which to change it.
+    void setResponseForPath(const QByteArray& needle, QByteArray response)
+    {
+        m_byPath.append({ needle, std::move(response) });
+    }
+
+    // Every request received, in order, so a test can assert what a multi-step
+    // flow actually asked for.
+    const QList<QByteArray>& receivedRequests() const { return m_requests; }
+
     // How many TCP connections were accepted. Added for the async
     // controllers: "the second call while one was in flight was coalesced"
     // cannot be asserted from receivedRequest() alone, which only
@@ -98,10 +112,24 @@ private:
             m_received += chunk;
             if (!requestComplete(*request))
                 return;
-            socket->write(m_response);
+            m_requests.append(*request);
+            socket->write(responseFor(*request));
             socket->flush();
             socket->disconnectFromHost();
         });
+    }
+
+    // First matching path wins; the default answers anything unmatched, so a
+    // test only has to name the endpoints it cares about.
+    QByteArray responseFor(const QByteArray& request) const
+    {
+        const int lineEnd = request.indexOf("\r\n");
+        const QByteArray requestLine = lineEnd < 0 ? request : request.left(lineEnd);
+        for (const auto& entry : m_byPath) {
+            if (requestLine.contains(entry.first))
+                return entry.second;
+        }
+        return m_response;
     }
 
     static bool requestComplete(const QByteArray& received)
@@ -125,6 +153,8 @@ private:
 
     QTcpServer m_server;
     int m_connectionCount = 0;
+    QList<QPair<QByteArray, QByteArray>> m_byPath;
+    QList<QByteArray> m_requests;
     QByteArray m_response;
     QByteArray m_received;
 };

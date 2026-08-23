@@ -3,6 +3,7 @@
 #include "net/HttpClient.h"
 #include "net/RelayAuth.h"
 
+#include <QJsonArray>
 #include <QJsonObject>
 
 PgpBootstrapClient::PgpBootstrapClient(HttpClient& httpClient)
@@ -37,5 +38,11 @@ PgpBootstrapResult PgpBootstrapClient::fetch(const QUrl& serverBaseUrl, const Re
     out.ok = true;
     out.hasIdentity = obj.value(QStringLiteral("hasIdentity")).toBool();
     out.protection = obj.value(QStringLiteral("protection")).toString();
+    // Primary first, then any send-as aliases. Only the primary is taken:
+    // this app has no send-as UI, and picking an alias the user did not choose
+    // would put an address on their mail that they never selected.
+    const QJsonArray userIds = obj.value(QStringLiteral("suggestedUserIDs")).toArray();
+    if (!userIds.isEmpty())
+        out.primaryAddress = userIds.first().toString().trimmed();
     return out;
 }

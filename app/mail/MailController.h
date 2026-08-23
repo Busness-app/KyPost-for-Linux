@@ -84,6 +84,14 @@ class MailController : public QObject
     Q_PROPERTY(bool pgpCanEncrypt READ pgpCanEncrypt NOTIFY pgpComposeStateChanged)
     Q_PROPERTY(bool pgpCanSign READ pgpCanSign NOTIFY pgpComposeStateChanged)
     Q_PROPERTY(bool pgpHandoffToWebmail READ pgpHandoffToWebmail NOTIFY pgpComposeStateChanged)
+    // True when this device can encrypt and sign the message itself: the
+    // account is client-custody AND there is a usable gpg here. Compose offers
+    // a real Send in that case instead of the webmail hand-off, which stays
+    // for everyone else.
+    Q_PROPERTY(bool pgpCanSendFromThisDevice READ pgpCanSendFromThisDevice NOTIFY pgpComposeStateChanged)
+    // Set when a send succeeded but no copy could be filed in Sent. Not an
+    // error -- the mail went out -- but the user's outbox will not have it.
+    Q_PROPERTY(bool lastSendMissingSentCopy READ lastSendMissingSentCopy NOTIFY pgpComposeStateChanged)
     Q_PROPERTY(QStringList pgpKeylessRecipients READ pgpKeylessRecipients NOTIFY pgpKeylessRecipientsChanged)
 
 public:
@@ -108,6 +116,8 @@ public:
     bool pgpCanEncrypt() const;
     bool pgpCanSign() const;
     bool pgpHandoffToWebmail() const;
+    bool pgpCanSendFromThisDevice() const;
+    bool lastSendMissingSentCopy() const { return m_lastSendMissingSentCopy; }
     QStringList pgpKeylessRecipients() const;
 
 public slots:
@@ -187,6 +197,44 @@ public slots:
     // to the app lock in main.cpp: a locked app must not still be holding a
     // decrypted message for whoever picks the machine up next.
     Q_INVOKABLE void forgetDecrypted();
+
+public:
+    // What sendClientEncrypted() does off-thread, as one value so the GUI
+    // thread only ever sees the outcome. Public because the worker that fills
+    // it is a free function -- deliberately, so it cannot touch anything this
+    // controller owns on the other thread.
+    struct ClientEncryptedOutcome
+    {
+        bool ok = false;
+        bool missingSentCopy = false;
+        // Already-localized? No -- core/ owns no wording. This is a key into
+        // the switch in finishClientEncryptedSend().
+        enum class Failure {
+            None, NotConfigured, RecipientWithoutKey, NoSigningKey, Cancelled,
+            KeyImportRefused, EncryptionFailed, SendFailed, EngineUnavailable, ServerEncryptsInstead
+        } failure = Failure::None;
+        QStringList namedRecipients;
+        QString detail;
+    };
+
+public slots:
+    // Sends a message this device encrypts and signs itself, for an account
+    // whose PGP key the relay does not hold.
+    //
+    // Dispatches and returns a token, the same shape as sendMail(); the answer
+    // arrives as sendCompleted(token, ok). Everything blocking happens on the
+    // executor thread, and one of those steps is pinentry, which waits for the
+    // user indefinitely.
+    //
+    // NO ATTACHMENTS. This path builds the MIME itself and does not yet write
+    // multipart bodies, so an attachment would have to be silently dropped --
+    // which is worse than refusing. The list is taken and REFUSED here rather
+    // than simply not offered in QML: a caller that forgets the check would
+    // otherwise send the message without the files and report success. See
+    // docs/PARITY.md.
+    Q_INVOKABLE quint64 sendClientEncrypted(const QString& to, const QString& cc, const QString& bcc,
+                                             const QString& subject, const QString& body,
+                                             const QStringList& attachmentFilePaths);
 
     // The notification tap-through entry point.
     //
@@ -434,6 +482,7 @@ private:
     // account can be discarded rather than displayed.
     void applyDecryptResult(const PairingIdentity& identity, const QString& messageId,
                              const PgpReadResult& result);
+    void finishClientEncryptedSend(quint64 token, const ClientEncryptedOutcome& outcome);
     // Loads pairing state via m_pairingStore.load() into serverBaseUrl/auth.
     // Returns false (and sets lastError to "Not paired") without touching
     // either out-param when there is no saved pairing -- every network-
@@ -587,4 +636,5 @@ private:
     QString m_decryptFailure;
     bool m_decryptRetryable = false;
     bool m_decryptInFlight = false;
+    bool m_lastSendMissingSentCopy = false;
 };
