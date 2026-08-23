@@ -35,9 +35,10 @@ QString CursorStore::mailCursor(const QString& subscriberId, const QString& fold
     return m_settings.value(mailCursorKey(subscriberId, folder), QString()).toString();
 }
 
-void CursorStore::setMailCursor(const QString& subscriberId, const QString& folder, const QString& cursor)
+bool CursorStore::setMailCursor(const QString& subscriberId, const QString& folder, const QString& cursor)
 {
     m_settings.setValue(mailCursorKey(subscriberId, folder), cursor);
+    return flush();
 }
 
 QString CursorStore::contactBaseCursor() const
@@ -45,9 +46,10 @@ QString CursorStore::contactBaseCursor() const
     return m_settings.value(kContactBaseCursorKey, QString()).toString();
 }
 
-void CursorStore::setContactBaseCursor(const QString& cursor)
+bool CursorStore::setContactBaseCursor(const QString& cursor)
 {
     m_settings.setValue(kContactBaseCursorKey, cursor);
+    return flush();
 }
 
 qint64 CursorStore::notificationCursor() const
@@ -55,22 +57,35 @@ qint64 CursorStore::notificationCursor() const
     return m_settings.value(kNotificationCursorKey, qint64(0)).toLongLong();
 }
 
-void CursorStore::setNotificationCursor(qint64 cursor)
+bool CursorStore::setNotificationCursor(qint64 cursor)
 {
     m_settings.setValue(kNotificationCursorKey, cursor);
+    return flush();
 }
 
 bool CursorStore::wipeAll()
 {
     m_settings.clear();
-    m_settings.sync();
-    return m_settings.status() == QSettings::NoError;
+    return flush();
 }
 
-void CursorStore::reset()
+bool CursorStore::reset()
 {
     m_settings.remove(kMailCursorGroup); // the whole per-(subscriber, folder) tree
     m_settings.remove(kLegacyMailCursorKey);
     m_settings.remove(kContactBaseCursorKey);
+    return flush();
+}
+
+// Every mutator goes through here rather than leaving the value in
+// QSettings' in-memory copy. setValue() alone reports nothing: a read-only
+// file or a full disk is visible only after sync(), through status(), and
+// until then the getter happily returns a value that is not on the disk. A
+// cursor that only ever existed in memory is the worst of both worlds -- the
+// sync that wrote it reported success, and the next launch resumes from an
+// older position against a cache that has already moved on.
+bool CursorStore::flush()
+{
     m_settings.sync();
+    return m_settings.status() == QSettings::NoError;
 }

@@ -13,7 +13,9 @@
 
 #include "../net/FakeRelayServer.h"
 
+#include <QDir>
 #include <QNetworkAccessManager>
+#include <QSqlQuery>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QTimer>
@@ -32,6 +34,8 @@ private slots:
     void pullDiscardsAReplyTheCurrentPairingDidNotAuthorise();
     void historyReturnsMostRecentFirstUpToLimit();
     void markReadDelegatesToPushDao();
+    void nothingIsDeliveredWhenThePullBatchCannotBeStored();
+    void nothingIsDeliveredWhenTheCursorCannotBePersisted();
 
 private:
     static void savePairing(PairingStore& pairingStore, const QString& serverBaseUrl);
@@ -91,12 +95,16 @@ void PushRepositoryTest::differentMessageIdsSameInstantGetDifferentSeqs()
     PushRepository repository(pushDao, cursorStore, client, pairingStore, settingsStore);
 
     const qint64 instant = 1731000000123;
-    const PushRecord first = repository.recordPushArrival(samplePayload(QStringLiteral("msg-1")), instant);
-    const PushRecord second = repository.recordPushArrival(samplePayload(QStringLiteral("msg-2")), instant);
+    const std::optional<PushRecord> first =
+        repository.recordPushArrival(samplePayload(QStringLiteral("msg-1")), instant);
+    const std::optional<PushRecord> second =
+        repository.recordPushArrival(samplePayload(QStringLiteral("msg-2")), instant);
 
-    QCOMPARE(first.seq, instant);
-    QVERIFY(second.seq != first.seq);
-    QCOMPARE(second.seq, instant + 1);
+    QVERIFY(first.has_value());
+    QVERIFY(second.has_value());
+    QCOMPARE(first->seq, instant);
+    QVERIFY(second->seq != first->seq);
+    QCOMPARE(second->seq, instant + 1);
 
     const QVector<PushRecord> history = repository.history();
     QCOMPARE(history.size(), 2);
@@ -132,8 +140,8 @@ void PushRepositoryTest::sameMessageIdArrivingTwiceReusesOneRow()
     PushRepository repository(pushDao, cursorStore, client, pairingStore, settingsStore);
 
     const qint64 instant = 1731000000123;
-    repository.recordPushArrival(samplePayload(QStringLiteral("msg-1")), instant);
-    repository.recordPushArrival(samplePayload(QStringLiteral("msg-1")), instant);
+    QVERIFY(repository.recordPushArrival(samplePayload(QStringLiteral("msg-1")), instant).has_value());
+    QVERIFY(repository.recordPushArrival(samplePayload(QStringLiteral("msg-1")), instant).has_value());
 
     const QVector<PushRecord> history = repository.history();
     QCOMPARE(history.size(), 1);
@@ -154,7 +162,7 @@ void PushRepositoryTest::pullDeduplicatesBySeqAndAdvancesCursorAfterHandoff()
     QTemporaryDir cursorDir;
     QVERIFY(cursorDir.isValid());
     CursorStore cursorStore(cursorDir.filePath(QStringLiteral("cursors.ini")));
-    cursorStore.setNotificationCursor(3);
+    QVERIFY(cursorStore.setNotificationCursor(3));
 
     QTemporaryDir secureDir;
     QVERIFY(secureDir.isValid());
@@ -320,7 +328,7 @@ void PushRepositoryTest::pullDiscardsAReplyTheCurrentPairingDidNotAuthorise()
     QTemporaryDir cursorDir;
     QVERIFY(cursorDir.isValid());
     CursorStore cursorStore(cursorDir.filePath(QStringLiteral("cursors.ini")));
-    cursorStore.setNotificationCursor(7);
+    QVERIFY(cursorStore.setNotificationCursor(7));
 
     QTemporaryDir secureDir;
     QVERIFY(secureDir.isValid());
@@ -387,9 +395,9 @@ void PushRepositoryTest::historyReturnsMostRecentFirstUpToLimit()
 
     PushRepository repository(pushDao, cursorStore, client, pairingStore, settingsStore);
 
-    repository.recordPushArrival(samplePayload(QStringLiteral("msg-1")), 100);
-    repository.recordPushArrival(samplePayload(QStringLiteral("msg-2")), 200);
-    repository.recordPushArrival(samplePayload(QStringLiteral("msg-3")), 300);
+    QVERIFY(repository.recordPushArrival(samplePayload(QStringLiteral("msg-1")), 100).has_value());
+    QVERIFY(repository.recordPushArrival(samplePayload(QStringLiteral("msg-2")), 200).has_value());
+    QVERIFY(repository.recordPushArrival(samplePayload(QStringLiteral("msg-3")), 300).has_value());
 
     const QVector<PushRecord> limited = repository.history(2);
     QCOMPARE(limited.size(), 2);
@@ -422,12 +430,96 @@ void PushRepositoryTest::markReadDelegatesToPushDao()
 
     PushRepository repository(pushDao, cursorStore, client, pairingStore, settingsStore);
 
-    repository.recordPushArrival(samplePayload(QStringLiteral("msg-1")), 100);
-    repository.markRead(QStringLiteral("msg-1"));
+    QVERIFY(repository.recordPushArrival(samplePayload(QStringLiteral("msg-1")), 100).has_value());
+    QVERIFY(repository.markRead(QStringLiteral("msg-1")));
 
     const std::optional<PushRecord> record = pushDao.findById(QStringLiteral("msg-1"));
     QVERIFY(record.has_value());
     QVERIFY(record->consumed);
+}
+
+
+// A notification shown from a row that never landed is gone from history the
+// moment it is dismissed, and the relay will not mention it again once the
+// cursor has moved past it. So a batch that cannot be stored is not shown at
+// all: the cursor stays put and the next poll, 90 seconds later, asks for the
+// same window again.
+void PushRepositoryTest::nothingIsDeliveredWhenThePullBatchCannotBeStored()
+{
+    const QByteArray body = R"({"deliveryMode":"pull","cursor":10,"notifications":[)"
+                             R"({"seq":5,"title":"New","body":"New body","data":{"messageId":"msg-new"}}]})";
+    FakeRelayServer fake(httpResponse(200, "OK", body));
+
+    Database db;
+    QVERIFY(db.open(QStringLiteral(":memory:")));
+    PushDao pushDao(db.handle());
+
+    QTemporaryDir cursorDir;
+    QVERIFY(cursorDir.isValid());
+    CursorStore cursorStore(cursorDir.filePath(QStringLiteral("cursors.ini")));
+    QVERIFY(cursorStore.setNotificationCursor(3));
+
+    QTemporaryDir secureDir;
+    QVERIFY(secureDir.isValid());
+    SecureStoreFile secureStore(secureDir.path());
+    PairingStore pairingStore(secureStore);
+    savePairing(pairingStore, QStringLiteral("http://127.0.0.1:%1").arg(fake.port()));
+
+    QTemporaryDir settingsDir;
+    QVERIFY(settingsDir.isValid());
+    SettingsStore settingsStore(settingsDir.filePath(QStringLiteral("settings.ini")));
+
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    PushNotificationClient client(http);
+    PushRepository repository(pushDao, cursorStore, client, pairingStore, settingsStore);
+
+    // Take the table away, the bluntest honest way to make every write fail.
+    {
+        QSqlQuery drop(db.handle());
+        QVERIFY(drop.exec(QStringLiteral("DROP TABLE push_notifications")));
+    }
+
+    QVERIFY2(repository.pullOnce().isEmpty(), "a notification that could not be stored was handed out anyway");
+    QCOMPARE(cursorStore.notificationCursor(), qint64(3));
+}
+
+// The mirror image: the rows land, the cursor does not. Delivering here would
+// show the notification now and again on the next launch, because the cursor
+// the next launch reads is the old one.
+void PushRepositoryTest::nothingIsDeliveredWhenTheCursorCannotBePersisted()
+{
+    const QByteArray body = R"({"deliveryMode":"pull","cursor":10,"notifications":[)"
+                             R"({"seq":5,"title":"New","body":"New body","data":{"messageId":"msg-new"}}]})";
+    FakeRelayServer fake(httpResponse(200, "OK", body));
+
+    Database db;
+    QVERIFY(db.open(QStringLiteral(":memory:")));
+    PushDao pushDao(db.handle());
+
+    QTemporaryDir cursorDir;
+    QVERIFY(cursorDir.isValid());
+    const QString blocked = cursorDir.filePath(QStringLiteral("cursors.ini"));
+    QVERIFY(QDir().mkpath(blocked)); // a directory here: no file can be written
+    CursorStore cursorStore(blocked);
+
+    QTemporaryDir secureDir;
+    QVERIFY(secureDir.isValid());
+    SecureStoreFile secureStore(secureDir.path());
+    PairingStore pairingStore(secureStore);
+    savePairing(pairingStore, QStringLiteral("http://127.0.0.1:%1").arg(fake.port()));
+
+    QTemporaryDir settingsDir;
+    QVERIFY(settingsDir.isValid());
+    SettingsStore settingsStore(settingsDir.filePath(QStringLiteral("settings.ini")));
+
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    PushNotificationClient client(http);
+    PushRepository repository(pushDao, cursorStore, client, pairingStore, settingsStore);
+
+    QVERIFY2(repository.pullOnce().isEmpty(),
+             "notifications were delivered against a cursor the next launch will not have");
 }
 
 QTEST_GUILESS_MAIN(PushRepositoryTest)

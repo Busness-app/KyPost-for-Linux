@@ -14,6 +14,7 @@
 
 #include "../net/FakeRelayServer.h"
 
+#include <QDir>
 #include <QNetworkAccessManager>
 #include <QSqlQuery>
 #include <QTemporaryDir>
@@ -40,6 +41,7 @@ private slots:
     void planRefreshReturnsNothingWhenUnpairedAndCarriesTheStoredCursorOtherwise();
     void applyRefreshPersistsTheSameRowsWithNoNetwork();
     void applyRefreshHoldsTheCursorBackWhenTheCacheWriteFails();
+    void applyRefreshReportsFailureWhenTheCursorCannotBePersisted();
     void applyRefreshDiscardsAReplyTheCurrentPairingDidNotAuthorise();
 
 private:
@@ -396,7 +398,7 @@ void MailRepositoryTest::refreshFolderForceFullResyncSendsSinceZeroAndReplacesFo
     // A stored cursor exists, but forceFullResync must ignore it and ask for
     // the whole window -- proving since=0 isn't just an accident of an empty
     // cursor.
-    cursorStore.setMailCursor(QStringLiteral("sub-1"), QStringLiteral("INBOX"), QStringLiteral("999"));
+    QVERIFY(cursorStore.setMailCursor(QStringLiteral("sub-1"), QStringLiteral("INBOX"), QStringLiteral("999")));
 
     QNetworkAccessManager manager;
     HttpClient http(manager);
@@ -675,7 +677,7 @@ void MailRepositoryTest::planRefreshReturnsNothingWhenUnpairedAndCarriesTheStore
     QTemporaryDir cursorDir;
     QVERIFY(cursorDir.isValid());
     CursorStore cursorStore(cursorDir.filePath(QStringLiteral("cursor.ini")));
-    cursorStore.setMailCursor(QStringLiteral("sub-1"), QStringLiteral("INBOX"), QStringLiteral("4242"));
+    QVERIFY(cursorStore.setMailCursor(QStringLiteral("sub-1"), QStringLiteral("INBOX"), QStringLiteral("4242")));
 
     QNetworkAccessManager manager;
     HttpClient http(manager);
@@ -834,7 +836,7 @@ void MailRepositoryTest::refreshFolderDeltaRemovedOnlyEvictsTheRequestedFolder()
     QTemporaryDir cursorDir;
     QVERIFY(cursorDir.isValid());
     CursorStore cursorStore(cursorDir.filePath(QStringLiteral("cursor.ini")));
-    cursorStore.setMailCursor(QStringLiteral("sub-1"), QStringLiteral("INBOX"), QStringLiteral("70"));
+    QVERIFY(cursorStore.setMailCursor(QStringLiteral("sub-1"), QStringLiteral("INBOX"), QStringLiteral("70")));
 
     QNetworkAccessManager manager;
     HttpClient http(manager);
@@ -877,7 +879,7 @@ void MailRepositoryTest::refreshFolderUsesTheCursorForThisFolderNotAnotherFolder
     QVERIFY(cursorDir.isValid());
     CursorStore cursorStore(cursorDir.filePath(QStringLiteral("cursor.ini")));
     // INBOX is well ahead; Archive has never synced.
-    cursorStore.setMailCursor(QStringLiteral("sub-1"), QStringLiteral("INBOX"), QStringLiteral("900"));
+    QVERIFY(cursorStore.setMailCursor(QStringLiteral("sub-1"), QStringLiteral("INBOX"), QStringLiteral("900")));
 
     QNetworkAccessManager manager;
     HttpClient http(manager);
@@ -968,7 +970,7 @@ void MailRepositoryTest::applyRefreshHoldsTheCursorBackWhenTheCacheWriteFails()
     QTemporaryDir cursorDir;
     QVERIFY(cursorDir.isValid());
     CursorStore cursorStore(cursorDir.filePath(QStringLiteral("cursor.ini")));
-    cursorStore.setMailCursor(QStringLiteral("sub-1"), QStringLiteral("INBOX"), QStringLiteral("10"));
+    QVERIFY(cursorStore.setMailCursor(QStringLiteral("sub-1"), QStringLiteral("INBOX"), QStringLiteral("10")));
 
     QNetworkAccessManager manager;
     HttpClient http(manager);
@@ -1118,6 +1120,58 @@ void MailRepositoryTest::applyRefreshDiscardsAReplyTheCurrentPairingDidNotAuthor
     QCOMPARE(repository.applyRefresh(plan, result).outcome, MailRepositoryOutcome::Success);
     QVERIFY(emailDao.findById(QStringLiteral("INBOX"), QStringLiteral("m-private")).has_value());
     QCOMPARE(cursorStore.mailCursor(QStringLiteral("sub-1"), QStringLiteral("INBOX")), QStringLiteral("777"));
+}
+
+
+// The other half of the same rule. The rows land, the cursor file refuses the
+// write: QSettings keeps the new value in memory and says nothing, so this
+// session behaves as though the cursor moved while the next launch reads the
+// old one. Reporting the failure costs one redundant refresh whose rows
+// upsert over themselves.
+void MailRepositoryTest::applyRefreshReportsFailureWhenTheCursorCannotBePersisted()
+{
+    Database db;
+    QVERIFY(db.open(QStringLiteral(":memory:")));
+    EmailDao emailDao(db.handle());
+
+    QTemporaryDir secureDir;
+    QVERIFY(secureDir.isValid());
+    SecureStoreFile secureStore(secureDir.path());
+    PairingStore pairingStore(secureStore);
+    savePairing(pairingStore, 1); // still paired -- the cursor write is what fails
+
+    QTemporaryDir cursorDir;
+    QVERIFY(cursorDir.isValid());
+    const QString blocked = cursorDir.filePath(QStringLiteral("cursor.ini"));
+    QVERIFY(QDir().mkpath(blocked)); // a directory here: no file can be written
+    CursorStore cursorStore(blocked);
+
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    RelayMailSource source(http);
+    MailRepository repository(source, emailDao, pairingStore, cursorStore);
+
+    Email incoming;
+    incoming.messageId = QStringLiteral("m-1");
+    incoming.folder = QStringLiteral("INBOX");
+    incoming.atUtc = QStringLiteral("2026-07-01T00:00:00Z");
+
+    InboxFetchResult result;
+    result.tabs = QStringList{ QStringLiteral("Uncategorized") };
+    result.byTab[QStringLiteral("Uncategorized")] =
+        QVector<InboxEmailItem>{ InboxEmailItem{ incoming, QString(), std::nullopt } };
+    result.isDelta = true;
+    result.cursor = 500;
+
+    MailRefreshPlan plan;
+    plan.folder = QStringLiteral("INBOX");
+    plan.subscriberId = QStringLiteral("sub-1");
+    plan.endpoint.auth.deviceId = QStringLiteral("dev-1");
+
+    QCOMPARE(repository.applyRefresh(plan, result).outcome, MailRepositoryOutcome::CacheWriteFailed);
+    // The message itself did land: the next refresh re-fetches this window
+    // and writes the same row again, which is the harmless direction.
+    QVERIFY(emailDao.findById(QStringLiteral("INBOX"), QStringLiteral("m-1")).has_value());
 }
 
 QTEST_GUILESS_MAIN(MailRepositoryTest)

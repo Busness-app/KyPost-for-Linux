@@ -35,6 +35,29 @@ bool PushDao::insertOrReplace(const QString& messageId, qint64 seq, const QStrin
     return query.exec();
 }
 
+// One transaction for the whole pull batch. The alternative -- a loop of
+// bare insertOrReplace() calls -- can stop halfway and leave the caller
+// holding a cursor decision it has no basis for: some of these rows are
+// stored, some are not, and nothing on the wire will mention the missing
+// ones again.
+bool PushDao::insertBatch(const QVector<PushRecord>& records)
+{
+    if (records.isEmpty())
+        return true;
+
+    if (!m_db.transaction())
+        return false;
+
+    for (const PushRecord& record : records) {
+        if (!insertOrReplace(record.messageId, record.seq, record.receivedAt, record.consumed)) {
+            m_db.rollback();
+            return false;
+        }
+    }
+
+    return m_db.commit();
+}
+
 std::optional<PushRecord> PushDao::findById(const QString& messageId) const
 {
     QSqlQuery query(m_db);

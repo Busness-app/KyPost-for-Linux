@@ -73,9 +73,30 @@ failed=0
 echo "proving each guard is load-bearing; a guard whose test stays green is a finding"
 echo
 
-while IFS=$'\t' read -r file search replace target || [ -n "${file:-}" ]; do
-    case "$file" in ''|'#'*) continue ;; esac
-    [ -n "$target" ] || continue
+while IFS= read -r line || [ -n "${line:-}" ]; do
+    case "$line" in ''|'#'*) continue ;; esac
+
+    # Cut the four fields by hand instead of letting `read -r a b c d` do it.
+    # Tab is an IFS *whitespace* character, so bash collapses a run of tabs
+    # into one separator: a row whose replacement is empty -- "delete this
+    # line", which is a legitimate neutralisation -- came out as a three-field
+    # row with an empty target, and the loop below skipped it without a word.
+    # One guard in this manifest was going unverified that way while the
+    # summary still counted the rest as a clean run. A row that cannot be
+    # parsed is now a failure, like every other kind of not-actually-proven.
+    file="${line%%$'\t'*}"
+    rest="${line#*$'\t'}"
+    search="${rest%%$'\t'*}"
+    rest="${rest#*$'\t'}"
+    replace="${rest%%$'\t'*}"
+    target="${rest#*$'\t'}"
+
+    if [ -z "$target" ] || [ "$target" = "$replace" ] || [ "$search" = "$file" ]; then
+        echo "MALFORMED ROW  $line"
+        echo "    expected exactly four tab-separated fields"
+        failed=$((failed + 1))
+        continue
+    fi
 
     ctest_target="${target%%:*}"
     test_name="${target##*:}"

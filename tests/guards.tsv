@@ -87,3 +87,44 @@ core/pgp/PgpMimeWriter.cpp	    value.remove(QLatin1Char('"'));		PgpMimeWriterTes
 
 # --- an ambiguous notification asks rather than guesses ------------------
 app/mail/MailController.cpp	    if (const QStringList folders = m_mailRepository.foldersHolding(messageId); folders.size() > 1) {	    if (const QStringList folders = m_mailRepository.foldersHolding(messageId); false) {	MailControllerTest:aNotificationForAMessageInTwoMailboxesAsksWhichOne
+
+# --- silent data loss: a write that did not land is never reported as one ---
+#
+# These are not confidentiality guards like the ones above -- they are the
+# other way an app betrays somebody: by saying "saved" or "synced" over a
+# database or a cursor file that refused the write. The failure is invisible
+# by construction (the UI is cheerful, the tests are green, the data is
+# gone), which is exactly the shape this harness exists for.
+
+# a cursor that never reached the disk is not a cursor
+core/stores/CursorStore.cpp	    return m_settings.status() == QSettings::NoError;	    return true;	CursorStoreTest:aCursorThatCannotReachTheDiskIsReportedAsFailed
+
+# a contact is saved with its sync queue entry, or not at all
+core/domain/ContactSyncRepository.cpp	    return queued ? tempUid : QString();	    return tempUid;	ContactSyncRepositoryTest:aLocalCreateThatCannotBeQueuedIsNotSavedAtAll
+
+# a delete whose tombstone was lost brings the contact back on the next pull
+core/domain/ContactSyncRepository.cpp	        return m_pendingDao.enqueue(uid, serializeContact(tombstone), nowUtc()) > 0;	        return m_pendingDao.enqueue(uid, serializeContact(tombstone), nowUtc()), true;	ContactSyncRepositoryTest:aDeleteThatCannotEnqueueItsTombstoneKeepsTheContact
+
+# a half-applied sync response never advances the cursor past itself
+core/domain/ContactSyncRepository.cpp	    if (!persisted)	    if (false)	ContactSyncRepositoryTest:applySyncKeepsTheQueueAndTheCursorWhenTheCacheWriteFails
+
+# ... and a cursor that could not be written is not a successful sync
+core/domain/ContactSyncRepository.cpp	    if (!m_cursorStore.setContactBaseCursor(QString::number(result.cursor)))	    if (m_cursorStore.setContactBaseCursor(QString::number(result.cursor)), false)	ContactSyncRepositoryTest:applySyncReportsFailureWhenTheCursorCannotBePersisted
+
+# the tooOld wipe clears the cursor before it deletes the address book
+core/domain/ContactSyncRepository.cpp	        if (!m_cursorStore.setContactBaseCursor(QString()))	        if (false)	ContactSyncRepositoryTest:aTooOldWipeThatFailsNeverLeavesTheCursorAhead
+
+# a notification is shown only once it is stored ...
+core/domain/PushRepository.cpp	    if (!m_pushDao.insertBatch(records)) {	    if (m_pushDao.insertBatch(records), false) {	PushRepositoryTest:nothingIsDeliveredWhenThePullBatchCannotBeStored
+
+# ... and only once the cursor saying so is on the disk
+core/domain/PushRepository.cpp	    if (!m_cursorStore.setNotificationCursor(result.cursor)) {	    if (m_cursorStore.setNotificationCursor(result.cursor), false) {	PushRepositoryTest:nothingIsDeliveredWhenTheCursorCannotBePersisted
+
+# a mailbox list that failed to persist is not a refreshed sidebar
+core/domain/FolderRepository.cpp	    if (!m_folderDao.replaceParentSnapshot(parent, result.folders, kSourceMode))	    if (m_folderDao.replaceParentSnapshot(parent, result.folders, kSourceMode), false)	FolderRepositoryTest:applyListReportsAFailedSnapshotWriteInsteadOfSuccess
+
+# the mail cursor moves only when the cursor FILE moved
+core/domain/MailRepository.cpp	    if (result.cursor > 0 && !m_cursorStore.setMailCursor(plan.subscriberId, folder, QString::number(result.cursor)))	    if (result.cursor > 0 && (m_cursorStore.setMailCursor(plan.subscriberId, folder, QString::number(result.cursor)), false))	MailRepositoryTest:applyRefreshReportsFailureWhenTheCursorCannotBePersisted
+
+# a group deleted on the server is only visible as an absence -- upserting cannot see it
+core/domain/GroupsRepository.cpp	    return m_groupDao.replaceSnapshot(result.groups);	    { for (const Group& g : result.groups) { if (!m_groupDao.insertOrReplace(g)) return false; } return true; }	GroupsRepositoryTest:aGroupDeletedOnTheServerLeavesTheCache

@@ -5,6 +5,7 @@
 
 #include <QString>
 #include <QVector>
+#include <optional>
 
 class CursorStore;
 class PairingStore;
@@ -24,7 +25,10 @@ public:
     // Most-recent-first, up to `limit`.
     QVector<PushRecord> history(int limit = 50) const;
 
-    void markRead(const QString& messageId); // pushDao.markConsumed
+    // pushDao.markConsumed. False means the row is still unread on disk --
+    // the UI may have already greyed it out, so a caller that cares about
+    // the two agreeing after a restart has to look.
+    [[nodiscard]] bool markRead(const QString& messageId);
 
     // Records a push-mode arrival (no server seq on this path -- one is
     // synthesized from arrival time). Returns the record actually
@@ -41,11 +45,22 @@ public:
     // schema (two notifications about the *same* message shouldn't produce
     // two history entries). See PushRepositoryTest for the two assertions
     // that replace the Swift test's single assertion.
-    PushRecord recordPushArrival(const PushNotification& payload, qint64 receivedAtEpochMs);
+    //
+    // nullopt when the row did not land. Deliberately NOT a reason to drop
+    // the notification: this is the distributor path, the message has already
+    // been handed to us by the OS and cannot be re-requested from the relay,
+    // so showing it without a history row beats not showing it at all. The
+    // caller logs.
+    std::optional<PushRecord> recordPushArrival(const PushNotification& payload, qint64 receivedAtEpochMs);
 
-    // One poll of the pull endpoint. Returns newly-delivered notifications
-    // (already persisted). NotPaired-equivalent: returns an empty vector
-    // when there is no stored pairing -- this method has no error-outcome
+    // One poll of the pull endpoint. Returns newly-delivered notifications,
+    // which are persisted AND covered by a cursor that is on the disk before
+    // any of them is returned -- an empty result can therefore mean "nothing
+    // new" or "could not store what arrived", and both are handled the same
+    // way: the cursor did not move, so the next poll asks again.
+    //
+    // NotPaired-equivalent: returns an empty vector when there is no stored
+    // pairing -- this method has no error-outcome
     // return type (unlike the repositories above) because polling is
     // expected to run silently and retry on its own schedule (Task 25
     // owns the retry/backoff policy); a caller that needs to distinguish

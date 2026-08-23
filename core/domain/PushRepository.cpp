@@ -10,6 +10,7 @@
 #include "stores/SettingsStore.h"
 
 #include <QDateTime>
+#include <QDebug>
 #include <QTimeZone>
 #include <QUrl>
 
@@ -28,12 +29,13 @@ QVector<PushRecord> PushRepository::history(int limit) const
     return m_pushDao.findRecent(limit);
 }
 
-void PushRepository::markRead(const QString& messageId)
+bool PushRepository::markRead(const QString& messageId)
 {
-    m_pushDao.markConsumed(messageId);
+    return m_pushDao.markConsumed(messageId);
 }
 
-PushRecord PushRepository::recordPushArrival(const PushNotification& payload, qint64 receivedAtEpochMs)
+std::optional<PushRecord> PushRepository::recordPushArrival(const PushNotification& payload,
+                                                              qint64 receivedAtEpochMs)
 {
     qint64 seq = receivedAtEpochMs;
     while (m_pushDao.existsWithSeq(seq))
@@ -46,7 +48,8 @@ PushRecord PushRepository::recordPushArrival(const PushNotification& payload, qi
         QDateTime::fromMSecsSinceEpoch(receivedAtEpochMs, QTimeZone::UTC).toString(Qt::ISODate);
     record.consumed = false;
 
-    m_pushDao.insertOrReplace(record.messageId, record.seq, record.receivedAt, record.consumed);
+    if (!m_pushDao.insertOrReplace(record.messageId, record.seq, record.receivedAt, record.consumed))
+        return std::nullopt;
     return record;
 }
 
@@ -77,18 +80,39 @@ QVector<PushNotification> PushRepository::pullOnce()
     if (!m_pairingStore.stillCurrent(requestedBy))
         return {}; // not ours any more: nothing persisted, cursor left alone
 
+    const QString receivedAt = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
+    QVector<PushRecord> records;
     QVector<PushNotification> delivered;
     for (const PullNotificationItem& item : result.notifications) {
         if (item.seq <= lastCursor)
             continue;
-        m_pushDao.insertOrReplace(item.notification.messageId, item.seq,
-                                   QDateTime::currentDateTimeUtc().toString(Qt::ISODate), false);
+        records.append(PushRecord{ item.notification.messageId, item.seq, receivedAt, false });
         delivered.append(item.notification);
     }
 
-    // Only now advance the cursor, after every delivered item has been
-    // handed off to the caller and persisted.
-    m_cursorStore.setNotificationCursor(result.cursor);
+    // Nothing is delivered until the whole batch is stored AND the cursor
+    // that says so is on the disk. Both halves are load-bearing, in opposite
+    // directions:
+    //
+    //   - persist, then advance: a notification shown from a row that never
+    //     landed is gone from history the moment it is dismissed, and the
+    //     relay will not mention it again once the cursor has moved past it.
+    //   - advance, then deliver: a cursor still sitting in QSettings' memory
+    //     is a cursor the next launch does not have, so every notification in
+    //     this batch arrives a second time.
+    //
+    // Both failures cost the same thing -- this poll returns nothing and the
+    // next one, 90 seconds later, asks for the same window again. That is the
+    // only outcome here that is safe to be wrong about.
+    if (!m_pushDao.insertBatch(records)) {
+        qWarning("PushRepository: could not store a pull batch; the cursor stays put");
+        return {};
+    }
+
+    if (!m_cursorStore.setNotificationCursor(result.cursor)) {
+        qWarning("PushRepository: could not persist the notification cursor; not delivering this batch");
+        return {};
+    }
 
     return delivered;
 }

@@ -16,6 +16,12 @@ enum class ProfileDatabaseMode
     PlaintextOnDisk,      // a profile that predates encryption, or a build without SQLCipher
     InMemoryNoKeyStorage, // SQLCipher is here, but no key could be read or written
     FailedToOpen,         // nothing worked; the caller has no database at all
+    // The data directory could not be made owner-only, so nothing is being
+    // written to it. Never returned by chooseProfileDatabaseMode() or
+    // openProfileDatabase() below -- the decision is made before either runs,
+    // by whoever owns the directory (app/main.cpp), because it is about the
+    // directory rather than about this profile.
+    InMemoryUnprotectedDirectory,
 };
 
 // What to do about a given profile, as a pure function of what was found.

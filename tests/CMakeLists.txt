@@ -49,6 +49,9 @@ kypost_add_test(DatabaseKeyStoreTest core/security/DatabaseKeyStoreTest.cpp)
 # the PIN is the key-encryption key for the relay device secret whenever
 # the credential gate is on, and QML is not a security boundary.
 kypost_add_test(PinPolicyTest core/security/PinPolicyTest.cpp)
+# PrivatePath: the startup hardening that decides whether this device is
+# allowed to keep mail and contacts on disk at all.
+kypost_add_test(PrivatePathTest core/security/PrivatePathTest.cpp)
 
 kypost_add_test(DatabaseTest core/db/DatabaseTest.cpp)
 kypost_add_test(DatabaseEncryptionTest core/db/DatabaseEncryptionTest.cpp)

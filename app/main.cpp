@@ -33,6 +33,7 @@
 #include "domain/FolderRepository.h"
 #include "security/AppLockStore.h"
 #include "security/DatabaseKeyStore.h"
+#include "security/PrivatePath.h"
 #include "security/WipeTripwire.h"
 #include "domain/MailRepository.h"
 #include "domain/PairingStore.h"
@@ -267,15 +268,32 @@ int main(int argc, char* argv[])
     // ThemeController/QQmlApplicationEngine since both need it to already
     // exist.
     const QString settingsDir = QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation);
-    QDir().mkpath(settingsDir);
     // VibeSec fix: lock this app's own per-user config directory to
     // owner-only (0700) so settings.ini can't be read by other local users
     // on a multi-user system -- mirrors the discipline SecureStoreFile.cpp
     // already applies to individual secret files. Re-applied on every
     // startup (idempotent) so a directory left over from before this fix
     // gets tightened too, not just freshly created ones.
-    QFile::setPermissions(settingsDir,
-                           QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
+    //
+    // Both results are now checked, which they were not: this block used to
+    // create the directory, chmod it, drop both answers, and carry on under a
+    // comment asserting the result. No directory at all is fatal -- nothing
+    // below can work without somewhere to write -- and a directory that could
+    // not be shut is reported and carried past, because settings.ini holds
+    // preferences rather than mail or credentials. The two things that DO
+    // live in a directory this app cannot protect (the push endpoint just
+    // below, and the mail/contacts database further down) fail closed on
+    // their own terms.
+    switch (PrivatePath::ensureDirectory(settingsDir)) {
+    case PrivatePath::Status::Ready:
+        break;
+    case PrivatePath::Status::NotCreated:
+        qFatal("main: could not create the settings directory at %s", qPrintable(settingsDir));
+    case PrivatePath::Status::NotPrivate:
+        qCritical("main: %s is readable by other users on this machine and could not be tightened",
+                   qPrintable(settingsDir));
+        break;
+    }
 
     // KUnifiedPush writes its client state one directory up, with plain
     // QSettings -- so it lands 0644 after umask. The Endpoint inside it is a
@@ -296,8 +314,24 @@ int main(int argc, char* argv[])
     const QString unifiedPushStatePath =
         QStandardPaths::writableLocation(QStandardPaths::ConfigLocation)
         + QStringLiteral("/kunifiedpush-com.urlxl.mail");
-    if (QFile::exists(unifiedPushStatePath)) {
-        QFile::setPermissions(unifiedPushStatePath, QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+    // Checked, and load-bearing: this is the one hardening step here whose
+    // failure hands out a live remote capability, so registering for push
+    // afterwards is refused rather than logged. A distributor registration
+    // this app never makes is a distributor endpoint that never gets minted
+    // into a file other users can read; the app keeps working on the polling
+    // tier, which needs no such file.
+    //
+    // Known limitation, said out loud rather than papered over: an endpoint
+    // minted by an EARLIER run is already in that file and stays valid at the
+    // distributor. Skipping registration does not revoke it. Deleting the
+    // file would, and is not done here without the user asking -- it is their
+    // push registration, not ours to destroy.
+    const bool unifiedPushStatePrivate =
+        !QFile::exists(unifiedPushStatePath) || PrivatePath::ensureFile(unifiedPushStatePath);
+    if (!unifiedPushStatePrivate) {
+        qCritical("main: %s holds the push endpoint and is readable by other users on this machine; "
+                   "push registration is disabled for this session",
+                   qPrintable(unifiedPushStatePath));
     }
 
     SettingsStore settingsStore(settingsDir + QStringLiteral("/settings.ini"));
@@ -347,13 +381,28 @@ int main(int argc, char* argv[])
     // reasonable degraded mode -- every DAO below hands out a live
     // QSqlDatabase& into this object, so treat it as fatal.
     const QString dataDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-    QDir().mkpath(dataDir);
     // VibeSec fix: same rationale as settingsDir above -- kypost.db holds
     // full contact records (names, emails, phones, notes, PGP public keys)
     // and mail content in plaintext, and the contact-photos cache directory
     // constructed below also lives under dataDir, so this one chmod covers
     // both.
-    QFile::setPermissions(dataDir, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
+    //
+    // Checked, and this one fails closed. If the directory cannot be shut,
+    // this session runs on an in-memory database instead of writing the
+    // user's mail and address book into somewhere every local account can
+    // read -- the same trade the InMemoryNoKeyStorage path below already
+    // makes for a missing encryption key, for the same reason. Nothing on
+    // disk is touched or deleted: what is already there stays, unreadable to
+    // this session but intact for one where the directory can be protected.
+    const PrivatePath::Status dataDirStatus = PrivatePath::ensureDirectory(dataDir);
+    if (dataDirStatus == PrivatePath::Status::NotCreated)
+        qFatal("main: could not create the data directory at %s", qPrintable(dataDir));
+    const bool dataDirPrivate = dataDirStatus == PrivatePath::Status::Ready;
+    if (!dataDirPrivate) {
+        qCritical("main: %s is readable by other users on this machine and could not be tightened; "
+                   "this session keeps mail and contacts in memory only",
+                   qPrintable(dataDir));
+    }
     // One-time migration for the Llama Mail -> KyPost rename, which moved the
     // profile in TWO independent ways that have to be undone together:
     //
@@ -397,7 +446,10 @@ int main(int argc, char* argv[])
     // anyway: the database is ":memory:".
     const bool hostileLocation = settingsStore.hostileLocationProtectionEnabled();
 
-    if (!hostileLocation && !QFile::exists(newDbPath)) {
+    // Also gated on dataDirPrivate: this copies a whole plaintext database of
+    // cached mail and contacts into dataDir, which is the one thing not to do
+    // while dataDir is readable by other local accounts.
+    if (!hostileLocation && dataDirPrivate && !QFile::exists(newDbPath)) {
         const QStringList oldDbCandidates = legacyDbPaths;
         for (const QString& oldDbPath : oldDbCandidates) {
             if (!QFile::exists(oldDbPath))
@@ -515,6 +567,17 @@ int main(int argc, char* argv[])
         SecurityWipe::clearCacheDirectory(dataDir + QStringLiteral("/contact-photos"));
         if (!database.open(QStringLiteral(":memory:")))
             qFatal("main: Database::open failed for in-memory database");
+    } else if (!dataDirPrivate) {
+        // The directory the database would live in is readable by other
+        // accounts on this machine and could not be tightened (see dataDir
+        // above). Same answer as a missing key store: keep the session in
+        // memory rather than write mail and contacts somewhere they can be
+        // read. Deliberately NOT the hostileLocation branch above -- nothing
+        // here removes what is already on disk, because a chmod that failed
+        // is not the user asking for their mail to be destroyed.
+        if (!database.open(QStringLiteral(":memory:")))
+            qFatal("main: Database::open failed for in-memory database");
+        profileDatabaseMode = ProfileDatabaseMode::InMemoryUnprotectedDirectory;
     } else {
         // Encrypted where it can be, and never silently plaintext where it
         // was meant to be encrypted. openProfileDatabase() owns the whole
@@ -539,6 +602,10 @@ int main(int argc, char* argv[])
             break;
         case ProfileDatabaseMode::FailedToOpen:
             qFatal("main: could not open the database at %s", qPrintable(newDbPath));
+        case ProfileDatabaseMode::InMemoryUnprotectedDirectory:
+            // Decided above, before openProfileDatabase() is reached, and it
+            // never returns this.
+            break;
         }
     }
 
@@ -701,8 +768,12 @@ int main(int argc, char* argv[])
     // core/domain/PgpQrRepository.h's doc comment for why the key-fetch
     // side goes straight through pgpQrClient instead.
     PgpQrRepository pgpQrRepository(pgpQrClient, pairingStore);
+    // database.handle() is the same connection contactDao and
+    // pendingContactChangeDao were handed above -- required, see the
+    // constructor's doc comment: it is what a contact mutation and its
+    // pending-queue row share a transaction on.
     ContactSyncRepository contactSyncRepository(contactSyncClient, contactDao, pendingContactChangeDao,
-                                                 cursorStore, pairingStore);
+                                                 cursorStore, pairingStore, database.handle());
     DeviceRegistrationService deviceRegistrationService(nativeRegistrationClient, pairingStore, settingsStore,
                                                         certificatePinSink);
 
@@ -1274,16 +1345,22 @@ int main(int argc, char* argv[])
                                          << message.size() << "bytes";
                               return;
                           }
-                          if (!payload->messageId.isEmpty())
-                              pushRepository.recordPushArrival(*payload, QDateTime::currentMSecsSinceEpoch());
+                          // Shown either way -- the OS handed us this message and it
+                          // cannot be re-requested from the relay, so a lost history
+                          // row is not a reason to swallow the notification. Logged
+                          // rather than ignored, because "it is not in the history"
+                          // is otherwise indistinguishable from "it never arrived".
+                          if (!payload->messageId.isEmpty()
+                              && !pushRepository.recordPushArrival(*payload, QDateTime::currentMSecsSinceEpoch()))
+                              qWarning("main: a push arrived but could not be written to the notification history");
                           notificationDispatcher.notify(*payload);
                       });
 
     // Polling-tier arrivals: PushRepository::pullOnce() (invoked internally
-    // by TransportStateMachine's own poll timer) already persists each
-    // delivered item before this signal fires (core/domain/
-    // PushRepository.cpp's pullOnce() calls m_pushDao.insertOrReplace() per
-    // item) -- do not call recordPushArrival() again here.
+    // by TransportStateMachine's own poll timer) has already persisted every
+    // delivered item -- it returns nothing at all unless the whole batch
+    // landed and its cursor is on the disk (core/domain/PushRepository.cpp)
+    // -- so do not call recordPushArrival() again here.
     QObject::connect(&transportStateMachine, &TransportStateMachine::pollTick, &transportStateMachine,
                       [&notificationDispatcher](const QVector<PushNotification>& delivered) {
                           for (const PushNotification& payload : delivered)
@@ -1320,7 +1397,13 @@ int main(int argc, char* argv[])
                           }
                       });
 
-    pushConnector.registerClient(QStringLiteral("KyPost push notifications"));
+    // Not called when the file KUnifiedPush keeps the resulting endpoint in
+    // is readable by other local accounts (see unifiedPushStatePrivate,
+    // above): registering would mint a live remote push capability straight
+    // into a file this app has already failed to protect. The polling tier
+    // covers the gap.
+    if (unifiedPushStatePrivate)
+        pushConnector.registerClient(QStringLiteral("KyPost push notifications"));
 
     const int exitCode = app.exec();
 

@@ -37,26 +37,29 @@ GroupsFetchResult GroupsRepository::fetchWith(HttpClient& httpClient, const Rela
     return client.fetch(endpoint.serverBaseUrl, endpoint.auth);
 }
 
-void GroupsRepository::applyRefresh(const RelayRequestPlan& plan, const GroupsFetchResult& result)
+bool GroupsRepository::applyRefresh(const RelayRequestPlan& plan, const GroupsFetchResult& result)
 {
     if (result.error.has_value())
-        return; // degrade gracefully -- next sync cycle retries, no crash
+        return false; // degrade gracefully -- next sync cycle retries, no crash
 
-    // Same silent give-up as an error, and for a stronger reason: these rows
-    // belong to the account that asked for them, not to whatever account is
-    // paired now.
+    // Same give-up as an error, and for a stronger reason: these rows belong
+    // to the account that asked for them, not to whatever account is paired
+    // now.
     if (!m_pairingStore.stillCurrent(plan.identity))
-        return;
+        return false;
 
-    for (const Group& group : result.groups)
-        m_groupDao.insertOrReplace(group);
+    // One transactional replace, not an upsert loop: /api/groups answers with
+    // the whole list, so a group the user deleted on another device is
+    // visible only as an absence from it -- and an upsert loop that half
+    // applied left the name-cache in a state no response describes.
+    return m_groupDao.replaceSnapshot(result.groups);
 }
 
 // The synchronous form, kept as the composition of the three phases above.
-void GroupsRepository::refresh()
+bool GroupsRepository::refresh()
 {
     const std::optional<RelayRequestPlan> plan = planRefresh();
     if (!plan.has_value())
-        return;
-    applyRefresh(*plan, m_client.fetch(plan->endpoint.serverBaseUrl, plan->endpoint.auth));
+        return false;
+    return applyRefresh(*plan, m_client.fetch(plan->endpoint.serverBaseUrl, plan->endpoint.auth));
 }

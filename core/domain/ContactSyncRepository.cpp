@@ -13,6 +13,7 @@
 #include <QDateTime>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QSqlDatabase>
 #include <QUrl>
 #include <QUuid>
 #include <type_traits>
@@ -102,6 +103,24 @@ Contact mergeContact(const Contact& c, const std::optional<Contact>& existing)
     return merged;
 }
 
+// One user action, one transaction. Every mutation below is at least two
+// DAO calls -- a cached contact and its pending-queue row -- and both DAOs
+// write through the same connection, so a transaction is what makes them one
+// thing. Half of one of these has a name and a bug report: a contact that
+// exists locally and can never sync, or a delete whose tombstone is gone and
+// which therefore comes back on the next pull.
+template <typename Fn>
+bool inTransaction(QSqlDatabase& db, Fn&& body)
+{
+    if (!db.transaction())
+        return false;
+    if (!body()) {
+        db.rollback();
+        return false;
+    }
+    return db.commit();
+}
+
 ContactSyncStatus statusFromNetworkError(NetworkError error)
 {
     switch (error) {
@@ -133,12 +152,13 @@ ContactDedupeStatus dedupeStatusFromNetworkError(NetworkError error)
 
 ContactSyncRepository::ContactSyncRepository(ContactSyncClient& client, ContactDao& contactDao,
                                                PendingContactChangeDao& pendingDao, CursorStore& cursorStore,
-                                               PairingStore& pairingStore)
+                                               PairingStore& pairingStore, QSqlDatabase& db)
     : m_client(client)
     , m_contactDao(contactDao)
     , m_pendingDao(pendingDao)
     , m_cursorStore(cursorStore)
     , m_pairingStore(pairingStore)
+    , m_db(db)
 {
 }
 
@@ -170,22 +190,33 @@ QString ContactSyncRepository::queueCreate(Contact contact)
     const QString tempUid = QUuid::createUuid().toString(QUuid::WithoutBraces);
     contact.uid = tempUid;
     contact.deleted = false;
-    m_contactDao.insertOrReplace(contact);
 
     Contact wireCopy = contact;
     wireCopy.uid = QString(); // empty uid marks a create, per ContactSyncClient's contract
-    m_pendingDao.enqueue(tempUid, serializeContact(wireCopy), nowUtc());
 
-    return tempUid;
+    // The cached row without the queue row is a contact the user can see,
+    // edit and rely on that will never reach the server or any other device.
+    const bool queued = inTransaction(m_db, [&] {
+        return m_contactDao.insertOrReplace(contact)
+            && m_pendingDao.enqueue(tempUid, serializeContact(wireCopy), nowUtc()) > 0;
+    });
+
+    return queued ? tempUid : QString();
 }
 
-void ContactSyncRepository::queueUpdate(const Contact& contact)
+bool ContactSyncRepository::queueUpdate(const Contact& contact)
 {
-    m_contactDao.insertOrReplace(contact);
-    m_pendingDao.enqueue(contact.uid, serializeContact(contact), nowUtc());
+    // Same pair, same reason as queueCreate() -- with one extra way to be
+    // wrong: the cache write can land while the queue write does not, and
+    // then the local copy shows the user's edit while the server keeps the
+    // old one, forever, with no pending badge to say so.
+    return inTransaction(m_db, [&] {
+        return m_contactDao.insertOrReplace(contact)
+            && m_pendingDao.enqueue(contact.uid, serializeContact(contact), nowUtc()) > 0;
+    });
 }
 
-void ContactSyncRepository::queueDelete(const QString& uid, qint64 rev)
+bool ContactSyncRepository::queueDelete(const QString& uid, qint64 rev)
 {
     // If the only pending entry for this uid is a still-unflushed create,
     // the server never saw this contact -- cancel the create outright
@@ -198,25 +229,35 @@ void ContactSyncRepository::queueDelete(const QString& uid, qint64 rev)
     // change naming a uid the server had never seen -- which the relay treats
     // as a create under that uid. The contact the user deleted was recreated
     // account-wide and echoed straight back into the local database.
-    bool hadUnsyncedCreate = false;
-    for (const PendingContactChangeRecord& record : m_pendingDao.findAll()) {
-        if (record.contactUid != uid)
-            continue;
-        if (deserializeContact(record.changeJson).uid.isEmpty())
-            hadUnsyncedCreate = true;
-        m_pendingDao.deleteById(record.id);
-    }
+    //
+    // All of it in one transaction. Dropping the queued changes and then
+    // failing to enqueue the tombstone is the resurrected-contact bug this
+    // method's comment describes, arrived at from the other direction: the
+    // row is gone locally, nothing tells the server, and the next pull hands
+    // it straight back.
+    return inTransaction(m_db, [&] {
+        bool hadUnsyncedCreate = false;
+        for (const PendingContactChangeRecord& record : m_pendingDao.findAll()) {
+            if (record.contactUid != uid)
+                continue;
+            if (deserializeContact(record.changeJson).uid.isEmpty())
+                hadUnsyncedCreate = true;
+            if (!m_pendingDao.deleteById(record.id))
+                return false;
+        }
 
-    m_contactDao.deleteById(uid);
+        if (!m_contactDao.deleteById(uid))
+            return false;
 
-    if (hadUnsyncedCreate)
-        return;
+        if (hadUnsyncedCreate)
+            return true;
 
-    Contact tombstone;
-    tombstone.uid = uid;
-    tombstone.rev = rev;
-    tombstone.deleted = true;
-    m_pendingDao.enqueue(uid, serializeContact(tombstone), nowUtc());
+        Contact tombstone;
+        tombstone.uid = uid;
+        tombstone.rev = rev;
+        tombstone.deleted = true;
+        return m_pendingDao.enqueue(uid, serializeContact(tombstone), nowUtc()) > 0;
+    });
 }
 
 std::optional<ContactSyncRepository::ContactSyncPlan> ContactSyncRepository::planSync() const
@@ -277,12 +318,36 @@ ContactSyncOutcome ContactSyncRepository::applySync(const ContactSyncPlan& plan,
         // CursorStore::reset(), which also clears the unrelated mail
         // cursor -- a contacts-only tooOld response has nothing to do with
         // mail sync.
-        m_cursorStore.setContactBaseCursor(QString());
-        m_contactDao.deleteAll();
-        // Same reasoning as the success path below: only the snapshot that
-        // was pushed may be dropped.
-        for (const PendingContactChangeRecord& record : pending)
-            m_pendingDao.deleteById(record.id);
+        //
+        // Cursor first here; database first on the success path below. Both
+        // orders serve one invariant: whatever fails, the cursor that
+        // survives must never be AHEAD of the contacts that survive. Ahead
+        // means the next pull asks for a delta against rows this device does
+        // not have, and the relay never mentions the missing ones again --
+        // silent, permanent, and indistinguishable from an empty address
+        // book. Behind costs one redundant pull that re-applies rows which
+        // are already there.
+        //
+        // So: clear the cursor, THEN wipe. A failed wipe after a cleared
+        // cursor just means the next sync pulls the whole book again and
+        // upserts over what is still here.
+        if (!m_cursorStore.setContactBaseCursor(QString()))
+            return { ContactSyncStatus::CacheWriteFailed, {}, QString(), {} };
+
+        const bool wiped = inTransaction(m_db, [&] {
+            if (!m_contactDao.deleteAll())
+                return false;
+            // Same reasoning as the success path below: only the snapshot
+            // that was pushed may be dropped.
+            for (const PendingContactChangeRecord& record : pending) {
+                if (!m_pendingDao.deleteById(record.id))
+                    return false;
+            }
+            return true;
+        });
+        if (!wiped)
+            return { ContactSyncStatus::CacheWriteFailed, {}, QString(), {} };
+
         return { ContactSyncStatus::Success,
                  ContactSyncSummary{ static_cast<int>(pending.size()), 0, 0 },
                  QString(),
@@ -303,37 +368,69 @@ ContactSyncOutcome ContactSyncRepository::applySync(const ContactSyncPlan& plan,
 
     const QVector<ContactReconciliationAssignment> assignments =
         ContactSyncReconciliation::reconcile(pendingCreates, result.changed);
-    for (const ContactReconciliationAssignment& assignment : assignments)
-        m_contactDao.deleteById(assignment.localUid);
 
+    // The response and the queue it answers are applied as ONE database
+    // transaction, for the same reason the cursor exists at all: every row
+    // in it is described exactly once, and a half-applied response is a
+    // state no cursor value can describe. Dropping the pushed queue while
+    // the changed rows failed to land is the specific version of that which
+    // loses the user's own edits -- the relay considers them delivered, this
+    // device no longer has them queued, and nothing will ever ask again.
     int applied = 0;
-    for (const Contact& c : result.changed) {
-        if (c.uid.isEmpty())
-            continue;
-        const std::optional<Contact> existing = m_contactDao.findById(c.uid);
-        m_contactDao.insertOrReplace(mergeContact(c, existing));
-        ++applied;
-    }
+    const bool persisted = inTransaction(m_db, [&] {
+        for (const ContactReconciliationAssignment& assignment : assignments) {
+            if (!m_contactDao.deleteById(assignment.localUid))
+                return false;
+        }
 
-    for (const Contact& c : result.deletedContacts) {
-        m_contactDao.deleteById(c.uid);
-        ++applied;
-    }
+        for (const Contact& c : result.changed) {
+            if (c.uid.isEmpty())
+                continue;
+            const std::optional<Contact> existing = m_contactDao.findById(c.uid);
+            if (!m_contactDao.insertOrReplace(mergeContact(c, existing)))
+                return false;
+            ++applied;
+        }
 
-    // Delete only what was actually pushed -- by record id, never
-    // deleteAll(). A Save or Delete in the contact pane can land while the
-    // request is out, and truncating the whole queue discarded it: the user
-    // saw "Synced" while their edit -- a replaced PGP key, say -- never
-    // reached the server.
+        for (const Contact& c : result.deletedContacts) {
+            if (!m_contactDao.deleteById(c.uid))
+                return false;
+            ++applied;
+        }
+
+        // Delete only what was actually pushed -- by record id, never
+        // deleteAll(). A Save or Delete in the contact pane can land while
+        // the request is out, and truncating the whole queue discarded it:
+        // the user saw "Synced" while their edit -- a replaced PGP key, say
+        // -- never reached the server.
+        //
+        // That used to happen because HttpClient blocked on a nested
+        // QEventLoop and QML kept delivering clicks. The request runs on the
+        // executor thread now, so the GUI thread is simply free for the whole
+        // round trip and a mid-sync edit is the ORDINARY case rather than a
+        // race. Same rule, more load-bearing than before.
+        for (const PendingContactChangeRecord& record : pending) {
+            if (!m_pendingDao.deleteById(record.id))
+                return false;
+        }
+        return true;
+    });
+
+    if (!persisted)
+        return { ContactSyncStatus::CacheWriteFailed, {}, QString(), {} };
+
+    // Database first, cursor second -- the opposite order to the tooOld
+    // branch above, and the same invariant (see there). A committed batch
+    // with a cursor that did not persist costs one redundant pull whose rows
+    // upsert over themselves; a persisted cursor over a batch that did not
+    // commit costs the batch, permanently.
     //
-    // That used to happen because HttpClient blocked on a nested QEventLoop
-    // and QML kept delivering clicks. The request runs on the executor thread
-    // now, so the GUI thread is simply free for the whole round trip and a
-    // mid-sync edit is the ORDINARY case rather than a race. Same rule, more
-    // load-bearing than before.
-    for (const PendingContactChangeRecord& record : pending)
-        m_pendingDao.deleteById(record.id);
-    m_cursorStore.setContactBaseCursor(QString::number(result.cursor));
+    // The reassignments ride along even on this failure path, unlike every
+    // other one: the transaction above committed, so those temp uids really
+    // are dead in the local cache, and the pending creates that produced them
+    // are gone -- no later sync can derive this mapping again.
+    if (!m_cursorStore.setContactBaseCursor(QString::number(result.cursor)))
+        return { ContactSyncStatus::CacheWriteFailed, {}, QString(), assignments };
 
     return { ContactSyncStatus::Success,
              ContactSyncSummary{ static_cast<int>(pending.size()), applied, result.cursor },

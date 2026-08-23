@@ -12,6 +12,7 @@
 #include "../net/FakeRelayServer.h"
 
 #include <QNetworkAccessManager>
+#include <QSqlQuery>
 #include <QTemporaryDir>
 #include <QTest>
 
@@ -24,6 +25,8 @@ private slots:
     void refreshUpsertsGroupsFromServer();
     void refreshOnFetchErrorLeavesExistingCacheUntouched();
     void applyRefreshDiscardsAReplyTheCurrentPairingDidNotAuthorise();
+    void aGroupDeletedOnTheServerLeavesTheCache();
+    void applyRefreshReportsAFailedCacheWrite();
 
 private:
     static void savePairing(PairingStore& pairingStore, quint16 port);
@@ -61,7 +64,7 @@ void GroupsRepositoryTest::refreshWithoutPairingIsNoOp()
 
     // No FakeRelayServer at all -- refresh() must return without attempting
     // any network call when there's no pairing to derive a server URL from.
-    repository.refresh();
+    QVERIFY(!repository.refresh()); // nothing was refreshed, and it says so
 
     QVERIFY(groupDao.findAll().isEmpty());
 }
@@ -87,7 +90,7 @@ void GroupsRepositoryTest::refreshUpsertsGroupsFromServer()
     GroupsClient client(http);
 
     GroupsRepository repository(client, groupDao, pairingStore);
-    repository.refresh();
+    QVERIFY(repository.refresh());
 
     QVERIFY(fake.receivedRequest().contains("GET /api/groups HTTP/1.1"));
 
@@ -125,7 +128,7 @@ void GroupsRepositoryTest::refreshOnFetchErrorLeavesExistingCacheUntouched()
     GroupsClient client(http);
 
     GroupsRepository repository(client, groupDao, pairingStore);
-    repository.refresh();
+    QVERIFY(!repository.refresh()); // a 401 refreshed nothing, and it says so
 
     const QVector<Group> all = repository.groups();
     QCOMPARE(all.size(), 1);
@@ -171,7 +174,7 @@ void GroupsRepositoryTest::applyRefreshDiscardsAReplyTheCurrentPairingDidNotAuth
     replacement.serverBaseUrl = QStringLiteral("http://127.0.0.1:1");
     QVERIFY(pairingStore.save(replacement));
 
-    repository.applyRefresh(*plan, result);
+    QVERIFY(!repository.applyRefresh(*plan, result));
     QVERIFY2(groupDao.findAll().isEmpty(),
              "the previous account's group names were cached for the new account");
 
@@ -183,8 +186,93 @@ void GroupsRepositoryTest::applyRefreshDiscardsAReplyTheCurrentPairingDidNotAuth
     original.deviceSecret = QStringLiteral("secret-1");
     original.serverBaseUrl = QStringLiteral("http://127.0.0.1:1");
     QVERIFY(pairingStore.save(original));
-    repository.applyRefresh(*plan, result);
+    QVERIFY(repository.applyRefresh(*plan, result));
     QCOMPARE(groupDao.findAll().size(), 1);
+}
+
+
+// /api/groups answers with the whole list, so a group deleted on another
+// device is visible here only as an absence from it. The upsert loop this
+// replaces could not see an absence: a deleted group stayed in the name-cache
+// forever, still labelling contacts with a group they are no longer in.
+void GroupsRepositoryTest::aGroupDeletedOnTheServerLeavesTheCache()
+{
+    Database db;
+    QVERIFY(db.open(QStringLiteral(":memory:")));
+    GroupDao groupDao(db.handle());
+
+    QTemporaryDir secureDir;
+    QVERIFY(secureDir.isValid());
+    SecureStoreFile secureStore(secureDir.path());
+    PairingStore pairingStore(secureStore);
+    savePairing(pairingStore, 1); // nothing is sent in this test
+
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    GroupsClient client(http);
+    GroupsRepository repository(client, groupDao, pairingStore);
+
+    const std::optional<RelayRequestPlan> plan = repository.planRefresh();
+    QVERIFY(plan.has_value());
+
+    Group family;
+    family.id = QStringLiteral("g-1");
+    family.name = QStringLiteral("Family");
+    Group work;
+    work.id = QStringLiteral("g-2");
+    work.name = QStringLiteral("Work");
+
+    GroupsFetchResult both;
+    both.groups = QVector<Group>{ family, work };
+    QVERIFY(repository.applyRefresh(*plan, both));
+    QCOMPARE(groupDao.findAll().size(), 2);
+
+    // "Work" was deleted elsewhere: the next response simply does not mention
+    // it.
+    GroupsFetchResult onlyFamily;
+    onlyFamily.groups = QVector<Group>{ family };
+    QVERIFY(repository.applyRefresh(*plan, onlyFamily));
+
+    const QVector<Group> after = groupDao.findAll();
+    QCOMPARE(after.size(), 1);
+    QCOMPARE(after.first().id, QStringLiteral("g-1"));
+}
+
+// The cache write used to be unreportable: applyRefresh() returned void, so a
+// half-applied response and a correct one looked identical from the caller.
+void GroupsRepositoryTest::applyRefreshReportsAFailedCacheWrite()
+{
+    Database db;
+    QVERIFY(db.open(QStringLiteral(":memory:")));
+    GroupDao groupDao(db.handle());
+
+    QTemporaryDir secureDir;
+    QVERIFY(secureDir.isValid());
+    SecureStoreFile secureStore(secureDir.path());
+    PairingStore pairingStore(secureStore);
+    savePairing(pairingStore, 1);
+
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    GroupsClient client(http);
+    GroupsRepository repository(client, groupDao, pairingStore);
+
+    const std::optional<RelayRequestPlan> plan = repository.planRefresh();
+    QVERIFY(plan.has_value());
+
+    {
+        QSqlQuery drop(db.handle());
+        QVERIFY(drop.exec(QStringLiteral("DROP TABLE groups")));
+    }
+
+    Group group;
+    group.id = QStringLiteral("g-1");
+    group.name = QStringLiteral("Family");
+
+    GroupsFetchResult result;
+    result.groups = QVector<Group>{ group };
+
+    QVERIFY2(!repository.applyRefresh(*plan, result), "a cache write that failed was reported as a refresh");
 }
 
 QTEST_GUILESS_MAIN(GroupsRepositoryTest)

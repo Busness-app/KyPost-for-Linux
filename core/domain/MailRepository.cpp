@@ -242,8 +242,16 @@ MailFetchOutcome MailRepository::applyRefresh(const MailRefreshPlan& plan, const
     // older deployment, or a proxy that dropped the query string) reports 0,
     // and storing that would be indistinguishable from having no cursor
     // while still claiming to have one.
-    if (result.cursor > 0)
-        m_cursorStore.setMailCursor(plan.subscriberId, folder, QString::number(result.cursor));
+    //
+    // Checked, like every DAO write above: QSettings keeps the value in
+    // memory and reports a failed file write only through status(). An
+    // unchecked setter here would leave the cursor advanced in RAM for the
+    // rest of the session -- so this session never re-asks for the window --
+    // and back at its old value on the next launch. Reporting the failure
+    // costs one redundant refresh, which re-applies rows that are already
+    // there.
+    if (result.cursor > 0 && !m_cursorStore.setMailCursor(plan.subscriberId, folder, QString::number(result.cursor)))
+        return { MailRepositoryOutcome::CacheWriteFailed, QString() };
 
     return { MailRepositoryOutcome::Success, QString() };
 }
