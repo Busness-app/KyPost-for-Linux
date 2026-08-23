@@ -75,6 +75,7 @@ add_library(kypostcore STATIC
   pgp/PgpMimeWriter.cpp
   pgp/OpenPgpKeyImporter.cpp
   pgp/OpenPgpEncryptor.cpp
+  pgp/PgpSendPlanner.cpp
   pgp/EncryptedMessageReader.cpp
   security/DatabaseKeyStore.cpp
   security/LockoutPolicy.cpp

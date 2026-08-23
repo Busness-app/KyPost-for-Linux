@@ -46,9 +46,19 @@ int main(int argc, char** argv)
     message.mode = QStringLiteral("plain");
     message.date = QStringLiteral("Sat, 23 Aug 2026 12:00:00 +0000");
 
-    const QString armor =
-        QStringLiteral("-----BEGIN PGP MESSAGE-----\r\n\r\nhQEMA0abc123def456\r\n=xY1z\r\n"
-                        "-----END PGP MESSAGE-----");
+    // A realistically SHAPED armor, not a three-line token: the relay runs
+    // mailmsg.PrepareSMTPMessage over these bytes, which normalises line
+    // endings and dot-stuffs, and a stub too short to contain a line
+    // beginning with "." or a blank line exercises none of that.
+    QString armor = QStringLiteral("-----BEGIN PGP MESSAGE-----\r\n\r\n");
+    for (int line = 0; line < 60; ++line) {
+        // 64 base64 characters, the width gpg emits. One line deliberately
+        // starts with a period, which is the byte SMTP has to escape.
+        armor += (line == 7 ? QStringLiteral(".") : QStringLiteral("h"))
+            + QStringLiteral("QEMA0abc123def456ghi789jkl012mno345pqr678stu901vwx234yz567AB")
+            + QStringLiteral("%1").arg(line, 4, 10, QLatin1Char('0')) + QStringLiteral("\r\n");
+    }
+    armor += QStringLiteral("=xY1z\r\n-----END PGP MESSAGE-----");
 
     if (!write(QString::fromLocal8Bit(argv[1]),
                 pgpMimeDelivery(message, armor, randomMimeBoundary()))) {
