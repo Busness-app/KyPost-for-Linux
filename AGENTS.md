@@ -132,9 +132,16 @@ Added 2026-07-25 (parity work with `kypost-android`):
   self-hosted signed OSTree repo published to `gh-pages` by
   `.github/workflows/flatpak.yml` — see `docs/DISTRIBUTION.md`. Don't spend
   effort on Flathub-specific manifest compliance.
-- **No PGP private key on this client, ever.** It handles public keys and
-  protection-mode *awareness* only. Encrypted mail the server cannot read is
-  explained to the user and routed to webmail — never decrypted here.
+- ~~**No PGP private key on this client, ever.**~~ **REVERSED 2026-08-22 at
+  the maintainer's direction.** The rule stood from 2026-07-25 to
+  2026-08-22 and read: "It handles public keys and protection-mode
+  *awareness* only. Encrypted mail the server cannot read is explained to
+  the user and routed to webmail — never decrypted here." Kept here rather
+  than deleted, because a reversed decision is worth more than a vanished
+  one: anything written against the old rule (the webmail hand-off in
+  `MailController`, `pgpComposeStateOf`, the wording in
+  `PgpMessagePresentation`) was correct under it and is now legacy, not
+  precedent. See §4a for what replaces it.
 - **Hostile Location Protection toggles by relaunching the process.**
   `main.cpp`'s composition root is one unbroken chain of stack locals from
   `Database` down through every DAO, repository, controller and QML
@@ -164,6 +171,73 @@ Added 2026-07-26:
   subject of every mail through a third party. Don't reintroduce it; if
   no-distributor latency ever needs improving, shorten the poll interval.
   Reasoning in full: `core/domain/TransportStateMachine.h`.
+
+## 4a. Client-side OpenPGP (decision reversed 2026-08-22)
+
+Client-side decryption and signing are now in scope.
+
+**Custody model, decided 2026-08-22: delegate to the user's `gpg-agent` via
+GPGME. This client holds no private key material and never sees a
+passphrase.** Keys stay where the user already keeps them, pinentry handles
+passphrases, and hardware tokens and smartcards work with no code at all.
+Bespoke in-app custody — what `kypost-android` has to do, having no agent to
+delegate to — was considered and rejected: it would mean owning key storage,
+memory hygiene, passphrase handling and enrolment, for a capability the
+platform already provides.
+
+Two consequences worth being explicit about, because they read as weaknesses
+and are the accepted cost of the model:
+
+  * The feature needs a working GnuPG. Without one, `engineAvailable()` is
+    false and the app says so once rather than reporting every message as
+    undecryptable.
+  * In a Flatpak it needs `--socket=gpg-agent`. Without that grant, gpgme
+    talks to a gpg inside the sandbox with an empty keyring — so the
+    permission goes in with the change that wires decryption into the mail
+    path, not before it, and not without saying why.
+
+Most of what follows therefore does not apply to this implementation: there
+is no key at rest here to protect, and no passphrase to keep out of a
+`QString`. They stay because they are the rules for anything that DOES hold
+key material, and reversing the custody decision later must not also quietly
+delete the constraints that come with it.
+
+The rules below apply to any implementation, under either model. They are
+written now, before the code, because every one of them is easier to design
+in than to retrofit.
+
+- **Private key material never touches `settings.ini`, the SQLite database,
+  or any file this app writes in the clear.** Not even the encrypted
+  database: it is decrypted for the whole session and is the wrong home for a
+  key whose whole point is to be unavailable while the app is idle.
+
+- **Key material and passphrases never live in `QString`.** It is implicitly
+  shared and copy-on-write, so a passphrase in one is duplicated by every
+  assignment and cannot be reliably cleared — `QString::clear()` frees a
+  buffer it may not be the only owner of. Anything holding secrets needs a
+  type that owns its buffer and zeroises on destruction, and it needs to
+  exist before the first line of PGP code, not after.
+
+- **A decryption failure is never rendered as a message.** Wrong key, corrupt
+  payload, unsupported algorithm and "no key for this recipient" are four
+  different answers with four different things for the user to do, and none
+  of them is showing the ciphertext or an empty body as though it were the
+  mail. `PgpMessagePresentation` already draws this distinction for the
+  server-side modes; the client-side ones must not collapse it.
+
+- **A PGP payload is attacker-controlled input.** It arrives from whoever
+  sent the mail. Parsing it needs a bound on the decrypted size (the wire
+  bound in `HttpClient` does not cover expansion) and it must not be able to
+  make this app allocate or recurse on the sender's say-so.
+
+- **The account-identity rules in §6g apply unchanged.** A decrypted body is
+  cached mail like any other: it belongs to the account that fetched it, and
+  a reply that outlives its pairing is discarded.
+
+- **Enrolment must be authenticated.** However a key reaches this device, the
+  path that brings it must not be one a webpage, a mail message or a
+  malicious QR can drive on its own. `PgpQrTargetValidator` exists because
+  the public-key path already had this problem.
 
 ## 5. Single-Qt rules
 
