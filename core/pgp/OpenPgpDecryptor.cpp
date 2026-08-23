@@ -54,8 +54,15 @@ PgpDecryptStatus statusFromError(gpgme_error_t error)
     // gpgme's human-readable string -- that is localised and not a contract.
     switch (gpgme_err_code(error)) {
     case GPG_ERR_NO_SECKEY:
-    case GPG_ERR_NO_DATA:
         return PgpDecryptStatus::NoSecretKey;
+    // NO_DATA is "there is no OpenPGP message in here", which is Malformed.
+    // It was grouped with NO_SECKEY above until 2026-08-23, so a corrupt or
+    // non-PGP payload told the user their key was on another machine and
+    // sent them looking for it. The two are genuinely distinguishable --
+    // mail encrypted to a key this keyring lacks really does come back as
+    // NO_SECKEY -- so there was never anything to gain by conflating them.
+    case GPG_ERR_NO_DATA:
+        return PgpDecryptStatus::Malformed;
     case GPG_ERR_CANCELED:
     case GPG_ERR_FULLY_CANCELED:
     case GPG_ERR_BAD_PASSPHRASE:
