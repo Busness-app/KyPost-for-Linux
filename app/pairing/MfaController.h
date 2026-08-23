@@ -23,13 +23,20 @@ class PairingStore;
 // unifiedpush devices out of every MFA challenge -- so a Linux device is never
 // notified of one, in push OR pull mode.
 //
-// This class is deliberately KEPT rather than deleted with the UI: the server
-// filter is explicitly temporary ("until encryption is added" -- the RFC 8291
-// UnifiedPush encryption plan is unimplemented server-side), and
-// POST /api/mfa/push/respond remains a valid, device-authenticated endpoint.
-// When that lands, this is the half that already works; only the QML needs
-// rebuilding. Do not wire a screen to it before the backend change, or it
-// will be dead on arrival again.
+// SETTLED (2026-08-23, by the user): Linux cannot do MFA push. This class is
+// dead code, not a half-built feature waiting on a backend change.
+//
+// The note above used to call the server filter "explicitly temporary". That
+// was wrong about what it is. MFATransportEligible's own comment gives the
+// reason -- a challenge carries sign-in metadata (IP address, user agent, the
+// match digits) and UnifiedPush delivers through an unencrypted public broker
+// such as ntfy.sh -- so it is a privacy control, and the thing that would have
+// to change is encryption of the push payload itself, in the UnifiedPush
+// ecosystem rather than in KyPost.
+//
+// POST /api/mfa/push/respond is still a valid device-authenticated endpoint,
+// which is why this compiles and its tests pass. Nothing sends this device a
+// challenge to respond TO. Do not wire a screen to it.
 
 class MfaController : public QObject
 {
