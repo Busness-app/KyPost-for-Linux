@@ -111,6 +111,7 @@ kypost_add_test(ContactPhotoClientTest core/net/ContactPhotoClientTest.cpp)
 kypost_add_test(PgpQrClientTest core/net/PgpQrClientTest.cpp)
 kypost_add_test(PgpBootstrapClientTest core/net/PgpBootstrapClientTest.cpp)
 kypost_add_test(PgpRecipientCheckerTest core/net/PgpRecipientCheckerTest.cpp)
+kypost_add_test(PgpPayloadClientTest core/net/PgpPayloadClientTest.cpp)
 kypost_add_test(RelayMailSourceTest core/net/RelayMailSourceTest.cpp)
 
 kypost_add_test(VCardContactTest core/vcard/VCardContactTest.cpp)
