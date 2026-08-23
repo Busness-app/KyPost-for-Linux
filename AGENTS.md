@@ -174,10 +174,33 @@ Added 2026-07-26:
 
 ## 4a. Client-side OpenPGP (decision reversed 2026-08-22)
 
-Client-side decryption and signing are now in scope. What is NOT yet decided
-is the custody model — whether this client delegates to the user's
-`gpg-agent` or holds key material itself — and no key-handling code may land
-until that is recorded here.
+Client-side decryption and signing are now in scope.
+
+**Custody model, decided 2026-08-22: delegate to the user's `gpg-agent` via
+GPGME. This client holds no private key material and never sees a
+passphrase.** Keys stay where the user already keeps them, pinentry handles
+passphrases, and hardware tokens and smartcards work with no code at all.
+Bespoke in-app custody — what `kypost-android` has to do, having no agent to
+delegate to — was considered and rejected: it would mean owning key storage,
+memory hygiene, passphrase handling and enrolment, for a capability the
+platform already provides.
+
+Two consequences worth being explicit about, because they read as weaknesses
+and are the accepted cost of the model:
+
+  * The feature needs a working GnuPG. Without one, `engineAvailable()` is
+    false and the app says so once rather than reporting every message as
+    undecryptable.
+  * In a Flatpak it needs `--socket=gpg-agent`. Without that grant, gpgme
+    talks to a gpg inside the sandbox with an empty keyring — so the
+    permission goes in with the change that wires decryption into the mail
+    path, not before it, and not without saying why.
+
+Most of what follows therefore does not apply to this implementation: there
+is no key at rest here to protect, and no passphrase to keep out of a
+`QString`. They stay because they are the rules for anything that DOES hold
+key material, and reversing the custody decision later must not also quietly
+delete the constraints that come with it.
 
 The rules below apply to any implementation, under either model. They are
 written now, before the code, because every one of them is easier to design

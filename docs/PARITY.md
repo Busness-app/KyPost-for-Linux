@@ -87,7 +87,9 @@ A row may not sit at **Missing** without an owner phase. A row may not sit at
 | Capability | Status | Notes |
 | --- | --- | --- |
 | Public-key QR exchange, encrypted-message awareness | Matched | |
-| Device enrolment, private-key custody, client-side decrypt/sign/encrypt | **Approved, not built** | The "no PGP private key on this client, ever" rule was **reversed 2026-08-22** at the maintainer's direction; `AGENTS.md` §4 records the reversal and §4a records the rules any implementation must meet. One decision still open before code can start: the **custody model** — delegate to the user's `gpg-agent` via GPGME (keys stay where the user already keeps them, pinentry handles passphrases, smartcards work for free, this app never holds key material) versus bespoke in-app custody as `kypost-android` has to do. Both are viable here: gpgmepp is in `org.kde.Platform` and `gpg-agent` is a recognised Flatpak socket type. Until that is recorded, no key-handling code may land. |
+| Client-side decryption | **Partial** | `OpenPgpDecryptor` (2026-08-22) decrypts via the user's own `gpg-agent` through GPGME — this client holds no key material and never sees a passphrase, so hardware tokens and smartcards work with no code. Not yet wired into the mail path: client-protected mail is still routed to webmail until that lands, along with the Flatpak `--socket=gpg-agent` grant it needs. Failures are four distinct answers (no secret key / cancelled or wrong passphrase / malformed / too large), never "corrupt message" for all of them, and the plaintext is bounded **as it is produced**, because OpenPGP carries compressed data that no wire bound constrains. |
+| Client-side signing and encryption on send | **Missing** | Phase 7. The decryptor above is the read half only. |
+| In-app private-key custody and enrolment | **Non-goal** | Decided 2026-08-22 in favour of delegating to `gpg-agent`. `AGENTS.md` §4a records the reasoning and the two accepted costs: a working GnuPG is required, and the Flatpak needs the agent socket. |
 
 ## 7. Presentation
 
