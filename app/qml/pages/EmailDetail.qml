@@ -61,10 +61,44 @@ Item {
     // to a bool, and logged "Unable to assign [undefined] to bool" twice on
     // every startup. Hoisted to one property because the expression was
     // duplicated across the two notices that share it.
-    readonly property bool hasRenderableBody: !!(root.email && (root.email.body || root.email.preview))
+    readonly property bool hasRenderableBody: root.hasDecryptedBody
+        || !!(root.email && (root.email.body || root.email.preview))
 
-    onMessageIdChanged: reload()
+    // The decrypted body, but ONLY when the one MailApp is holding belongs to
+    // the message this view is showing. MailApp is a singleton and holds at
+    // most one plaintext, so without the id comparison a decrypted message
+    // would appear under the next message's headers the moment the reader
+    // moved on.
+    // The id comparison inside is the control -- see Format.decryptedBodyFor,
+    // where it lives so it can be tested without this file's singleton graph.
+    readonly property var decrypted: Format.decryptedBodyFor(root.messageId,
+                                                              MailApp.decryptedMessageId,
+                                                              MailApp.decryptedHtml,
+                                                              MailApp.decryptedPlain)
+    readonly property bool hasDecryptedBody: root.decrypted.body !== ""
+    // Which form it is comes from the message's own MIME Content-Type, not
+    // from sniffing the characters -- see Format.renderedEmailHtml.
+    readonly property bool decryptedIsHtml: root.decrypted.isHtml
+    readonly property string decryptedBody: root.decrypted.body
+
+    onMessageIdChanged: {
+        // The reader has moved on, so the held plaintext is no longer
+        // anybody's business. Dropped rather than merely hidden.
+        MailApp.forgetDecrypted()
+        reload()
+    }
     onFolderChanged: reload()
+
+    // MailApp is a singleton and the plaintext arrives asynchronously, so the
+    // web view has to be told to re-render when it does -- and again when it
+    // is forgotten, so the decrypted page does not stay on screen after the
+    // app has dropped it.
+    Connections {
+        target: MailApp
+        function onDecryptedChanged() {
+            webViewLoader.applyContent()
+        }
+    }
     Component.onCompleted: reload()
 
     // Archive/Junk/Delete dispatch and return; the answer arrives here.
@@ -247,8 +281,8 @@ Item {
             + "pre { white-space: pre-wrap; }"
     }
 
-    function renderedHtml(body) {
-        return Format.renderedEmailHtml(body, root.imagesLoaded, root.bodyStyle())
+    function renderedHtml(body, forcePlainText) {
+        return Format.renderedEmailHtml(body, root.imagesLoaded, root.bodyStyle(), forcePlainText)
     }
 
     // ---- layout ----------------------------------------------------
@@ -586,11 +620,66 @@ Item {
                     wrapMode: Text.WordWrap
                 }
 
+                // Why the decryption is not automatic: it prompts pinentry,
+                // and for a hardware token that means the user has to
+                // physically touch the key. That belongs to a deliberate
+                // action, not to a list selection changing.
+                PrimaryButton {
+                    objectName: "decryptButton"
+                    // C++ decides: ClientProtected AND a usable gpg on this
+                    // machine. Already decrypted, or busy, and it goes away.
+                    visible: !!root.email.canDecryptHere && !root.hasDecryptedBody
+                             && !MailApp.decryptBusy
+                    text: i18n("Decrypt with your key")
+                    onClicked: MailApp.decryptMessage(root.messageId)
+                }
+
+                Text {
+                    objectName: "decryptBusyLabel"
+                    Layout.fillWidth: true
+                    textFormat: Text.PlainText
+                    visible: MailApp.decryptBusy
+                    text: i18n("Waiting for your key…")
+                    color: Theme.ink
+                    font.family: Theme.fontUi
+                    font.pixelSize: 12
+                    wrapMode: Text.WordWrap
+                }
+
+                Text {
+                    objectName: "decryptFailureLabel"
+                    Layout.fillWidth: true
+                    // PlainText, not AutoText: this sentence is chosen by
+                    // C++, but it sits beside relay-influenced content and
+                    // Text.AutoText is banned in this repo for that reason.
+                    textFormat: Text.PlainText
+                    visible: !!MailApp.decryptFailure && !MailApp.decryptBusy
+                    text: MailApp.decryptFailure || ""
+                    color: Theme.ink
+                    font.family: Theme.fontUi
+                    font.pixelSize: 12
+                    wrapMode: Text.WordWrap
+                }
+
+                PrimaryButton {
+                    objectName: "decryptRetryButton"
+                    // Offered only where retrying can actually change the
+                    // answer. C++ owns that classification -- every other
+                    // failure returns the same result however often it is
+                    // asked.
+                    visible: MailApp.decryptRetryable && !MailApp.decryptBusy
+                    text: i18n("Try again")
+                    onClicked: MailApp.decryptMessage(root.messageId)
+                }
+
                 PrimaryButton {
                     // C++ leaves webmailUrl empty unless the message really
                     // is unreadable here AND the pairing has a usable https
                     // base URL, so an emptiness test is the whole rule.
-                    visible: !!root.email.webmailUrl
+                    // Still offered alongside decryption: a key kept on
+                    // another machine is an ordinary setup, and decrypting
+                    // here cannot help there.
+                    visible: !!root.email.webmailUrl && !root.hasDecryptedBody
                     text: i18n("Open in webmail")
                     onClicked: Qt.openUrlExternally(root.email.webmailUrl)
                 }
@@ -632,6 +721,14 @@ Item {
             function applyContent() {
                 if (!item)
                     return
+                // The decrypted body wins when there is one for THIS
+                // message: the cached row for a client-protected message has
+                // no body at all, so the alternative is a blank page.
+                if (root.hasDecryptedBody) {
+                    item.awaitingInitialLoad = true
+                    item.loadHtml(root.renderedHtml(root.decryptedBody, !root.decryptedIsHtml))
+                    return
+                }
                 const source = (root.email && root.email.body) ? root.email.body
                                                                  : (root.email ? root.email.preview : "")
                 // Rearm the one-shot gate in onNavigationRequested below

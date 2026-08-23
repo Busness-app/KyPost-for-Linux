@@ -1,6 +1,7 @@
 #pragma once
 
 #include "domain/PgpMessageState.h"
+#include "pgp/EncryptedMessageReader.h"
 
 #include <QString>
 #include <QUrl>
@@ -29,6 +30,23 @@ QString pgpRowMarkerAccessibleName(PgpMessageState state);
 // states that need no banner (None).
 QString pgpBannerTitle(PgpMessageState state);
 QString pgpBannerBody(PgpMessageState state, const QString& decryptError);
+
+// Why a client-side decryption did not produce a message, in words the
+// reader can act on.
+//
+// One sentence per PgpReadStatus, because each one leaves the user somewhere
+// different: a key held on another machine, a passphrase they can retype, an
+// account migration to finish, an outage to wait out. Collapsing them into
+// "could not decrypt" would be the same failure AGENTS.md section 4a names --
+// telling somebody their mail is broken when it is merely elsewhere.
+//
+// Returns an empty string for Decrypted, which is not a failure.
+QString pgpReadFailureMessage(PgpReadStatus status);
+
+// Whether offering Retry for this status can possibly help. Only FetchFailed
+// is retryable; every other failure returns the same answer however many
+// times it is asked.
+bool pgpReadIsRetryable(PgpReadStatus status);
 
 // Builds the webmail URL for reading a message the client cannot decrypt.
 //

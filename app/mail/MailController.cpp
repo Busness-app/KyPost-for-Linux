@@ -13,6 +13,10 @@
 #include "net/FolderClient.h"
 #include "net/NetworkExecutor.h"
 #include "net/PgpBootstrapClient.h"
+#include "net/PgpPayloadClient.h"
+#include "pgp/EncryptedMessageReader.h"
+#include "pgp/MimeBodyReader.h"
+#include "pgp/OpenPgpDecryptor.h"
 #include "net/PgpRecipientChecker.h"
 #include "net/RelayMailSource.h"
 
@@ -34,6 +38,18 @@
 #include <QVariantMap>
 #include <QSet>
 #include <algorithm>
+
+namespace {
+
+// Probed once. engineAvailable() stats the gpg installation, and this is
+// read while building the map for every message the reader opens.
+bool openPgpEngineAvailable()
+{
+    static const bool available = OpenPgpDecryptor::engineAvailable();
+    return available;
+}
+
+} // namespace
 
 MailController::MailController(MailRepository& mailRepository, RelayMailSource& relayMailSource,
                                 KeywordRepository& keywordRepository, PairingStore& pairingStore,
@@ -1369,7 +1385,115 @@ QVariantMap MailController::findByMessageId(const QString& messageId) const
     map[QStringLiteral("webmailUrl")] = pgpState == PgpMessageState::ClientProtected
         ? webmailReadUrl(webmailBaseUrl(), email->folder, email->messageId).toString()
         : QString();
+    // Whether to offer decryption on this row at all. Webmail stays offered
+    // either way: a key kept on another machine is a perfectly ordinary
+    // setup, and this button cannot help there.
+    map[QStringLiteral("canDecryptHere")] =
+        pgpState == PgpMessageState::ClientProtected && openPgpEngineAvailable();
     return map;
+}
+
+void MailController::forgetDecrypted()
+{
+    if (m_decryptedMessageId.isEmpty() && m_decryptedHtml.isEmpty() && m_decryptedPlain.isEmpty()
+        && m_decryptFailure.isEmpty()) {
+        return;
+    }
+    m_decryptedMessageId.clear();
+    m_decryptedHtml.clear();
+    m_decryptedPlain.clear();
+    m_decryptFailure.clear();
+    m_decryptRetryable = false;
+    emit decryptedChanged();
+}
+
+void MailController::decryptMessage(const QString& messageId)
+{
+    if (messageId.isEmpty() || m_decryptInFlight)
+        return;
+
+    const std::optional<DevicePairing> pairing = m_pairingStore.load();
+    if (!pairing.has_value()) {
+        setLastError(i18n("Not paired"));
+        return;
+    }
+
+    // The mailbox comes from the CACHED row, not from the caller. The
+    // endpoint takes a mailbox and a UID, and letting a view pass both would
+    // make "which mailbox" a QML-side decision about someone else's mail.
+    const std::optional<Email> email = m_mailRepository.findCachedEmail(messageId);
+    if (!email.has_value())
+        return;
+
+    // Anything already held belongs to a different attempt. Dropped before
+    // the new one starts, so a failure cannot leave the previous message's
+    // plaintext on screen under the new one's headers.
+    forgetDecrypted();
+
+    const RelayEndpoint endpoint{ QUrl(pairing->serverBaseUrl),
+                                   RelayAuth{ pairing->deviceId, pairing->deviceSecret } };
+    const PairingIdentity identity = identityOf(*pairing);
+
+    m_decryptInFlight = true;
+    emit decryptedChanged();
+
+    m_executor.run(
+        this,
+        [endpoint, mailbox = email->folder, messageId](HttpClient& http) {
+            // Constructed here, on the executor thread, for the same reason
+            // FolderRepository::listWith constructs its client there: the
+            // HttpClient belongs to that thread and these are stateless
+            // wrappers over it.
+            const PgpPayloadClient payloads(http);
+            const OpenPgpDecryptor decryptor;
+            const EncryptedMessageReader reader(payloads, decryptor);
+            return reader.read(endpoint.serverBaseUrl, endpoint.auth, mailbox, messageId);
+        },
+        [this, identity, messageId](const PgpReadResult& result) {
+            applyDecryptResult(identity, messageId, result);
+        });
+}
+
+void MailController::applyDecryptResult(const PairingIdentity& identity, const QString& messageId,
+                                         const PgpReadResult& result)
+{
+    m_decryptInFlight = false;
+
+    // The account may have been replaced while pinentry was open -- which is
+    // an unbounded wait, so this window is wider here than anywhere else in
+    // the app. Showing the previous account's decrypted mail in the new
+    // account's reader is the stale-reply defect this repo has now fixed at
+    // eleven sites; nothing is displayed and nothing is kept.
+    if (!m_pairingStore.stillCurrent(identity)) {
+        forgetDecrypted();
+        emit decryptedChanged();
+        return;
+    }
+
+    if (result.status != PgpReadStatus::Decrypted) {
+        m_decryptFailure = pgpReadFailureMessage(result.status);
+        m_decryptRetryable = pgpReadIsRetryable(result.status);
+        emit decryptedChanged();
+        return;
+    }
+
+    const MimeBody body = readMimeBody(result.plaintext);
+    if (body.isEmpty()) {
+        // It decrypted, and there is no text in it -- an entity whose only
+        // parts are attachments, or one shaped in a way this parser will not
+        // guess at. Its own sentence rather than a decryption failure,
+        // because the decryption did work and saying otherwise would send
+        // the user to check their key.
+        m_decryptFailure = i18n("This message decrypted, but contains no readable text.");
+        m_decryptRetryable = false;
+        emit decryptedChanged();
+        return;
+    }
+
+    m_decryptedMessageId = messageId;
+    m_decryptedHtml = body.html;
+    m_decryptedPlain = body.plain;
+    emit decryptedChanged();
 }
 
 QVariantList MailController::allKeywordSettings() const

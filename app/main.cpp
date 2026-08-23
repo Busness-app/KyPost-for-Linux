@@ -951,6 +951,21 @@ int main(int argc, char* argv[])
                          notificationDispatcher.setContentHidden(appLockManager.locked());
                      });
 
+    // Third leak of the same kind, and the one with the least excuse: a
+    // decrypted OpenPGP message is held in MailController's memory and
+    // nowhere else, so nothing on disk needs clearing -- but locking the app
+    // while it is on screen would leave it there for whoever picks the
+    // machine up. LockOverlay.qml covers the window; it does not drop the
+    // plaintext behind it.
+    //
+    // Only on the transition INTO locked. Dropping it on unlock too would
+    // work but says the wrong thing about when it matters.
+    QObject::connect(&appLockManager, &AppLockManager::lockedChanged, &mailController,
+                     [&mailController, &appLockManager]() {
+                         if (appLockManager.locked())
+                             mailController.forgetDecrypted();
+                     });
+
     // A pinned-certificate mismatch aborts every request before it is sent,
     // for the rest of this pairing's life, so it needs a persistent
     // explanation rather than one generic per-request error. HttpClient
