@@ -25,7 +25,9 @@
 class GnupgFixture
 {
 public:
-    bool build()
+    // The uid defaults to the original single-key fixture, so every existing
+    // caller is unaffected; tests that need two parties name their own.
+    bool build(const QString& uid = QStringLiteral("KyPost Test <test@example.com>"))
     {
         if (!m_home.isValid())
             return false;
@@ -37,7 +39,7 @@ public:
                   { QStringLiteral("--batch"), QStringLiteral("--pinentry-mode"),
                     QStringLiteral("loopback"), QStringLiteral("--passphrase"), QString(),
                     QStringLiteral("--quick-generate-key"),
-                    QStringLiteral("KyPost Test <test@example.com>"), QStringLiteral("default"),
+                    uid, QStringLiteral("default"),
                     QStringLiteral("default"), QStringLiteral("never") })) {
             return false;
         }
