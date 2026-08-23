@@ -1,5 +1,5 @@
 // Emits one PGP/MIME delivery and one protected-headers content part, so
-// scripts/verify-pgp-delivery-shape.sh can feed them to the RELAY'S OWN
+// scripts/verify-pgp-against-relay.sh can feed them to the RELAY'S OWN
 // validators rather than to a second opinion written here.
 //
 // Compiled by that script against core/pgp/PgpMimeWriter.cpp directly. It is
@@ -7,9 +7,12 @@
 // that does not compile proves nothing, and this one is built and run every
 // time the check is.
 
+#include "net/PgpSendRequest.h"
 #include "pgp/PgpMimeWriter.h"
+#include "pgp/PgpSendPlanner.h"
 
 #include <QFile>
+#include <QJsonDocument>
 
 #include <cstdio>
 
@@ -29,8 +32,9 @@ bool write(const QString& path, const QByteArray& bytes)
 
 int main(int argc, char** argv)
 {
-    if (argc != 3) {
-        std::fprintf(stderr, "usage: pgp-delivery-fixture <delivery-out> <protected-out>\n");
+    if (argc != 4) {
+        std::fprintf(stderr,
+                      "usage: pgp-delivery-fixture <delivery-out> <protected-out> <request-out>\n");
         return 2;
     }
 
@@ -66,6 +70,38 @@ int main(int argc, char** argv)
     }
     if (!write(QString::fromLocal8Bit(argv[2]),
                 protectedContent(message, randomMimeBoundary()))) {
+        return 1;
+    }
+
+    // The whole send request, exactly as PgpSendClient would put it on the
+    // wire, so the relay's own decoder and validators can be run over it --
+    // not just over one delivery's MIME.
+    //
+    // Two deliveries and a Sent copy, because the shape the relay has to
+    // accept is a LIST: the visible recipients share one, and the blind one
+    // gets their own.
+    PgpSendPlan plan;
+    plan.status = PgpSendPlanStatus::Built;
+
+    PgpDelivery visible;
+    visible.smtpRecipients = { QStringLiteral("you@example.com"), QStringLiteral("other@example.com"),
+                                QStringLiteral("cc@example.com") };
+    visible.message = pgpMimeDelivery(message, armor, randomMimeBoundary());
+    plan.deliveries.append(visible);
+
+    OutgoingMessage blindMessage = message; // same visible headers, per RFC
+    PgpDelivery blind;
+    blind.smtpRecipients = { QStringLiteral("bcc@example.com") };
+    blind.message = pgpMimeDelivery(blindMessage, armor, randomMimeBoundary());
+    plan.deliveries.append(blind);
+
+    plan.sentCopy = pgpMimeDelivery(message, armor, randomMimeBoundary());
+
+    const QJsonObject request = pgpSendRequestBody(
+        message.from, plan, message.to, message.cc, { QStringLiteral("bcc@example.com") },
+        message.mode);
+    if (!write(QString::fromLocal8Bit(argv[3]),
+                QJsonDocument(request).toJson(QJsonDocument::Compact))) {
         return 1;
     }
     return 0;
