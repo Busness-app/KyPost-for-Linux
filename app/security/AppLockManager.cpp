@@ -485,6 +485,24 @@ void AppLockManager::cancelPendingLock()
     emit lockPendingChanged();
 }
 
+bool AppLockManager::databaseUnencrypted() const
+{
+    return m_databaseMode == ProfileDatabaseMode::PlaintextOnDisk;
+}
+
+bool AppLockManager::databaseMemoryOnly() const
+{
+    return m_databaseMode == ProfileDatabaseMode::InMemoryNoKeyStorage;
+}
+
+void AppLockManager::setDatabaseMode(ProfileDatabaseMode mode)
+{
+    if (m_databaseMode == mode)
+        return;
+    m_databaseMode = mode;
+    emit databaseModeChanged();
+}
+
 void AppLockManager::lockNow()
 {
     // Stopped before the early return below, not after: an explicit lock

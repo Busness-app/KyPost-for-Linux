@@ -23,6 +23,8 @@ class FakeAppLock : public QObject
     Q_PROPERTY(int minimumPinLength MEMBER m_minimumPinLength CONSTANT)
     Q_PROPERTY(bool storeUnavailable MEMBER m_storeUnavailable NOTIFY lockedChanged)
     Q_PROPERTY(bool wipeIncomplete MEMBER m_wipeIncomplete NOTIFY lockedChanged)
+    Q_PROPERTY(bool databaseUnencrypted MEMBER m_databaseUnencrypted NOTIFY lockedChanged)
+    Q_PROPERTY(bool databaseMemoryOnly MEMBER m_databaseMemoryOnly NOTIFY lockedChanged)
 
 public:
     using QObject::QObject;
@@ -52,6 +54,8 @@ private:
     int m_minimumPinLength = 6;
     bool m_storeUnavailable = false;
     bool m_wipeIncomplete = false;
+    bool m_databaseUnencrypted = false;
+    bool m_databaseMemoryOnly = false;
 };
 
 class FakePairing : public QObject

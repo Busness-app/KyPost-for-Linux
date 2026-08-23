@@ -663,6 +663,29 @@ never once run.
   SQLITE_ENABLE_COLUMN_METADATA" against a library that had the symbol. Use
   plain `grep ... > /dev/null`, which reads its input to the end.
 
+- **`sqlcipher_export` does not copy `PRAGMA user_version`.** Left at 0, the
+  converted database looks brand-new to `Database::open()`, every migration
+  is replayed over rows that already have the changes, and the open fails --
+  on a database that is otherwise perfectly good. Copied explicitly, and
+  `DatabaseEncryptionMigrationTest` fails in four places if that line is
+  removed.
+
+- **Losing the mail is worse than leaving it unencrypted for another
+  launch.** Every failure path in `DatabaseEncryptionMigration` is written
+  that way round: the encrypted copy goes to a separate file, is verified
+  table by table against the original, is put in place and re-opened, and
+  only THEN is the plaintext securely deleted. A marker is armed before
+  anything changes, so an interrupted run is repaired on the next launch --
+  including the one moment between the two renames where the profile has no
+  database at its usual path.
+
+- **Never mint a key because the keyring did not answer.** The obvious
+  `loadOrCreate()` shape, built on `SecureStore::get()`, does exactly that
+  against a locked keyring -- and writes the new key over the real one, after
+  which the database is unopenable by anyone including its owner, forever.
+  `DatabaseKeyStore::existing()` reports Unreadable and Corrupt as their own
+  answers for this reason alone.
+
 ## 7. DOX framework
 
 ### Core Contract

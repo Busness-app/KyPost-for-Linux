@@ -39,12 +39,13 @@ class ProfileDatabaseTest : public QObject
 
 private slots:
     void aNewProfileIsEncrypted();
-    void anExistingPlaintextProfileIsOpenedAsItIs();
+    void anExistingPlaintextProfileIsConverted();
     void anUnreadableKeyStoreNeverMintsAKeyForANewProfile();
     void anUnreadableKeyStoreStillOpensAnExistingProfile();
     void aBuildWithoutSqlCipherStaysOnDisk();
     void anEncryptedProfileIsNeverReopenedInTheClear();
     void aNewProfileWithNowhereToKeepAKeyGoesToMemory();
+    void openingAnExistingPlaintextProfileConvertsItInPlace();
 };
 
 // The decision table, exhaustively, with no disk and no keyring involved.
@@ -58,13 +59,19 @@ void ProfileDatabaseTest::aNewProfileIsEncrypted()
              ProfileDatabaseMode::EncryptedOnDisk);
 }
 
-// Refusing here would not un-write the plaintext already on this disk. It
-// would only take the user's mail away while leaving the exposure exactly
-// where it was.
-void ProfileDatabaseTest::anExistingPlaintextProfileIsOpenedAsItIs()
+// Converted rather than left alone (user's call): most people never open
+// Settings, so an opt-in would leave most mail in plaintext indefinitely.
+// The conversion is written so that losing the mail is never the failure
+// mode, and openProfileDatabase() falls back to the untouched plaintext
+// database if it does fail.
+void ProfileDatabaseTest::anExistingPlaintextProfileIsConverted()
 {
     QCOMPARE(chooseProfileDatabaseMode(inputs(true, DatabaseKeyStore::Status::Absent, true, false)),
-             ProfileDatabaseMode::PlaintextOnDisk);
+             ProfileDatabaseMode::EncryptedOnDisk);
+    // Same for a key that exists while the file has not caught up, which is
+    // what an interrupted conversion looks like.
+    QCOMPARE(chooseProfileDatabaseMode(inputs(true, DatabaseKeyStore::Status::Found, true, false)),
+             ProfileDatabaseMode::EncryptedOnDisk);
 }
 
 // The case that costs a user their mail if it is got wrong: minting a fresh
@@ -162,6 +169,51 @@ void ProfileDatabaseTest::aNewProfileWithNowhereToKeepAKeyGoesToMemory()
     QSqlQuery query(db.handle());
     QVERIFY(query.exec(QStringLiteral("SELECT count(*) FROM emails")));
     QVERIFY2(!QFile::exists(path), "a database file was created despite there being nowhere to keep its key");
+}
+
+// End to end on the path every existing user takes on their next launch:
+// they had a plaintext database, they open the app, and afterwards their
+// mail is encrypted and still all there.
+void ProfileDatabaseTest::openingAnExistingPlaintextProfileConvertsItInPlace()
+{
+    if (!Database::encryptionAvailable())
+        QSKIP("built without SQLCipher -- this behaviour is NOT covered");
+
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("kypost.db"));
+
+    // The profile as it exists today: plaintext, with mail in it.
+    {
+        Database plain;
+        QVERIFY(plain.open(path));
+        QSqlQuery insert(plain.handle());
+        insert.prepare(QStringLiteral("INSERT INTO emails (message_id, folder, subject, at_utc) "
+                                       "VALUES (?, ?, ?, ?)"));
+        insert.addBindValue(QStringLiteral("m1"));
+        insert.addBindValue(QStringLiteral("INBOX"));
+        insert.addBindValue(QStringLiteral("SUBJECTFROMBEFORE"));
+        insert.addBindValue(QStringLiteral("2026-08-22T00:00:00Z"));
+        QVERIFY(insert.exec());
+    }
+    QVERIFY(!databaseFileIsEncrypted(path));
+
+    QTemporaryDir secureDir;
+    QVERIFY(secureDir.isValid());
+    SecureStoreFile secureStore(secureDir.path());
+    DatabaseKeyStore keyStore(secureStore);
+    QCOMPARE(keyStore.existing().status, DatabaseKeyStore::Status::Absent);
+
+    Database db;
+    QCOMPARE(openProfileDatabase(db, keyStore, path), ProfileDatabaseMode::EncryptedOnDisk);
+
+    QVERIFY2(databaseFileIsEncrypted(path), "the existing profile was not converted");
+    QCOMPARE(keyStore.existing().status, DatabaseKeyStore::Status::Found);
+
+    QSqlQuery read(db.handle());
+    QVERIFY(read.exec(QStringLiteral("SELECT subject FROM emails WHERE message_id = 'm1'")));
+    QVERIFY(read.next());
+    QCOMPARE(read.value(0).toString(), QStringLiteral("SUBJECTFROMBEFORE"));
 }
 
 QTEST_GUILESS_MAIN(ProfileDatabaseTest)
