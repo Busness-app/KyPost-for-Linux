@@ -1,5 +1,6 @@
 #pragma once
 
+#include "domain/DevicePairing.h" // PairingIdentity
 #include "net/RelayAuth.h"
 
 #include <QString>
@@ -53,6 +54,16 @@ public:
     // Resolves the pairing on the CALLING thread. Returns nullopt when not
     // paired, which the caller reports without any request.
     std::optional<std::pair<QUrl, RelayAuth>> resolvePairing() const;
+
+    // Which account this device is paired to, and whether it still is.
+    //
+    // The QR this fetches encodes a key-exchange token for ONE account, so a
+    // caller holding one has to be able to ask whether it is still the
+    // current account's. Passed through here rather than by handing the
+    // caller a PairingStore: the store caches and the credential gate mutates
+    // it, so it stays behind one owner (docs/THREADING.md).
+    PairingIdentity currentIdentity() const;
+    bool stillCurrent(const PairingIdentity& identity) const;
 
 private:
     PgpQrClient& m_client;
