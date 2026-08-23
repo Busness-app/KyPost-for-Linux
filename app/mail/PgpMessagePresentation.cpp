@@ -34,6 +34,38 @@ QString pgpRowMarkerAccessibleName(PgpMessageState state)
     return {};
 }
 
+QString pgpSignatureLabel(PgpSignatureVerdict verdict, const QString& signedBy)
+{
+    switch (verdict) {
+    case PgpSignatureVerdict::None:
+        return {};
+    case PgpSignatureVerdict::ValidFromSender:
+        return signedBy.isEmpty() ? i18n("Signed, and the signature checks out.")
+                                   : i18n("Signed by %1.", signedBy);
+    case PgpSignatureVerdict::ValidFromUnknownKey:
+        // Deliberately not "signed by someone else": this client cannot say
+        // who, only that the key is not one associated with the address the
+        // message claims to come from.
+        return signedBy.isEmpty()
+            ? i18n("This message is signed, but not by a key known for its sender.")
+            : i18n("This message is signed, but not by any key known for %1.", signedBy);
+    case PgpSignatureVerdict::Invalid:
+        return i18n("The signature on this message is not valid. It may have been altered.");
+    case PgpSignatureVerdict::CannotCheck:
+        // Never phrased as a fault. Nothing failed; the question could not be
+        // asked.
+        return i18n("This message is signed, but there is no key available to check the signature "
+                     "against.");
+    }
+    return {};
+}
+
+bool pgpSignatureIsWarning(PgpSignatureVerdict verdict)
+{
+    return verdict == PgpSignatureVerdict::ValidFromUnknownKey
+        || verdict == PgpSignatureVerdict::Invalid;
+}
+
 QString pgpReadFailureMessage(PgpReadStatus status)
 {
     switch (status) {

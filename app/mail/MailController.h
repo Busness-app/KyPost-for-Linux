@@ -79,6 +79,11 @@ class MailController : public QObject
     // Localized sentence for the last failed decryption, or empty. Paired
     // with decryptRetryable so the UI knows whether a Retry button can help.
     Q_PROPERTY(QString decryptFailure READ decryptFailure NOTIFY decryptedChanged)
+    // Who signed the held message, in words, and whether that is a warning.
+    // Empty when the message is unsigned -- saying "not signed" beside every
+    // unsigned message trains people to ignore the line that matters.
+    Q_PROPERTY(QString decryptedSignature READ decryptedSignature NOTIFY decryptedChanged)
+    Q_PROPERTY(bool decryptedSignatureIsWarning READ decryptedSignatureIsWarning NOTIFY decryptedChanged)
     Q_PROPERTY(bool decryptRetryable READ decryptRetryable NOTIFY decryptedChanged)
     Q_PROPERTY(QString lastError READ lastError NOTIFY lastErrorChanged)
     Q_PROPERTY(bool pgpCanEncrypt READ pgpCanEncrypt NOTIFY pgpComposeStateChanged)
@@ -112,6 +117,8 @@ public:
     QString decryptedHtml() const { return m_decryptedHtml; }
     QString decryptedPlain() const { return m_decryptedPlain; }
     QString decryptFailure() const { return m_decryptFailure; }
+    QString decryptedSignature() const { return m_decryptedSignature; }
+    bool decryptedSignatureIsWarning() const { return m_decryptedSignatureIsWarning; }
     bool decryptRetryable() const { return m_decryptRetryable; }
     bool pgpCanEncrypt() const;
     bool pgpCanSign() const;
@@ -634,6 +641,8 @@ private:
     QString m_decryptedHtml;
     QString m_decryptedPlain;
     QString m_decryptFailure;
+    QString m_decryptedSignature;
+    bool m_decryptedSignatureIsWarning = false;
     bool m_decryptRetryable = false;
     bool m_decryptInFlight = false;
     bool m_lastSendMissingSentCopy = false;

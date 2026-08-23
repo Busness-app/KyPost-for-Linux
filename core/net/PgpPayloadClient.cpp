@@ -2,6 +2,7 @@
 
 #include "net/RelayAuth.h"
 
+#include <QJsonArray>
 #include <QJsonObject>
 
 namespace {
@@ -72,6 +73,18 @@ PgpPayloadResult PgpPayloadClient::fetch(const QUrl& serverBaseUrl, const RelayA
     }
 
     out.encryptedPayload = decoded->value(QStringLiteral("encryptedPayload")).toString();
+    out.resolvedSender = decoded->value(QStringLiteral("resolvedSender")).toString().trimmed();
+    for (const QJsonValue& value : decoded->value(QStringLiteral("signerKeys")).toArray()) {
+        const QJsonObject object = value.toObject();
+        PgpSignerKey key;
+        key.publicKey = object.value(QStringLiteral("publicKey")).toString();
+        // Absent means false on the wire (omitempty), and false is the
+        // permissive reading -- which is right here only because the relay
+        // sets it when it knows of a conflict. Nothing is inferred.
+        key.conflict = object.value(QStringLiteral("conflict")).toBool();
+        if (!key.publicKey.trimmed().isEmpty())
+            out.signerKeys.append(key);
+    }
     // Blank ciphertext on a 200 is the signed-but-not-encrypted message. Not
     // a decode failure and not a fetch failure -- there is simply nothing on
     // this path to decrypt. Trimmed before the test because armor is

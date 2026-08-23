@@ -5,6 +5,7 @@
 
 #include <QString>
 #include <QUrl>
+#include <QVector>
 #include <optional>
 
 struct RelayAuth;
@@ -53,6 +54,25 @@ enum class PgpPayloadStatus
     Failed,
 };
 
+// One public key the relay's address book binds to this message's sender.
+//
+// ALREADY NARROWED. The relay returns only the keys bound to the sender it
+// resolved, and its own comment is explicit that this narrowing IS the
+// binding: the client no longer parses the From header at all. Re-deriving a
+// binding here from the keys' User IDs would be both forgeable (one key, two
+// self-asserted User IDs) and parser-dependent, which is the arrangement this
+// replaced.
+struct PgpSignerKey
+{
+    QString publicKey; // ASCII-armored; public, nothing secret here
+    // The relay saw more than one key claiming this address and cannot say
+    // which is right. Offering it anyway would let whichever key verified
+    // decide the answer.
+    bool conflict = false;
+
+    bool operator==(const PgpSignerKey&) const = default;
+};
+
 struct PgpPayloadResult
 {
     PgpPayloadStatus status = PgpPayloadStatus::Failed;
@@ -61,6 +81,22 @@ struct PgpPayloadResult
 
     // ASCII-armored OpenPGP message, verbatim. Populated only on Fetched.
     QString encryptedPayload;
+
+    // The keys a signature may be credited to. Empty means no verdict beyond
+    // "cannot check" is available.
+    QVector<PgpSignerKey> signerKeys;
+
+    // The addr-spec the relay resolved from the From header, and the ONLY
+    // identity a verification verdict may be shown against.
+    //
+    // `sender` -- the display form -- is deliberately absent from this struct.
+    // The two are attacker-separable: a From with display name
+    // "bob@example.com" and mailbox eve@evil.example renders as
+    // `bob@example.com <eve@evil.example>` while the binding correctly uses
+    // eve@evil.example. A UI that put a verified badge next to the display
+    // form would be crediting text the attacker chose freely. Not parsing it
+    // at all is the cheapest way to make that impossible.
+    QString resolvedSender;
 };
 
 // Fetches one message's raw OpenPGP ciphertext, so this device can decrypt it
@@ -70,16 +106,14 @@ struct PgpPayloadResult
 // method per endpoint, a small *Result struct) rather than introducing
 // anything new.
 //
-// The response also carries signaturePayload, signedPartBase64, signerKeys,
-// sender and resolvedSender. None of them is parsed here, deliberately: there
-// is no signature verifier on this client yet, and the fields are only
-// meaningful together. The backend's comment on this handler is explicit that
-// any verdict must be keyed off `resolvedSender` and never off `sender` --
-// the two are attacker-separable, since a From display name can be made to
-// read like a different mailbox entirely. Parsing the keys before anything
-// can correctly bind a verdict to them would leave exactly the material for
-// that mistake sitting in a struct. They go in with the verifier or not at
-// all.
+// signerKeys and resolvedSender ARE parsed, now that there is a verifier to
+// bind them (2026-08-23). `sender` -- the display form of the From header --
+// still is not, and must not be: see PgpPayloadResult::resolvedSender.
+//
+// signaturePayload and signedPartBase64 remain unparsed. They serve the
+// signed-but-NOT-encrypted case, which this client reports as NoCiphertext
+// and has no verifier for; a detached signature needs the exact transmitted
+// octets it covers, which is a different problem from this one.
 class PgpPayloadClient
 {
 public:
