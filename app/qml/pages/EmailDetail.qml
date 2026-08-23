@@ -579,10 +579,15 @@ Item {
             id: pgpBanner
 
             readonly property int state: root.email.pgpState !== undefined ? root.email.pgpState : 0
-            readonly property bool isProblem: state === 1 || state === 2
+            readonly property bool isProblem: (state === 1 || state === 2)
+                                              || (root.hasDecryptedBody && MailApp.decryptedSignatureIsWarning)
 
             Layout.fillWidth: true
-            visible: pgpBanner.state !== 0 && root.email.pgpBannerTitle
+            // Stays up after a successful decryption too: the signature line
+            // lives here, and it is the one thing about a decrypted message
+            // the reader cannot work out for themselves.
+            visible: (pgpBanner.state !== 0 && root.email.pgpBannerTitle)
+                     || (root.hasDecryptedBody && !!MailApp.decryptedSignature)
             implicitHeight: visible ? pgpBannerLayout.implicitHeight + 24 : 0
             radius: Theme.shapePanel
             // A problem state gets the warning accent; "the server decrypted
@@ -624,6 +629,23 @@ Item {
                 // and for a hardware token that means the user has to
                 // physically touch the key. That belongs to a deliberate
                 // action, not to a list selection changing.
+                Text {
+                    objectName: "signatureLabel"
+                    Layout.fillWidth: true
+                    // PlainText, and the sentence comes from C++. It names the
+                    // address the RELAY resolved from the From header -- never
+                    // the display form, which the sender chooses freely and
+                    // which this app does not parse.
+                    textFormat: Text.PlainText
+                    visible: root.hasDecryptedBody && !!MailApp.decryptedSignature
+                    text: MailApp.decryptedSignature || ""
+                    color: MailApp.decryptedSignatureIsWarning ? Theme.dangerBorderColor : Theme.ink
+                    font.family: Theme.fontUi
+                    font.pixelSize: 12
+                    font.bold: MailApp.decryptedSignatureIsWarning
+                    wrapMode: Text.WordWrap
+                }
+
                 PrimaryButton {
                     objectName: "decryptButton"
                     // C++ decides: ClientProtected AND a usable gpg on this

@@ -174,7 +174,11 @@ PgpDecryptResult OpenPgpDecryptor::decrypt(const QByteArray& ciphertext, const Q
         return result;
     }
 
-    const gpgme_error_t error = gpgme_op_decrypt(context.handle, input.handle, output.handle);
+    // decrypt_VERIFY, not decrypt. An RFC 3156 combined message carries its
+    // signature inside the ciphertext, so this is the only point at which it
+    // can be checked -- there is no second pass available later.
+    const gpgme_error_t error =
+        gpgme_op_decrypt_verify(context.handle, input.handle, output.handle);
 
     // Checked BEFORE the error code. Hitting the ceiling makes gpgme report a
     // write failure, which would otherwise map to Malformed and tell the user
@@ -187,6 +191,29 @@ PgpDecryptResult OpenPgpDecryptor::decrypt(const QByteArray& ciphertext, const Q
     if (gpgme_err_code(error) != GPG_ERR_NO_ERROR) {
         result.status = statusFromError(error);
         return result;
+    }
+
+    if (const gpgme_verify_result_t verified = gpgme_op_verify_result(context.handle);
+        verified != nullptr && verified->signatures != nullptr) {
+        // The first signature only. A message signed by several keys is not
+        // something this client can present honestly -- "which of these do you
+        // mean" is a question the UI has no way to ask -- and taking the most
+        // favourable one would be the wrong answer by construction.
+        const gpgme_signature_t signature = verified->signatures;
+        result.signature.present = true;
+        result.signature.fingerprint =
+            signature->fpr != nullptr ? QString::fromLatin1(signature->fpr) : QString();
+        switch (gpgme_err_code(signature->status)) {
+        case GPG_ERR_NO_ERROR:
+            result.signature.mathematicallyValid = true;
+            break;
+        case GPG_ERR_NO_PUBKEY:
+            result.signature.keyUnavailable = true;
+            break;
+        default:
+            // Bad, expired, revoked: not valid, and not "cannot check".
+            break;
+        }
     }
 
     result.status = PgpDecryptStatus::Decrypted;

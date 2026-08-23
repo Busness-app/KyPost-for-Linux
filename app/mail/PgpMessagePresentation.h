@@ -48,6 +48,26 @@ QString pgpReadFailureMessage(PgpReadStatus status);
 // times it is asked.
 bool pgpReadIsRetryable(PgpReadStatus status);
 
+// What to say about who signed a decrypted message.
+//
+// `signedBy` is the address the relay RESOLVED from the From header, and the
+// only identity this sentence may name. Passing the display form here would
+// put a verification verdict next to text the sender chose freely -- the
+// two are attacker-separable, which is why PgpPayloadResult does not even
+// carry the display form.
+//
+// Empty for PgpSignatureVerdict::None: an unsigned message is not evidence of
+// anything, and saying "not signed" beside every one of them trains people to
+// ignore the line that matters.
+QString pgpSignatureLabel(PgpSignatureVerdict verdict, const QString& signedBy);
+
+// Whether that sentence is a warning rather than a reassurance.
+//
+// True for a signature that is valid but made by a key nobody binds to this
+// sender -- which looks like a pass to gpg and is the shape a forgery from a
+// known contact takes.
+bool pgpSignatureIsWarning(PgpSignatureVerdict verdict);
+
 // Builds the webmail URL for reading a message the client cannot decrypt.
 //
 // Returns an empty QUrl unless `serverBaseUrl` is a valid https URL, so a

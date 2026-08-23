@@ -26,10 +26,42 @@ enum class PgpDecryptStatus
     EngineUnavailable, // no usable gpg on this system
 };
 
+// What gpg made of the signature inside an encrypted message, if any.
+//
+// Deliberately NOT a verdict. This says what the mathematics says; whether the
+// signer is the person the message claims to be from is a binding question,
+// and it is answered where the sender is known -- see EncryptedMessageReader.
+// Reporting "valid" here and letting a caller read it as "from the sender" is
+// exactly the mistake that binding exists to prevent.
+struct PgpSignature
+{
+    // A signature was present at all. Absent is not suspicious on its own --
+    // plenty of encrypted mail is unsigned -- but it is not "verified" either.
+    bool present = false;
+
+    // The signature checks out against the key that made it. Says nothing
+    // about WHOSE key that is.
+    //
+    // Read from gpgme's per-signature status rather than from its `summary`
+    // VALID bit, for the same reason the send path sets ALWAYS_TRUST: a key
+    // that arrived from key discovery has no path in the user's web of trust,
+    // so the VALID bit is never set for it and every real signature would
+    // report as unverified.
+    bool mathematicallyValid = false;
+
+    // No public key to check with, which is not the same as a bad signature
+    // and must never be shown as one.
+    bool keyUnavailable = false;
+
+    // The key that made it, as gpg computed it -- never as anything claimed.
+    QString fingerprint;
+};
+
 struct PgpDecryptResult
 {
     PgpDecryptStatus status = PgpDecryptStatus::EngineUnavailable;
     QByteArray plaintext; // set only when Decrypted
+    PgpSignature signature;
 };
 
 class OpenPgpDecryptor

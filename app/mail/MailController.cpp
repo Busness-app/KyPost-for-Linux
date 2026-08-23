@@ -1653,13 +1653,15 @@ void MailController::finishClientEncryptedSend(quint64 token, const ClientEncryp
 void MailController::forgetDecrypted()
 {
     if (m_decryptedMessageId.isEmpty() && m_decryptedHtml.isEmpty() && m_decryptedPlain.isEmpty()
-        && m_decryptFailure.isEmpty()) {
+        && m_decryptFailure.isEmpty() && m_decryptedSignature.isEmpty()) {
         return;
     }
     m_decryptedMessageId.clear();
     m_decryptedHtml.clear();
     m_decryptedPlain.clear();
     m_decryptFailure.clear();
+    m_decryptedSignature.clear();
+    m_decryptedSignatureIsWarning = false;
     m_decryptRetryable = false;
     emit decryptedChanged();
 }
@@ -1750,6 +1752,10 @@ void MailController::applyDecryptResult(const PairingIdentity& identity, const Q
     m_decryptedMessageId = messageId;
     m_decryptedHtml = body.html;
     m_decryptedPlain = body.plain;
+    // Against the RESOLVED sender, never the display form -- which this app
+    // does not parse at all, precisely so it cannot end up here.
+    m_decryptedSignature = pgpSignatureLabel(result.signature, result.signedBy);
+    m_decryptedSignatureIsWarning = pgpSignatureIsWarning(result.signature);
     emit decryptedChanged();
 }
 

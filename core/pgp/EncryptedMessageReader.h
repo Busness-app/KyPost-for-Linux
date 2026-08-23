@@ -62,9 +62,51 @@ enum class PgpReadStatus
     EngineUnavailable,
 };
 
+// Who signed a message, as far as this client can honestly say.
+//
+// The distinction that matters is between the last two. A signature can be
+// mathematically perfect and made by a key nobody has ever associated with the
+// sender -- which is what an attacker who signs their own forgery produces --
+// so "valid" and "from this sender" are different claims and only the second
+// is worth a badge.
+enum class PgpSignatureVerdict
+{
+    // No signature. Not suspicious on its own: plenty of encrypted mail is
+    // unsigned. It is simply not evidence of anything.
+    None,
+
+    // Signed by a key the relay's address book binds to the sender it
+    // resolved, and the signature checks out. The ONLY state that may be
+    // shown as verified, and only ever against resolvedSender.
+    ValidFromSender,
+
+    // The signature checks out, and the key that made it is not one bound to
+    // this sender. Deliberately its own state rather than folded into either
+    // neighbour: calling it valid credits a stranger's key to the sender, and
+    // calling it invalid says the mathematics failed when it did not.
+    ValidFromUnknownKey,
+
+    // The signature does not check out: forged, corrupted, or made over
+    // different bytes.
+    Invalid,
+
+    // No key to check against, or the relay knows of more than one key
+    // claiming this sender and cannot say which is right. Not a failure and
+    // not a pass -- the question was not answerable.
+    CannotCheck,
+};
+
 struct PgpReadResult
 {
     PgpReadStatus status = PgpReadStatus::FetchFailed;
+
+    PgpSignatureVerdict signature = PgpSignatureVerdict::None;
+
+    // The identity any verdict above is about, and the only one a UI may show
+    // beside it. Never the display form of the From header -- see
+    // PgpPayloadResult::resolvedSender for why the two are not
+    // interchangeable.
+    QString signedBy;
 
     // Set only when Decrypted.
     //
