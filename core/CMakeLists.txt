@@ -191,9 +191,17 @@ target_link_libraries(kypostcore PUBLIC
   Qt6::Sql
 )
 
-find_package(Gpgmepp REQUIRED)
+# gpgme's C library, NOT the gpgmepp C++ wrapper.
+#
+# The wrapper looked like the obvious choice and broke CI: KDE neon's
+# libgpgmepp-dev requires gpgme >= 2.0.0 while Ubuntu noble carries gpgme
+# 1.x, and CI layers both archives -- so its CMake config found its own
+# headers and then failed on its own dependency. The C API is what the
+# wrapper wraps, is present wherever gpgme is, and needs nothing newer than
+# a decade-old release. See core/pgp/OpenPgpDecryptor.cpp.
+pkg_check_modules(GPGME REQUIRED IMPORTED_TARGET gpgme)
 
-target_link_libraries(kypostcore PRIVATE OpenSSL::Crypto PkgConfig::ARGON2 Gpgmepp)
+target_link_libraries(kypostcore PRIVATE OpenSSL::Crypto PkgConfig::ARGON2 PkgConfig::GPGME)
 
 # SQLCipher, when a prefix was given.
 #

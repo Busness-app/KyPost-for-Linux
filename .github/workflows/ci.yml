@@ -192,7 +192,7 @@ jobs:
             kunifiedpush-dev \
             libssl-dev \
             libargon2-dev \
-            libgpgmepp-dev \
+            libgpgme-dev \
             gnupg
 
       # ZXing (zxing-cpp) backs the PGP QR key exchange feature's
