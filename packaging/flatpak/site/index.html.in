@@ -41,7 +41,7 @@
     </p>
     <pre><code>flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
 flatpak remote-add --if-not-exists kypost @PAGES_URL@/kypost.flatpakrepo
-flatpak install kypost com.urlxl.mail</code></pre>
+flatpak install kypost com.kysecurity.mail</code></pre>
     <p>
       The Flathub remote is needed for the <code>org.kde.Platform</code>
       runtime KyPost builds against; the app itself is not on Flathub and
@@ -49,11 +49,11 @@ flatpak install kypost com.urlxl.mail</code></pre>
     </p>
 
     <h2>Update</h2>
-    <pre><code>flatpak update com.urlxl.mail</code></pre>
+    <pre><code>flatpak update com.kysecurity.mail</code></pre>
     <p>Or just <code>flatpak update</code>, along with everything else.</p>
 
     <h2>Uninstall</h2>
-    <pre><code>flatpak uninstall com.urlxl.mail
+    <pre><code>flatpak uninstall com.kysecurity.mail
 flatpak remote-delete kypost</code></pre>
 
     <h2>Verifying the signature</h2>

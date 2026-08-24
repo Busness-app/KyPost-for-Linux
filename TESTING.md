@@ -51,7 +51,7 @@ default/bare User-Agent strings (see `AGENTS.md` Section 8).
       it; this client only ever does native sub/pt pairing (see
       `AGENTS.md`/Phase 6 constraint — no separate desktop-session flow).
 - [ ] **Confirm the pairing credentials actually land in the OS keychain**,
-      not just in the UI: `kwallet-query -f com.urlxl.mail -l kdewallet`
+      not just in the UI: `kwallet-query -f com.kysecurity.mail -l kdewallet`
       (or the equivalent for your Secret Service provider) should list the
       `sub`/`deviceId`/`deviceSecret`/pairing-token entries
       `SecureStoreKeychain` (`app/platform/SecureStoreKeychain.cpp`, backed
@@ -399,7 +399,7 @@ Requires the app lock to be on (the toggle is inert otherwise).
 - [ ] **Turning it off restarts and rebuilds.** The database file must
       reappear and refill from the server on the next launch.
 - [ ] **The relaunch actually works** rather than leaving a dead app. This is
-      the one to watch: `KDBusService(Unique)` owns `com.urlxl.mail`, and the
+      the one to watch: `KDBusService(Unique)` owns `com.kysecurity.mail`, and the
       replacement process is deliberately spawned only after the event loop
       exits so it can claim that name. If the app ever fails to come back,
       that ordering is the first thing to check.
@@ -547,9 +547,9 @@ only the last two checks.
       window title (`DesktopRoot.qml`/`MobileRoot.qml`), the About-style
       sidebar text, and the launcher/Dock/taskbar icon and app-switcher
       entry (sourced from `packaging/flatpak/icons/hicolor/*/apps/
-      com.urlxl.mail.png` + `.svg`, regenerated from the new `ky.png` mark
+      com.kysecurity.mail.png` + `.svg`, regenerated from the new `ky.png` mark
       — confirm it's the new mark, not the old llama wordmark). Package ID
-      (`com.urlxl.mail`) and `QSettings`/keychain storage keys
+      (`com.kysecurity.mail`) and `QSettings`/keychain storage keys
       are **intentionally unchanged** by this rename — don't expect or flag
       those as needing to say "kypost"/"KyPost" anywhere. The deep-link
       scheme **was** renamed separately (`llamalabels://` → `kypost://`,
@@ -563,18 +563,18 @@ only the last two checks.
       `cmake --build <builddir> && cmake --install <builddir>
       --prefix <some-prefix>` and inspect the installed tree:
   - `<prefix>/bin/kypost` (the binary)
-  - `<prefix>/share/icons/hicolor/{16x16,22x22,24x24,32x32,48x48,64x64,128x128,256x256}/apps/com.urlxl.mail.png`
-    and `.../scalable/apps/com.urlxl.mail.svg`
-  - `<prefix>/share/applications/com.urlxl.mail.desktop`
-  - `<prefix>/share/dbus-1/services/com.urlxl.mail.service`
+  - `<prefix>/share/icons/hicolor/{16x16,22x22,24x24,32x32,48x48,64x64,128x128,256x256}/apps/com.kysecurity.mail.png`
+    and `.../scalable/apps/com.kysecurity.mail.svg`
+  - `<prefix>/share/applications/com.kysecurity.mail.desktop`
+  - `<prefix>/share/dbus-1/services/com.kysecurity.mail.service`
   - `<prefix>/share/knotifications6/KyPost.notifyrc`
-  - `<prefix>/share/metainfo/com.urlxl.mail.metainfo.xml`
+  - `<prefix>/share/metainfo/com.kysecurity.mail.metainfo.xml`
     All of these are hardcoded-path-free `install(FILES ...)` rules in
     `app/CMakeLists.txt` (Tasks 44–46), driven by `GNUInstallDirs`.
 - [ ] **`desktop-file-validate` passes** on
-      `packaging/flatpak/com.urlxl.mail.desktop`.
+      `packaging/flatpak/com.kysecurity.mail.desktop`.
 - [ ] **`appstreamcli validate --no-net` reports zero errors** on
-      `packaging/flatpak/com.urlxl.mail.metainfo.xml` (both the
+      `packaging/flatpak/com.kysecurity.mail.metainfo.xml` (both the
       source copy and the installed copy). Task 46's own verification
       pass got a non-zero *exit code* (the tool treats warnings as
       failing) but confirmed, via `--pedantic --format=yaml`, that the
@@ -584,7 +584,7 @@ only the last two checks.
 - [x] **`flatpak-builder` — build the manifest and confirm it produces a
       runnable app.** Run:
       `flatpak-builder --user --force-clean --install-deps-from=flathub
-      <builddir> packaging/flatpak/com.urlxl.mail.yaml`. **Resolved
+      <builddir> packaging/flatpak/com.kysecurity.mail.yaml`. **Resolved
       (2026-07-17), confirmed via a real from-scratch build + launch, not
       just reasoning:** the manifest now declares `base:
       io.qt.qtwebengine.BaseApp` / `base-version: 6.10` (a real, published
@@ -621,7 +621,7 @@ only the last two checks.
       `MutedHint is not a type` at launch) were also found and fixed via
       real `flatpak-builder --run` launches, not static review. Final
       confirmed state: a clean full build (`REAL_EXIT_CODE=0`) followed by
-      `flatpak-builder --run <builddir> packaging/flatpak/com.urlxl.mail.yaml
+      `flatpak-builder --run <builddir> packaging/flatpak/com.kysecurity.mail.yaml
       kypost` loading every QML file with no errors and reaching
       `KUnifiedPush::Connector::Registered` with a real
       `unifiedpush.kde.org` endpoint host, live, inside the sandbox.

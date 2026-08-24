@@ -178,7 +178,7 @@ public slots:
     // network call.
     //
     // VibeSec fix: this app is registered as the OS-wide handler for the
-    // kypost:// scheme (packaging/flatpak/com.urlxl.mail.desktop's
+    // kypost:// scheme (packaging/flatpak/com.kysecurity.mail.desktop's
     // MimeType), so a link clicked anywhere on the system -- a browser, a
     // chat client, another app -- reaches this method, including via
     // KDBusService relaying a second launch's argv to an already-running

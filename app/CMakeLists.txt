@@ -195,7 +195,7 @@ target_sources(kypost PRIVATE
 target_link_libraries(kypost PRIVATE KF6::StatusNotifierItem)
 
 # KDBusService (KF6DBusAddons) wraps app startup in main.cpp to claim the
-# com.urlxl.mail well-known bus name in Unique mode and emit
+# com.kysecurity.mail well-known bus name in Unique mode and emit
 # activateRequested on duplicate-instance launches -- confirmed installed via
 # `pacman -Qs kdbusaddons`, providing the standard KDE convenience wrapper
 # over plain QDBusConnection registration for Task 11's D-Bus activation
@@ -224,56 +224,56 @@ install(TARGETS kypost RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
 # Install app icon files (Task 44): scalable SVG + rasterized PNGs at
 # standard freedesktop hicolor theme sizes (16, 22, 24, 32, 48, 64, 128, 256 px).
-# com.urlxl.mail is the icon name referenced in the .desktop file.
+# com.kysecurity.mail is the icon name referenced in the .desktop file.
 install(FILES
-  ${PROJECT_SOURCE_DIR}/packaging/flatpak/icons/hicolor/scalable/apps/com.urlxl.mail.svg
+  ${PROJECT_SOURCE_DIR}/packaging/flatpak/icons/hicolor/scalable/apps/com.kysecurity.mail.svg
   DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps
 )
 
 install(FILES
-  ${PROJECT_SOURCE_DIR}/packaging/flatpak/icons/hicolor/16x16/apps/com.urlxl.mail.png
+  ${PROJECT_SOURCE_DIR}/packaging/flatpak/icons/hicolor/16x16/apps/com.kysecurity.mail.png
   DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/16x16/apps
 )
 
 install(FILES
-  ${PROJECT_SOURCE_DIR}/packaging/flatpak/icons/hicolor/22x22/apps/com.urlxl.mail.png
+  ${PROJECT_SOURCE_DIR}/packaging/flatpak/icons/hicolor/22x22/apps/com.kysecurity.mail.png
   DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/22x22/apps
 )
 
 install(FILES
-  ${PROJECT_SOURCE_DIR}/packaging/flatpak/icons/hicolor/24x24/apps/com.urlxl.mail.png
+  ${PROJECT_SOURCE_DIR}/packaging/flatpak/icons/hicolor/24x24/apps/com.kysecurity.mail.png
   DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/24x24/apps
 )
 
 install(FILES
-  ${PROJECT_SOURCE_DIR}/packaging/flatpak/icons/hicolor/32x32/apps/com.urlxl.mail.png
+  ${PROJECT_SOURCE_DIR}/packaging/flatpak/icons/hicolor/32x32/apps/com.kysecurity.mail.png
   DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/32x32/apps
 )
 
 install(FILES
-  ${PROJECT_SOURCE_DIR}/packaging/flatpak/icons/hicolor/48x48/apps/com.urlxl.mail.png
+  ${PROJECT_SOURCE_DIR}/packaging/flatpak/icons/hicolor/48x48/apps/com.kysecurity.mail.png
   DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/48x48/apps
 )
 
 install(FILES
-  ${PROJECT_SOURCE_DIR}/packaging/flatpak/icons/hicolor/64x64/apps/com.urlxl.mail.png
+  ${PROJECT_SOURCE_DIR}/packaging/flatpak/icons/hicolor/64x64/apps/com.kysecurity.mail.png
   DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/64x64/apps
 )
 
 install(FILES
-  ${PROJECT_SOURCE_DIR}/packaging/flatpak/icons/hicolor/128x128/apps/com.urlxl.mail.png
+  ${PROJECT_SOURCE_DIR}/packaging/flatpak/icons/hicolor/128x128/apps/com.kysecurity.mail.png
   DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/128x128/apps
 )
 
 install(FILES
-  ${PROJECT_SOURCE_DIR}/packaging/flatpak/icons/hicolor/256x256/apps/com.urlxl.mail.png
+  ${PROJECT_SOURCE_DIR}/packaging/flatpak/icons/hicolor/256x256/apps/com.kysecurity.mail.png
   DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/256x256/apps
 )
 
 # Install desktop entry (Task 45): app metadata for the application menu and
 # D-Bus service activation.
 install(FILES
-  ${PROJECT_SOURCE_DIR}/packaging/flatpak/com.urlxl.mail.desktop
+  ${PROJECT_SOURCE_DIR}/packaging/flatpak/com.kysecurity.mail.desktop
   DESTINATION ${CMAKE_INSTALL_DATADIR}/applications
 )
 
@@ -307,7 +307,7 @@ endif()
 # (/usr/bin/kypost) is only correct once make install puts the binary
 # there, which is now the case for real system installs.
 install(FILES
-  ${PROJECT_SOURCE_DIR}/packaging/dbus/com.urlxl.mail.service
+  ${PROJECT_SOURCE_DIR}/packaging/dbus/com.kysecurity.mail.service
   DESTINATION ${CMAKE_INSTALL_DATADIR}/dbus-1/services
 )
 
@@ -322,6 +322,6 @@ install(FILES
 # summary, description, categories, release history) consumed by app
 # stores/software centers such as KDE Discover and GNOME Software.
 install(FILES
-  ${PROJECT_SOURCE_DIR}/packaging/flatpak/com.urlxl.mail.metainfo.xml
+  ${PROJECT_SOURCE_DIR}/packaging/flatpak/com.kysecurity.mail.metainfo.xml
   DESTINATION ${CMAKE_INSTALL_DATADIR}/metainfo
 )

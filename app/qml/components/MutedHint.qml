@@ -1,5 +1,5 @@
 import QtQuick 2.15
-import com.urlxl.mail 1.0
+import com.kysecurity.mail 1.0
 
 // Small muted single-line hint/status text, e.g. "No groups available".
 // Plain styled Text, same shape as SectionLabel.qml (this file's closest

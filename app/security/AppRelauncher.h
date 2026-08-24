@@ -18,7 +18,7 @@ namespace AppRelauncher {
 // Requests a relaunch after the event loop exits.
 //
 // Deliberately does NOT spawn the child immediately. KDBusService(Unique)
-// holds the com.urlxl.mail well-known name for this process's lifetime; a
+// holds the com.kysecurity.mail well-known name for this process's lifetime; a
 // child started while the parent still owns it would either fail to claim it
 // or -- worse -- be treated as a duplicate launch, activate the dying parent
 // and exit. Sequencing the spawn after app.exec() returns removes that race

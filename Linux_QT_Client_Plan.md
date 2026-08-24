@@ -26,7 +26,7 @@ two UI roots:
 | Ubuntu Touch (Lomiri) | Kirigami (KF5, bundled in the click) | Clickable → OpenStore | Qt 5.15 | Mobile |
 
 New sibling repo: `~/git/kypost-Linux` (kypost-for-Mac is Xcode-centric; don't nest).
-Suggested app IDs: `com.urlxl.mail` (Flatpak/Flathub), `kypost.urlxl`
+Suggested app IDs: `com.kysecurity.mail` (Flatpak/Flathub), `kypost.urlxl`
 (click/OpenStore).
 
 ## UI architecture: unified-style app, two roots (like the iOS/macOS app)
@@ -352,7 +352,7 @@ kypost-Linux/
       components/             # EmailListRow, KeywordTabBar, Avatar, EmptyState, StatusBadge, ThemedButton
   tests/                      # QtTest, stubbed HttpClient — port the Mac suite's coverage
   packaging/
-    flatpak/com.urlxl.mail.yaml (+ metainfo, .desktop, icons)
+    flatpak/com.kysecurity.mail.yaml (+ metainfo, .desktop, icons)
     click/ (clickable.yaml, manifest.json, apparmor, .desktop, urls hook)
   po/                         # gettext catalogs seeded from Localizable.xcstrings keys
 ```
@@ -485,7 +485,7 @@ tests under both Qt majors).
 
 ## Post-audit cleanup backlog (2026-07-17)
 
-1. **Fix Flatpak packaging.** ~~`packaging/flatpak/com.urlxl.mail.yaml`
+1. **Fix Flatpak packaging.** ~~`packaging/flatpak/com.kysecurity.mail.yaml`
    currently fails to build (`Could NOT find Qt6WebEngineQuick`, see risk #9)
    and isn't exercised by CI~~ — **Resolved (2026-07-17):** the manifest now
    declares `base: io.qt.qtwebengine.BaseApp` / `base-version: 6.10` (see

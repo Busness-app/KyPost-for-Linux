@@ -2,7 +2,7 @@ import QtQuick 2.15
 import QtQuick.Controls 2.15
 import QtQuick.Layouts 1.15
 import org.kde.kirigami 2.20 as Kirigami
-import com.urlxl.mail 1.0
+import com.kysecurity.mail 1.0
 import "components"
 import "pages"
 import "utils/format.js" as Format

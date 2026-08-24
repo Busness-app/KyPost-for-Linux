@@ -45,6 +45,10 @@ class Job;
 class SecureStoreKeychain : public SecureStore
 {
 public:
+    // The per-job default, named so callers overriding only `legacyService`
+    // below do not have to restate 30000 and go stale when it changes.
+    static constexpr int kDefaultTimeoutMs = 30000;
+
     // `timeoutMs` bounds each individual job, measured from start(). Chosen
     // just above the ~25 s D-Bus floor described above, for two reasons:
     // anything below it is inert (the blocking call returns at ~25 s and the
@@ -57,7 +61,22 @@ public:
     // Exposed as a parameter (rather than hardcoded) so tests can force the
     // timeout path instead of needing a wedged Secret Service, matching
     // HttpClient's transferTimeoutMs.
-    explicit SecureStoreKeychain(const QString& service, int timeoutMs = 30000);
+    // `legacyService` is the read-only fallback used by the app-id rename
+    // (com.urlxl.mail -> com.kysecurity.mail, 2026-08-23). Secrets reached
+    // through --talk-name=org.freedesktop.secrets are keyed by the service
+    // string alone, not by the Flatpak app id, so the old entries survive the
+    // rename and are recoverable -- but only if something looks for them.
+    //
+    // The fallback lives HERE rather than in a one-shot migration pass over a
+    // list of key names, because such a list is a copy of what PairingStore,
+    // AppLockStore and DatabaseKeyStore each define privately, and a key that
+    // drifts out of the copy is a credential silently lost with nothing
+    // failing. read() below is key-agnostic, so it cannot drift.
+    //
+    // Empty (the default) disables the fallback entirely: tests and any
+    // future caller get exactly the old single-service behavior.
+    explicit SecureStoreKeychain(const QString& service, int timeoutMs = kDefaultTimeoutMs,
+                                 const QString& legacyService = QString());
 
     // The three-state read. QKeychain reports EntryNotFound as its own error
     // code, distinct from "no Secret Service provider is reachable" / "the
@@ -70,10 +89,28 @@ public:
     // "there is no such secret" is precisely the conflation SecureStore::
     // ReadStatus exists to prevent: AppLockStore would read a timed-out
     // keyring as "no PIN configured" and unlock the app.
+    //
+    // On Absent under the primary service, retries under `legacyService` and,
+    // on a hit, copies the value forward so the next read is a single call.
+    // Copies rather than moves, matching how the Llama Mail -> KyPost profile
+    // migration was fixed (docs/RENAME_NOTES.md): a bad migration stays
+    // recoverable by hand. remove() still clears BOTH services, so a wipe is
+    // not quietly undone by a legacy copy the next read would resurrect.
+    //
+    // Absent under the primary service while the LEGACY read reports Failed
+    // is reported as Failed, not Absent. The primary answering Absent proves
+    // the Secret Service is reachable, so a Failed legacy read against the
+    // same daemon is anomalous, and reporting it as absence is the exact
+    // conflation ReadStatus exists to prevent -- AppLockStore would read a
+    // legacy applock.enabled it could not consult as "no PIN configured".
     ReadResult read(const QString& key) const override;
 
     bool set(const QString& key, const QString& value) override;
     std::optional<QString> get(const QString& key) const override;
+
+    // Removes from BOTH services, and reports false if the legacy service
+    // still holds a copy. A half-removal that reported success would let
+    // read()'s copy-forward resurrect a wiped credential on the next launch.
     bool remove(const QString& key) override;
     bool contains(const QString& key) const override;
 
@@ -99,6 +136,27 @@ private:
     // answers.
     JobOutcome runBlocking(QKeychain::Job* job) const;
 
+    // The service-parameterised primitives read()/remove() drive for both the
+    // primary and the legacy service.
+    ReadResult readFrom(const QString& service, const QString& key) const;
+    // const so read()'s copy-forward can use it without a const_cast; it
+    // mutates the Secret Service, not this object.
+    bool writeTo(const QString& service, const QString& key, const QString& value) const;
+    bool removeFrom(const QString& service, const QString& key);
+
     QString m_service;
     int m_timeoutMs;
+    QString m_legacyService;
+
+    // Latches false the first time the legacy service reports Failed, for the
+    // lifetime of this store. Without it, an unreachable legacy service costs
+    // another ~25 s D-Bus block (see the measurements above) on EVERY missing
+    // key -- 19 of them across the three stores at startup, before any window
+    // exists. One failure is enough evidence; retrying it 18 more times buys
+    // nothing but an eight-minute launch.
+    //
+    // Deliberately not reset anywhere: a session that could not reach the
+    // legacy store keeps its own store working, and the migration retries on
+    // the next launch.
+    mutable bool m_legacyReachable;
 };

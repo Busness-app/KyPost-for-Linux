@@ -1,5 +1,5 @@
 import QtQuick 2.15
-import com.urlxl.mail 1.0
+import com.kysecurity.mail 1.0
 
 // Compose autocomplete (ContactAutocomplete.md): a brief self-clearing
 // banner for the duplicate-selection-rejected case. Mirrors ContactsList.qml's

@@ -60,8 +60,8 @@ permissions:
   contents: write # push the gh-pages branch; attach tagged-release assets
 
 env:
-  APP_ID: com.urlxl.mail
-  MANIFEST: packaging/flatpak/com.urlxl.mail.yaml
+  APP_ID: com.kysecurity.mail
+  MANIFEST: packaging/flatpak/com.kysecurity.mail.yaml
   PAGES_URL: https://yoshiofthewire.github.io/KyPost-for-Linux
 
 jobs:
@@ -111,7 +111,7 @@ jobs:
           #
           #   E: file-read-error
           #      Unable to read data from file
-          #      `//share/icons/hicolor/scalable/apps/com.urlxl.mail.svg`:
+          #      `//share/icons/hicolor/scalable/apps/com.kysecurity.mail.svg`:
           #      Unrecognized image file format
           #
           # ...followed by `filters-but-no-output`, because the component was
@@ -141,8 +141,8 @@ jobs:
       # would for a store-reviewed one.
       - name: Validate AppStream and desktop metadata
         run: |
-          appstreamcli validate --no-net packaging/flatpak/com.urlxl.mail.metainfo.xml
-          desktop-file-validate packaging/flatpak/com.urlxl.mail.desktop
+          appstreamcli validate --no-net packaging/flatpak/com.kysecurity.mail.metainfo.xml
+          desktop-file-validate packaging/flatpak/com.kysecurity.mail.desktop
 
       # Without this, qtkeychain 0.17.0, zxing-cpp v3.1.0 and kunifiedpush
       # 26.04.3 rebuild from source on every single run.
@@ -150,12 +150,12 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .flatpak-builder
-          key: flatpak-builder-${{ hashFiles('packaging/flatpak/com.urlxl.mail.yaml') }}-${{ github.run_id }}
+          key: flatpak-builder-${{ hashFiles('packaging/flatpak/com.kysecurity.mail.yaml') }}-${{ github.run_id }}
           # No bare "flatpak-builder-" fallback: that key is writable by any
           # branch, so a pull request could seed the .flatpak-builder state
           # that a later publishing run builds from.
           restore-keys: |
-            flatpak-builder-${{ hashFiles('packaging/flatpak/com.urlxl.mail.yaml') }}-
+            flatpak-builder-${{ hashFiles('packaging/flatpak/com.kysecurity.mail.yaml') }}-
 
       - name: Import signing key
         if: steps.mode.outputs.publish == 'true'
@@ -236,7 +236,7 @@ jobs:
       # failures since 2026-07-26), always at flatpak-builder's export step
       # with appstreamcli compose reporting:
       #
-      #     com.urlxl.mail
+      #     com.kysecurity.mail
       #       E: file-read-error
       #     general
       #       E: filters-but-no-output
@@ -268,7 +268,7 @@ jobs:
           echo "--- metadata present in the built tree? ---"
           ls -l build-flatpak/files/share/metainfo/ || true
           ls -l build-flatpak/files/share/applications/ || true
-          find build-flatpak/files/share/icons -name 'com.urlxl.mail.*' -printf '%s\t%p\n' || true
+          find build-flatpak/files/share/icons -name 'com.kysecurity.mail.*' -printf '%s\t%p\n' || true
           echo "--- compose, with the report flatpak-builder never asks for ---"
           rm -rf /tmp/ascdiag
           appstreamcli compose \

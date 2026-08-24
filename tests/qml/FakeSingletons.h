@@ -5,7 +5,7 @@
 #include <QQmlEngine>
 #include <QString>
 
-// Minimal stand-ins for the "com.urlxl.mail" QML singletons, so components
+// Minimal stand-ins for the "com.kysecurity.mail" QML singletons, so components
 // under test can be instantiated without main.cpp's whole composition root.
 //
 // Only the members the components actually bind to are here. Anything a test
@@ -137,15 +137,15 @@ private:
 inline void registerFakeSingletons(QQmlEngine*)
 {
     qmlRegisterSingletonType<FakeAppLock>(
-        "com.urlxl.mail", 1, 0, "AppLock",
+        "com.kysecurity.mail", 1, 0, "AppLock",
         [](QQmlEngine*, QJSEngine*) -> QObject* { return new FakeAppLock; });
     qmlRegisterSingletonType<FakePairing>(
-        "com.urlxl.mail", 1, 0, "Pairing",
+        "com.kysecurity.mail", 1, 0, "Pairing",
         [](QQmlEngine*, QJSEngine*) -> QObject* { return new FakePairing; });
     qmlRegisterSingletonType<FakeTheme>(
-        "com.urlxl.mail", 1, 0, "Theme",
+        "com.kysecurity.mail", 1, 0, "Theme",
         [](QQmlEngine*, QJSEngine*) -> QObject* { return new FakeTheme; });
     qmlRegisterSingletonType<FakeGeneral>(
-        "com.urlxl.mail", 1, 0, "General",
+        "com.kysecurity.mail", 1, 0, "General",
         [](QQmlEngine*, QJSEngine*) -> QObject* { return new FakeGeneral; });
 }

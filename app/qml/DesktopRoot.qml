@@ -3,7 +3,7 @@ import QtQuick.Controls 2.15
 import QtQuick.Layouts 1.15
 import QtQuick.Window 2.15
 import org.kde.kirigami 2.20 as Kirigami
-import com.urlxl.mail 1.0
+import com.kysecurity.mail 1.0
 import "components"
 import "pages"
 import "utils/format.js" as Format
@@ -324,7 +324,7 @@ Kirigami.ApplicationWindow {
 
     // ---- pairing confirmation ------------------------------------------
     // VibeSec fix: this app is registered as the OS-wide handler for the
-    // kypost:// scheme (packaging/flatpak/com.urlxl.mail.desktop's
+    // kypost:// scheme (packaging/flatpak/com.kysecurity.mail.desktop's
     // MimeType), so a kypost://native-pair link clicked anywhere on
     // the system reaches PairingController without any of this app's own
     // UI ever having been on screen -- including here, where (unlike

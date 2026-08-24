@@ -1,4 +1,4 @@
-app-id: com.urlxl.mail
+app-id: com.kysecurity.mail
 runtime: org.kde.Platform
 runtime-version: "6.11"
 sdk: org.kde.Sdk
@@ -56,7 +56,7 @@ finish-args:
 
   # KDBusService(KDBusService::Unique) in app/main.cpp claims this
   # well-known bus name for duplicate-launch detection and D-Bus
-  # activation (packaging/dbus/com.urlxl.mail.service, wired by
+  # activation (packaging/dbus/com.kysecurity.mail.service, wired by
   # Task 45). KUnifiedPush::Connector (app/push/UnifiedPushConnector.cpp)
   # registers under this same serviceName on the session bus without
   # claiming it itself -- its constructor's own comment documents
@@ -65,7 +65,7 @@ finish-args:
   # --own-name, KDBusService::Unique's RequestName call is denied by
   # the sandbox and every launch (plus D-Bus activation and
   # UnifiedPush delivery) breaks.
-  - --own-name=com.urlxl.mail
+  - --own-name=com.kysecurity.mail
 
   # Qt6Keychain (app/platform/SecureStoreKeychain.cpp, used to persist
   # pairing credentials) talks to the Secret Service D-Bus API on
@@ -77,7 +77,7 @@ finish-args:
   # KUnifiedPush::Connector::registerClient() (app/push/UnifiedPushConnector.cpp)
   # calls out to the local UnifiedPush distributor over D-Bus to
   # request an endpoint -- a separate direction from the
-  # --own-name=com.urlxl.mail grant above, which only covers the
+  # --own-name=com.kysecurity.mail grant above, which only covers the
   # distributor calling back INTO the app for delivery/activation.
   # Without a --talk-name for the distributor's bus name, the
   # sandbox's D-Bus proxy blocks this outbound registration call
@@ -141,7 +141,7 @@ finish-args:
   - --filesystem=xdg-run/pipewire-0
 
   # Attachment downloads. Without a filesystem grant, $HOME inside the
-  # sandbox is ~/.var/app/com.urlxl.mail, so
+  # sandbox is ~/.var/app/com.kysecurity.mail, so
   # QStandardPaths::DownloadLocation resolved to a directory the user
   # has no way to find -- "Save attachment" reported success and put
   # the file nowhere they would ever look. (Compose's file picker was

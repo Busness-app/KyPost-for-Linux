@@ -2,6 +2,6 @@
 Type=Application
 Name=KyPost
 Exec=kypost %u
-Icon=com.urlxl.mail
+Icon=com.kysecurity.mail
 Categories=Network;Email;
 MimeType=x-scheme-handler/kypost;

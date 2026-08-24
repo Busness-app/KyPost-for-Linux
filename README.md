@@ -55,7 +55,7 @@ KyPost has its own signed Flatpak remote:
 ```sh
 flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
 flatpak remote-add --if-not-exists kypost https://yoshiofthewire.github.io/KyPost-for-Linux/kypost.flatpakrepo
-flatpak install kypost com.urlxl.mail
+flatpak install kypost com.kysecurity.mail
 ```
 
 The normal `flatpak update` command then installs new versions. The Flathub remote supplies the
@@ -88,8 +88,8 @@ credential seal — Qt exposes neither. See `core/security/CredentialCipher.h`.
 
 ```sh
 flatpak-builder --user --force-clean --install-deps-from=flathub \
-  build-flatpak packaging/flatpak/com.urlxl.mail.yaml
-flatpak-builder --run build-flatpak packaging/flatpak/com.urlxl.mail.yaml kypost
+  build-flatpak packaging/flatpak/com.kysecurity.mail.yaml
+flatpak-builder --run build-flatpak packaging/flatpak/com.kysecurity.mail.yaml kypost
 ```
 
 This manifest is the packaging target for Linux Desktop and for Plasma Mobile. The Click and

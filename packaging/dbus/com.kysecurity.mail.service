@@ -5,5 +5,5 @@
 # D-Bus activation locally use a separate, uncommitted copy of this file
 # pointing at the in-tree build output path instead.
 [D-BUS Service]
-Name=com.urlxl.mail
+Name=com.kysecurity.mail
 Exec=/usr/bin/kypost

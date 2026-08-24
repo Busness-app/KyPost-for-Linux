@@ -1,7 +1,7 @@
 import QtQuick 2.15
 import QtQuick.Controls 2.15
 import QtQuick.Layouts 1.15
-import com.urlxl.mail 1.0
+import com.kysecurity.mail 1.0
 import "../components"
 
 // Full-window PIN gate shown whenever AppLock.locked is true.

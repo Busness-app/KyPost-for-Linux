@@ -1,7 +1,7 @@
 import QtQuick 2.15
 import QtQuick.Controls 2.15
 import QtQuick.Layouts 1.15
-import com.urlxl.mail 1.0
+import com.kysecurity.mail 1.0
 
 // Compose autocomplete (ContactAutocomplete.md): a full address-book search
 // panel with per-row To/Cc/Bcc buttons, launched from a directory icon next
