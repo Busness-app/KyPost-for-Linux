@@ -20,7 +20,8 @@ ScrollBar {
 
     readonly property real thickness: 4
 
-    policy: ScrollBar.AlwaysOn
+    policy: ScrollBar.AsNeeded
+    visible: size < 1.0
     interactive: General.isDesktopMode
 
     background: null
@@ -55,10 +56,6 @@ ScrollBar {
     // `ScrollBar.vertical:`, and must keep tracking the flickable's size as
     // it changes -- only orientation, fixed once at creation, decides which
     // axis this component pins.
-    Component.onCompleted: {
-        if (orientation === Qt.Horizontal)
-            height = thickness
-        else
-            width = thickness
-    }
+    width: orientation === Qt.Vertical ? thickness : (parent ? parent.width : implicitWidth)
+    height: orientation === Qt.Horizontal ? thickness : (parent ? parent.height : implicitHeight)
 }

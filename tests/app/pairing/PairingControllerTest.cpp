@@ -20,6 +20,7 @@
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QSysInfo>
 #include <memory>
 #include <QUrl>
 #include <QUrlQuery>
@@ -264,11 +265,16 @@ void PairingControllerTest::pairFromDeepLinkHappyPathPairsAndPersists()
     QCOMPARE(loaded->deviceSecret, QStringLiteral("fresh-device-secret"));
     QCOMPARE(loaded->registrationUrl, registrationUrl);
     QCOMPARE(loaded->deviceId, QStringLiteral("dev-1"));
+    const QString expectedName = QSysInfo::machineHostName().trimmed().isEmpty()
+        ? QStringLiteral("Linux")
+        : QSysInfo::machineHostName().trimmed() + QStringLiteral(" - Linux");
+    QCOMPARE(loaded->deviceName, expectedName);
 
     const QJsonObject sent = fake.receivedJsonBody();
     QCOMPARE(sent.value(QStringLiteral("subscriberId")).toString(), QStringLiteral("sub-1"));
     QVERIFY(!sent.contains(QStringLiteral("subscriberHash")));
     QCOMPARE(sent.value(QStringLiteral("pairingToken")).toString(), QStringLiteral("pair-tok"));
+    QCOMPARE(sent.value(QStringLiteral("deviceName")).toString(), expectedName);
     // This test never calls setDeviceToken(), so m_deviceToken stays at its
     // default-constructed empty QString() -- verifies the no-endpoint-yet
     // case (e.g. pairing completes before UnifiedPushConnector has ever
@@ -1538,4 +1544,3 @@ void PairingControllerTest::anUnreadableSecretStoreRefusesToPairRatherThanSkipTh
 
 QTEST_GUILESS_MAIN(PairingControllerTest)
 #include "PairingControllerTest.moc"
-

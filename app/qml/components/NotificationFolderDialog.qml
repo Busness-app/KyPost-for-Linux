@@ -84,7 +84,11 @@ Item {
             event.accepted = true
         }
 
-        TapHandler {} // swallow taps -- keeps them from reaching the scrim behind
+        MouseArea {
+            anchors.fill: parent
+            acceptedButtons: Qt.AllButtons
+            onWheel: function (wheel) { wheel.accepted = true }
+        }
 
         ColumnLayout {
             id: content

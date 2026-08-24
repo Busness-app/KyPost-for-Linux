@@ -12,6 +12,7 @@
 #include <KLocalizedString>
 
 #include <QHostAddress>
+#include <QSysInfo>
 #include <QUrl>
 #include <QUrlQuery>
 
@@ -43,6 +44,12 @@ QString deriveRegistrationUrl(const QString& serverBaseUrl)
     while (base.endsWith(QLatin1Char('/')))
         base.chop(1);
     return base + QStringLiteral("/api/notifications/native/register");
+}
+
+QString linuxDeviceName()
+{
+    const QString host = QSysInfo::machineHostName().trimmed();
+    return host.isEmpty() ? QStringLiteral("Linux") : host + QStringLiteral(" - Linux");
 }
 
 // VibeSec finding: a kypost://native-pair link's `srv` accepted any scheme,
@@ -569,7 +576,7 @@ void PairingController::reconnectToServer()
     params.registrationUrl = pairing->registrationUrl.isEmpty() ? deriveRegistrationUrl(pairing->serverBaseUrl)
                                                                  : pairing->registrationUrl;
     params.pairingToken = pairing->pairingToken;
-    params.deviceName = pairing->deviceName;
+    params.deviceName = pairing->deviceName.isEmpty() ? linuxDeviceName() : pairing->deviceName;
 
     setPairingState(State::Working);
 
@@ -650,10 +657,7 @@ void PairingController::pairFromParsedParams(const QString& sub, const QString& 
     params.serverBaseUrl = srv;
     params.registrationUrl = reg.isEmpty() ? deriveRegistrationUrl(srv) : reg;
     params.pairingToken = pt;
-    // deviceName: not part of the deep-link wire format and not otherwise
-    // sourced by this task -- left empty. A later task can add a "name this
-    // device" field to the pairing UI if the plan wants one; nothing here
-    // depends on it being non-empty.
+    params.deviceName = linuxDeviceName();
 
     // m_deviceToken is set via setDeviceToken(), called from main.cpp
     // whenever UnifiedPushConnector reports its current endpoint (Task 43

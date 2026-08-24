@@ -45,8 +45,8 @@ void initialiseGpgme()
 // first is reported, because the caller resolved ONE address and a bundle
 // smuggling extra keys past a single-fingerprint check is exactly what the
 // comparison exists to stop.
-bool importInto(const QString& home, const QByteArray& armored, QString* fingerprint, bool* changed,
-                 QString* detail)
+bool importInto(const QString& home, const QByteArray& armored, bool requireSecret,
+                QString* fingerprint, bool* changed, QString* detail)
 {
     initialiseGpgme();
 
@@ -85,6 +85,17 @@ bool importInto(const QString& home, const QByteArray& armored, QString* fingerp
     }
 
     *fingerprint = QString::fromLatin1(result->imports->fpr);
+    if (requireSecret) {
+        gpgme_key_t key = nullptr;
+        const gpgme_error_t lookup = gpgme_get_key(context.handle, result->imports->fpr, &key, 1);
+        const bool hasSecret = gpgme_err_code(lookup) == GPG_ERR_NO_ERROR && key != nullptr && key->secret;
+        if (key != nullptr)
+            gpgme_key_unref(key);
+        if (!hasSecret) {
+            *detail = QStringLiteral("the bytes carried no private OpenPGP key");
+            return false;
+        }
+    }
     // `unchanged` counts keys gpg already had in full. Anything else means the
     // keyring gained material -- a new key, or new signatures or user IDs on
     // one it already held.
@@ -128,7 +139,7 @@ PgpImportResult importPublicKey(const QByteArray& armoredPublicKey, const QStrin
     QString observed;
     bool changedInScratch = false;
     QString detail;
-    if (!importInto(scratch.path(), armoredPublicKey, &observed, &changedInScratch, &detail)) {
+    if (!importInto(scratch.path(), armoredPublicKey, false, &observed, &changedInScratch, &detail)) {
         out.status = PgpImportStatus::Rejected;
         out.detail = detail;
         return out;
@@ -147,13 +158,62 @@ PgpImportResult importPublicKey(const QByteArray& armoredPublicKey, const QStrin
     // Step two: the real keyring, only now.
     QString importedFingerprint;
     bool changed = false;
-    if (!importInto(homeDirectory, armoredPublicKey, &importedFingerprint, &changed, &detail)) {
+    if (!importInto(homeDirectory, armoredPublicKey, false, &importedFingerprint, &changed, &detail)) {
         out.status = PgpImportStatus::Rejected;
         out.detail = detail;
         return out;
     }
 
     out.fingerprint = importedFingerprint;
+    out.status = changed ? PgpImportStatus::Imported : PgpImportStatus::Unchanged;
+    return out;
+}
+
+PgpImportResult importPrivateKey(const SecureBytes& armoredPrivateKey, const QString& expectedFingerprint,
+                                  const QString& homeDirectory)
+{
+    PgpImportResult out;
+    if (armoredPrivateKey.isEmpty()) {
+        out.status = PgpImportStatus::Rejected;
+        out.detail = QStringLiteral("no key bytes");
+        return out;
+    }
+    initialiseGpgme();
+    if (gpgme_err_code(gpgme_engine_check_version(GPGME_PROTOCOL_OpenPGP)) != GPG_ERR_NO_ERROR) {
+        out.status = PgpImportStatus::EngineUnavailable;
+        return out;
+    }
+    QTemporaryDir scratch;
+    if (!scratch.isValid()) {
+        out.status = PgpImportStatus::Rejected;
+        out.detail = QStringLiteral("could not create a scratch keyring");
+        return out;
+    }
+    QFile::setPermissions(scratch.path(),
+                           QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
+    QString observed;
+    bool scratchChanged = false;
+    QString detail;
+    if (!importInto(scratch.path(), armoredPrivateKey.bytes(), true, &observed, &scratchChanged, &detail)) {
+        out.status = PgpImportStatus::Rejected;
+        out.detail = detail;
+        return out;
+    }
+    out.fingerprint = observed;
+    if (expectedFingerprint.isEmpty()
+        || observed.compare(expectedFingerprint, Qt::CaseInsensitive) != 0) {
+        out.status = PgpImportStatus::Rejected;
+        out.detail = QStringLiteral("fingerprint mismatch");
+        return out;
+    }
+    QString imported;
+    bool changed = false;
+    if (!importInto(homeDirectory, armoredPrivateKey.bytes(), true, &imported, &changed, &detail)) {
+        out.status = PgpImportStatus::Rejected;
+        out.detail = detail;
+        return out;
+    }
+    out.fingerprint = imported;
     out.status = changed ? PgpImportStatus::Imported : PgpImportStatus::Unchanged;
     return out;
 }

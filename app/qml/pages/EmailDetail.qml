@@ -760,6 +760,11 @@ Item {
                 item.loadHtml(root.renderedHtml(source || ""))
             }
 
+            Connections {
+                target: Theme
+                function onThemeChanged() { webViewLoader.applyContent() }
+            }
+
             sourceComponent: WebEngineView {
                 backgroundColor: Theme.bg
 

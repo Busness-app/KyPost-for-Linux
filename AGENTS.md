@@ -190,14 +190,16 @@ Added 2026-07-26:
 
 Client-side decryption and signing are now in scope.
 
-**Custody model, decided 2026-08-22: delegate to the user's `gpg-agent` via
-GPGME. This client holds no private key material and never sees a
-passphrase.** Keys stay where the user already keeps them, pinentry handles
-passphrases, and hardware tokens and smartcards work with no code at all.
-Bespoke in-app custody — what `kypost-android` has to do, having no agent to
-delegate to — was considered and rejected: it would mean owning key storage,
-memory hygiene, passphrase handling and enrolment, for a capability the
-platform already provides.
+**Custody model, revised 2026-08-23: use the server's authenticated ECDH
+device-enrolment ceremony, then delegate durable custody to the user's
+`gpg-agent` via GPGME.** KyPost generates a non-persistent P-256 key, publishes
+its public point, and shows the same time-bucketed verification code as
+webmail. Webmail unlocks the account key locally and seals it to that device
+key. KyPost briefly handles the decrypted key bytes only to import them into
+GnuPG, then zeroises both the envelope plaintext and the ECDH private key. It
+never receives the account password or OpenPGP passphrase. After import, keys
+stay where the user keeps them, pinentry handles passphrases, and hardware
+tokens and smartcards continue to work without a second custody system.
 
 Two consequences worth being explicit about, because they read as weaknesses
 and are the accepted cost of the model:

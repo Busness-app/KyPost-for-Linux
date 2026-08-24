@@ -74,6 +74,8 @@ add_library(kypostcore STATIC
   pgp/MimeBodyReader.cpp
   pgp/PgpMimeWriter.cpp
   pgp/OpenPgpKeyImporter.cpp
+  pgp/DeviceEnrollmentCrypto.cpp
+  pgp/DeviceEnrollmentCrypto.h
   pgp/OpenPgpEncryptor.cpp
   pgp/PgpSendPlanner.cpp
   pgp/EncryptedMessageReader.cpp
@@ -86,6 +88,7 @@ add_library(kypostcore STATIC
   security/PrivatePath.cpp
   security/PrivatePath.h
   security/CredentialSealer.h
+  security/SecureBytes.h
   stores/SettingsStore.cpp
   stores/SettingsStore.h
   stores/CursorStore.cpp
@@ -124,6 +127,8 @@ add_library(kypostcore STATIC
   net/PgpQrClient.h
   net/PgpBootstrapClient.cpp
   net/PgpBootstrapClient.h
+  net/PgpDeviceEnrollmentClient.cpp
+  net/PgpDeviceEnrollmentClient.h
   net/PgpRecipientChecker.cpp
   net/PgpRecipientChecker.h
   net/PgpPayloadClient.cpp

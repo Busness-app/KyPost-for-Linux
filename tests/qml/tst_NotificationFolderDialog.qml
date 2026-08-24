@@ -67,6 +67,15 @@ TestCase {
         verify(!dialog.isOpen)
     }
 
+    function test_modal_panel_click_does_not_reach_content_below() {
+        dialog.open("m-1", ["INBOX"])
+
+        mouseClick(dialog, dialog.width / 2, dialog.height / 2)
+
+        verify(dialog.isOpen)
+        compare(chosenSpy.count, 0)
+    }
+
     // The id travels with the choice rather than being read back off the
     // dialog afterwards: close() clears it, and a handler that read it later
     // would get an empty string.

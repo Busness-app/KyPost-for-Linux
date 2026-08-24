@@ -34,7 +34,9 @@ use the same Go relay backend.
   and queues the changes. It also handles group membership and duplicate entries.
 - **PGP support** — the client exchanges public keys through QR codes. Scan or show a key with
   the camera, then confirm the fingerprint out of band. The client marks encrypted mail that it
-  cannot read and gives a route to webmail. The client never holds a private key.
+  cannot read until this device is enrolled. Webmail can seal the account key to a
+  temporary ECDH device key; KyPost imports it into the user's GnuPG keyring and
+  clears the transient key bytes.
 - **Compose autocomplete** — type a name or an address in Compose, then select a synced
   contact.
 - **Push notifications over [UnifiedPush](https://unifiedpush.org/)** — two tiers with

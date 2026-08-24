@@ -38,6 +38,7 @@ PgpBootstrapResult PgpBootstrapClient::fetch(const QUrl& serverBaseUrl, const Re
     out.ok = true;
     out.hasIdentity = obj.value(QStringLiteral("hasIdentity")).toBool();
     out.protection = obj.value(QStringLiteral("protection")).toString();
+    out.fingerprint = obj.value(QStringLiteral("fingerprint")).toString().trimmed();
     // Primary first, then any send-as aliases. Only the primary is taken:
     // this app has no send-as UI, and picking an alias the user did not choose
     // would put an address on their mail that they never selected.

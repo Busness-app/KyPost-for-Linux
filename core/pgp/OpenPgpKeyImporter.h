@@ -3,6 +3,8 @@
 #include <QByteArray>
 #include <QString>
 
+#include "security/SecureBytes.h"
+
 // Puts a recipient's public key where gpg can encrypt to it: the user's own
 // GnuPG keyring.
 //
@@ -72,3 +74,6 @@ struct PgpImportResult
 // passes nothing and gets the user's own keyring.
 PgpImportResult importPublicKey(const QByteArray& armoredPublicKey, const QString& expectedFingerprint,
                                  const QString& homeDirectory = QString());
+
+PgpImportResult importPrivateKey(const SecureBytes& armoredPrivateKey, const QString& expectedFingerprint,
+                                  const QString& homeDirectory = QString());

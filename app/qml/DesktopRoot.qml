@@ -308,7 +308,15 @@ Kirigami.ApplicationWindow {
     // component wrapped in a Kirigami.Page instead.
     Kirigami.OverlaySheet {
         id: settingsSheet
+        modal: true
         onOpened: settingsPane.refreshKeywordSettings()
+
+        background: Rectangle {
+            color: Theme.panel
+            radius: Theme.shapeSheet
+            border.width: 1
+            border.color: Theme.line
+        }
 
         Settings {
             id: settingsPane
@@ -618,6 +626,13 @@ Kirigami.ApplicationWindow {
     Kirigami.OverlaySheet {
         id: pgpMyQrCodeSheet
 
+        background: Rectangle {
+            color: Theme.panel
+            radius: Theme.shapeSheet
+            border.width: 1
+            border.color: Theme.line
+        }
+
         PgpMyQrCode {
             implicitWidth: 360
             implicitHeight: 480
@@ -627,6 +642,13 @@ Kirigami.ApplicationWindow {
 
     Kirigami.OverlaySheet {
         id: pgpScanContactKeySheet
+
+        background: Rectangle {
+            color: Theme.panel
+            radius: Theme.shapeSheet
+            border.width: 1
+            border.color: Theme.line
+        }
         // Set right before open() by whichever entry point below opened
         // this sheet -- null means "create a brand-new contact from the
         // scan" (the contacts-list entry point); non-null means "write
@@ -905,7 +927,7 @@ Kirigami.ApplicationWindow {
         // bar" separation from the 3-column body below.
         Rectangle {
             Layout.fillWidth: true
-            Layout.preferredHeight: 52
+            Layout.preferredHeight: 66
 
             gradient: Gradient {
                 GradientStop { position: 0.0; color: Theme.panel }
@@ -922,8 +944,8 @@ Kirigami.ApplicationWindow {
 
             RowLayout {
                 anchors.fill: parent
-                anchors.margins: 10
-                spacing: 8
+                anchors.margins: 12
+                spacing: 12
 
                 Text {
                     Layout.fillWidth: true

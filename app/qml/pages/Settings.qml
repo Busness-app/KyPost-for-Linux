@@ -80,6 +80,20 @@ Item {
 
     Component.onCompleted: refreshKeywordSettings()
 
+    onCurrentPaneChanged: {
+        if (currentPane === 6)
+            securityFlickable.contentY = 0
+    }
+
+    // Settings is used inside an OverlaySheet on desktop. Consume otherwise
+    // unhandled input here so a button press cannot also activate the mail
+    // row occupying the same coordinates behind the sheet.
+    MouseArea {
+        anchors.fill: parent
+        acceptedButtons: Qt.AllButtons
+        onWheel: function (wheel) { wheel.accepted = true }
+    }
+
     ColumnLayout {
         anchors.fill: parent
         anchors.margins: 16
@@ -590,6 +604,7 @@ Item {
             // things OFF: a lock that can be removed by whoever already has
             // the window open protects nothing.
             Flickable {
+                id: securityFlickable
                 contentWidth: width
                 contentHeight: securityColumn.implicitHeight
                 clip: true
@@ -688,7 +703,7 @@ Item {
 
                     SectionLabel { text: i18n("Lock when KyPost is not in front") }
 
-                    RowLayout {
+                    ColumnLayout {
                         Layout.fillWidth: true
                         spacing: 8
                         enabled: AppLock.lockEnabled
@@ -700,26 +715,32 @@ Item {
                             font.family: Theme.fontUi
                             font.pixelSize: 14
                         }
-                        Repeater {
-                            model: [0, 15, 60, 300]
-                            delegate: PillTab {
-                                required property int modelData
-                                text: modelData === 0
-                                    ? i18n("At once")
-                                    : (modelData < 60
-                                        ? i18np("%1 second", "%1 seconds", modelData)
-                                        : i18np("%1 minute", "%1 minutes", Math.round(modelData / 60)))
-                                selected: AppLock.backgroundGraceSeconds === modelData
-                                onClicked: {
-                                    if (AppLock.backgroundGraceSeconds === modelData)
-                                        return
-                                    graceSecondsChoice = modelData
-                                    securityPrompt.begin(
-                                        "backgroundGrace",
-                                        modelData === 0
-                                            ? i18n("Enter your PIN to lock KyPost as soon as it leaves the front.")
-                                            : i18n("Enter your PIN. KyPost will stay unlocked for this long after "
-                                                   + "it leaves the front."))
+                        Flow {
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: childrenRect.height
+                            spacing: 8
+
+                            Repeater {
+                                model: [0, 15, 60, 300]
+                                delegate: PillTab {
+                                    required property int modelData
+                                    text: modelData === 0
+                                        ? i18n("At once")
+                                        : (modelData < 60
+                                            ? i18np("%1 second", "%1 seconds", modelData)
+                                            : i18np("%1 minute", "%1 minutes", Math.round(modelData / 60)))
+                                    selected: AppLock.backgroundGraceSeconds === modelData
+                                    onClicked: {
+                                        if (AppLock.backgroundGraceSeconds === modelData)
+                                            return
+                                        graceSecondsChoice = modelData
+                                        securityPrompt.begin(
+                                            "backgroundGrace",
+                                            modelData === 0
+                                                ? i18n("Enter your PIN to lock KyPost as soon as it leaves the front.")
+                                                : i18n("Enter your PIN. KyPost will stay unlocked for this long after "
+                                                       + "it leaves the front."))
+                                    }
                                 }
                             }
                         }
@@ -736,7 +757,7 @@ Item {
 
                     SectionLabel { text: i18n("Erase after failed attempts") }
 
-                    RowLayout {
+                    ColumnLayout {
                         Layout.fillWidth: true
                         spacing: 8
                         // Nothing to count failures against without a PIN.
@@ -749,26 +770,32 @@ Item {
                             font.family: Theme.fontUi
                             font.pixelSize: 14
                         }
-                        Repeater {
-                            model: [0, 5, 10, 20]
-                            delegate: PillTab {
-                                required property int modelData
-                                text: modelData === 0
-                                    ? i18n("Never")
-                                    : i18np("%1 attempt", "%1 attempts", modelData)
-                                selected: AppLock.wipeAfterAttempts === modelData
-                                onClicked: {
-                                    if (AppLock.wipeAfterAttempts === modelData)
-                                        return
-                                    eraseThresholdChoice = modelData
-                                    securityPrompt.begin(
-                                        "eraseAfter",
-                                        modelData === 0
-                                            ? i18n("Enter your PIN to stop KyPost erasing this device after "
-                                                   + "repeated failed attempts.")
-                                            : i18np("Enter your PIN to erase this device after %1 failed attempt.",
-                                                    "Enter your PIN to erase this device after %1 failed attempts.",
-                                                    modelData))
+                        Flow {
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: childrenRect.height
+                            spacing: 8
+
+                            Repeater {
+                                model: [0, 5, 10, 20]
+                                delegate: PillTab {
+                                    required property int modelData
+                                    text: modelData === 0
+                                        ? i18n("Never")
+                                        : i18np("%1 attempt", "%1 attempts", modelData)
+                                    selected: AppLock.wipeAfterAttempts === modelData
+                                    onClicked: {
+                                        if (AppLock.wipeAfterAttempts === modelData)
+                                            return
+                                        eraseThresholdChoice = modelData
+                                        securityPrompt.begin(
+                                            "eraseAfter",
+                                            modelData === 0
+                                                ? i18n("Enter your PIN to stop KyPost erasing this device after "
+                                                       + "repeated failed attempts.")
+                                                : i18np("Enter your PIN to erase this device after %1 failed attempt.",
+                                                        "Enter your PIN to erase this device after %1 failed attempts.",
+                                                        modelData))
+                                    }
                                 }
                             }
                         }
@@ -783,6 +810,62 @@ Item {
                         text: AppLock.wipeAfterAttempts === 0
                             ? i18n("KyPost will not erase itself, however many attempts fail. Repeated failures are still slowed down and eventually refused until you restart the app. Anyone who takes this computer can keep guessing.")
                             : i18n("Cached mail, contacts and this device's pairing are erased after this many consecutive failed attempts. Your mail on the server is not affected.")
+                    }
+
+                    Item { Layout.preferredHeight: 4 }
+
+                    SectionLabel { text: i18n("OpenPGP private key") }
+
+                    MutedHint {
+                        Layout.fillWidth: true
+                        text: i18n("Enroll this computer from webmail. KyPost creates a temporary device key, webmail seals your OpenPGP private key to it, and the imported key remains under GnuPG's control.")
+                    }
+
+                    Rectangle {
+                        Layout.fillWidth: true
+                        visible: PgpEnrollment.verificationCode.length > 0
+                        implicitHeight: enrollmentCode.implicitHeight + 28
+                        radius: Theme.shapeField
+                        color: Theme.bg
+                        border.width: 1
+                        border.color: Theme.accent
+
+                        Text {
+                            id: enrollmentCode
+                            anchors.centerIn: parent
+                            text: PgpEnrollment.verificationCode
+                            textFormat: Text.PlainText
+                            color: Theme.inkStrong
+                            font.family: Theme.fontMono
+                            font.pixelSize: 20
+                            font.letterSpacing: 2
+                        }
+                    }
+
+                    Flow {
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: childrenRect.height
+                        spacing: 12
+
+                        PrimaryButton {
+                            text: PgpEnrollment.state === 3 ? i18n("Check Again")
+                                  : PgpEnrollment.state === 5 ? i18n("Enroll Again")
+                                  : i18n("Enroll This Device")
+                            enabled: Pairing.isPaired && !PgpEnrollment.busy
+                            onClicked: PgpEnrollment.state === 3
+                                ? PgpEnrollment.checkAgain() : PgpEnrollment.start()
+                        }
+                        GhostButton {
+                            visible: PgpEnrollment.busy || PgpEnrollment.state === 3
+                            text: i18n("Cancel")
+                            onClicked: PgpEnrollment.cancel()
+                        }
+                    }
+
+                    MutedHint {
+                        Layout.fillWidth: true
+                        visible: PgpEnrollment.status.length > 0
+                        text: PgpEnrollment.status
                     }
 
                     Item { Layout.preferredHeight: 4 }

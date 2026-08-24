@@ -6,6 +6,7 @@
 #include "pairing/PairingController.h"
 #include "pgp/PgpQrController.h"
 #include "pgp/PgpQrScanner.h"
+#include "pgp/PgpEnrollmentController.h"
 #include "platform/SecureStoreKeychain.h"
 #include "security/AppLockManager.h"
 #include "security/AppRelauncher.h"
@@ -987,6 +988,14 @@ int main(int argc, char* argv[])
     // to the live VideoOutput's videoSink (see PgpQrScanner.h's doc comment).
     qmlRegisterType<PgpQrScanner>("com.kysecurity.mail", 1, 0, "PgpQrScanner");
 
+    PgpEnrollmentController pgpEnrollmentController(pairingStore, networkExecutor);
+    qmlRegisterSingletonInstance<PgpEnrollmentController>(
+        "com.kysecurity.mail", 1, 0, "PgpEnrollment", &pgpEnrollmentController);
+    QObject::connect(&pgpEnrollmentController, &PgpEnrollmentController::enrolled,
+                     &mailController, [&mailController]() {
+                         mailController.refreshPgpComposeState(true);
+                     });
+
     // VibeSec fix: EmailDetail.qml instantiates one of these per its
     // WebEngineProfile, binding its imagesLoaded property to the "Show
     // images" toggle -- see RemoteContentInterceptor.h's class doc comment.
@@ -1006,6 +1015,13 @@ int main(int argc, char* argv[])
                                         certificatePinSink, networkExecutor);
     qmlRegisterSingletonInstance<PairingController>(
         "com.kysecurity.mail", 1, 0, "Pairing", &pairingController);
+    QObject::connect(&pairingController, &PairingController::pairingChanged,
+                     &pgpEnrollmentController, &PgpEnrollmentController::pairingMayHaveChanged);
+    QObject::connect(&appLockManager, &AppLockManager::lockedChanged,
+                     &pgpEnrollmentController, [&appLockManager, &pgpEnrollmentController]() {
+                         if (appLockManager.locked())
+                             pgpEnrollmentController.cancel();
+                     });
 
     // Keep PairingController's view of the lock current, so a
     // kypost://native-pair link arriving while the app is locked cannot raise a
