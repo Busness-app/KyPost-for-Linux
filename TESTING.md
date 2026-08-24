@@ -14,8 +14,9 @@ by task number where useful), (b) is packaging-relevant, locally
 verifiable behavior added in Phase 8, or (c) covers the extended contact
 fields, contact de-duplication, compose autocomplete, and PGP QR
 key-exchange features implemented after Phase 8 (see `Client_Contact_Update.md`,
-`Mobile_Contacts_DEDupe.md`, `ContactAutocomplete.md`, and
-`Client_PGP_Update.md`) — those items are not yet confirmed against a live
+`Mobile_Contacts_DEDupe.md`, `ContactAutocomplete.md` and
+`Client_PGP_Update.md` — those four live in the sibling
+`~/busness.app/kypost-android` repo, not in this one) — those items are not yet confirmed against a live
 backend and are the main reason this file was extended. Nothing here
 describes aspirational behavior — see "Known non-goals / do-not-expect" at
 the bottom for the inverse list.
@@ -437,17 +438,23 @@ Requires the app lock to be on (the toggle is inert otherwise).
       deliberately does not require To/Subject/body — saving an incomplete
       draft is the normal case.
 
-## Encrypted mail the client cannot read (PGP protection modes)
+## Encrypted mail (PGP protection modes)
 
 Needs a backend account whose PGP key is **client-held** (end-to-end
 protected), i.e. `PGPProtection() == client`. A server-mode account exercises
 only the last two checks.
 
-- [ ] **A client-protected message shows a banner, not a blank page.** Open
-      one from the inbox. Expect the warning-accented banner "This message is
-      end-to-end encrypted" above the body area, explaining that neither the
-      server nor this app can decrypt it. The body area itself is empty —
-      that is correct, there is nothing to render.
+The items in this first group describe a device with **no enrolled key** —
+which is every device before enrolment, and stays a supported state. Once a
+key has been enrolled into the local `gpg-agent`, the same messages decrypt
+in place; see the next subsection.
+
+- [ ] **A client-protected message this device holds no key for shows a
+      banner, not a blank page.** Open one from the inbox. Expect the
+      warning-accented banner "This message is end-to-end encrypted" above the
+      body area, explaining that the server cannot decrypt it and this device
+      has no key for it. The body area itself is empty — that is correct,
+      there is nothing to render.
 - [ ] **"Open in webmail" opens the right message.** The button appears only
       on client-protected messages. It must open the default browser at
       `https://<paired server>/read?mailbox=<folder>&message=<id>` and land
@@ -470,6 +477,95 @@ only the last two checks.
       used to blank the message. On an *encrypted* server-decrypted message
       the same bug additionally flipped the banner to "end-to-end encrypted";
       confirm it still reads normally.
+
+### Client-side decryption and encrypted send (added 2026-08-23)
+
+Needs a client-custody account, a working `gpg` and `gpg-agent` on the machine,
+and the key enrolled through the webmail hand-off. On a machine with no usable
+gpg, `engineAvailable()` is false and the app must say so **once**, not report
+every message as undecryptable — check that first, it is the cheapest of these.
+
+- [ ] **Enrol the key.** Run the enrolment ceremony from webmail: KyPost shows
+      a time-bucketed verification code, webmail shows the same one. Confirm
+      they match before continuing — that comparison is the whole
+      authentication of the path. Expect the key to appear in the user's own
+      keyring afterwards (`gpg --list-secret-keys`), because custody is
+      delegated to `gpg-agent`, not kept by this app.
+- [ ] **Decrypt is manual, not automatic on open.** Opening a client-protected
+      message must not prompt anything by itself. The decrypt action prompts
+      **pinentry** — on a hardware token, that means physically touching the
+      key. This is deliberate: automatic decryption on scroll would prompt for
+      every message.
+- [ ] **The decrypted body is never written to the database.** After reading
+      one, close it and inspect the profile database: no column of any table
+      may hold the plaintext. A unit test scans for this, but confirm once by
+      hand on a real profile — it is the property the whole design rests on.
+      Moving to another message, and locking the app, must both drop it.
+- [ ] **Signature verdicts, all four.** Signed by this sender; signed by a key
+      **nobody binds to this sender** (the one that matters — gpg happily
+      verifies a known contact's signature on a message claiming to be from
+      somebody else, so a client trusting gpg alone shows a pass); invalid; and
+      could-not-check. An unsigned message must say **nothing** rather than
+      printing a reassuring "not signed" beside every one of them.
+- [ ] **Send: no recipient is silently dropped.** Compose to two recipients
+      where one has no usable key. Expect a refusal that **names the recipient**
+      and no message sent at all — there is no downgrade to plaintext.
+- [ ] **Send: each Bcc recipient gets their own ciphertext.** To+Cc share one
+      delivery; every blind recipient gets a separate one, so no Bcc address
+      appears in another recipient's key IDs. Verify from a received copy.
+- [ ] **The real subject never leaves the ciphertext.** Capture the outbound
+      request: the envelope subject must be the placeholder, with the real one
+      carried as a protected header inside the encrypted part. Attachments
+      travel inside it too — filenames included.
+- [ ] **The Sent copy is encrypted to the sender, or not saved at all.** Never
+      a cleartext copy: it would land on the account's IMAP host, which holds
+      no key.
+- [ ] **Size limits name the right lever.** The request carries one full copy
+      per delivery, so a modest attachment to several blind recipients can
+      exceed the relay's cap. Expect the refusal to name both levers — the
+      attachment, or the number of recipients — before sending, not a relay 413.
+
+## Local database encryption (SQLCipher, added 2026-08-22)
+
+- [ ] **A new profile is created encrypted.** Delete the profile, launch, pair,
+      then run `file ~/.local/share/mail/kypost.db` and `strings` over it: no
+      subject, address or body may be readable. A build configured **without**
+      `KYPOST_SQLCIPHER_ROOT` cannot do this at all — confirm which build you
+      are testing before concluding anything (`README.md` → Building).
+- [ ] **An existing plaintext profile converts on the next launch**, without
+      being asked. Verify the mail is all still there afterwards: the
+      conversion writes a separate file, verifies it table by table, swaps, and
+      only then securely deletes the plaintext.
+- [ ] **An interrupted conversion is repaired, not lost.** Kill the app during
+      the conversion (repeat a few times to catch the window between the two
+      renames). Every launch after that must either complete the conversion or
+      come back up on the original database. Losing the mail is the failure
+      this path is written to avoid; leaving it unencrypted for one more launch
+      is not.
+- [ ] **A locked or broken keyring never mints a replacement key.** Lock the
+      keyring and launch. Expect a refusal to open, never a new key written
+      over the real one — that would make the database unopenable by anyone,
+      including its owner, forever.
+
+## Lock policy: grace period, erase threshold, interrupted wipe (added 2026-08-22)
+
+- [ ] **The default grace period locks immediately**, on the same event-loop
+      pass. Set Settings → Security to "at once", background the window, and
+      confirm the lock overlay is up before anything else can be clicked.
+- [ ] **A non-default grace period is honoured** (15 s / 1 min / 5 min), and
+      **changing it requires the PIN**.
+- [ ] **An explicit lock cancels a pending one.** Start a 5-minute grace, then
+      lock explicitly, then turn the lock off. Nothing may fire later.
+- [ ] **"Never erase" still rate-limits.** Set the erase threshold to Never and
+      fail the PIN repeatedly: the device must **not** wipe, and the guesses
+      must still be slowed and eventually refused for the session. That refusal
+      is the one limit moving the system clock forward cannot defeat.
+- [ ] **An interrupted wipe is re-run at the next launch.** On a throwaway
+      pairing, trigger the wipe and kill the process part-way. The next launch
+      must re-run it **before** the lock screen decides whether a lock exists,
+      and if it still cannot finish, raise the incomplete-wipe row on the
+      status banner. A user who thinks a failed wipe succeeded is the outcome
+      this exists to prevent.
 
 ## Push/notifications
 
@@ -559,6 +655,11 @@ only the last two checks.
 
 ## Packaging (new this phase)
 
+> The manifest now targets `org.kde.Platform`/`org.kde.Sdk` **6.11** and
+> `io.qt.qtwebengine.BaseApp` **6.11**; the 6.10 references in the historical
+> notes below were current when those items were verified. `packaging/flatpak/`
+> is the source of truth for the versions.
+
 - [ ] **`cmake --install` places files at the correct paths.** Run
       `cmake --build <builddir> && cmake --install <builddir>
       --prefix <some-prefix>` and inspect the installed tree:
@@ -587,7 +688,7 @@ only the last two checks.
       <builddir> packaging/flatpak/com.kysecurity.mail.yaml`. **Resolved
       (2026-07-17), confirmed via a real from-scratch build + launch, not
       just reasoning:** the manifest now declares `base:
-      io.qt.qtwebengine.BaseApp` / `base-version: 6.10` (a real, published
+      io.qt.qtwebengine.BaseApp` (a real, published
       Flathub extension on this exact branch — the earlier "tops out at 6.4"
       assumption was stale), closing the `Could not find Qt6WebEngineQuick`
       gap with zero source rebuild. Three further real, previously-latent

@@ -194,7 +194,15 @@ bool isPermittedQrEndpoint(const QUrl& url)
 {
     if (!isSafeQrTarget(url))
         return false;
-    return url.adjusted(QUrl::NormalizePathSegments).path().contains(QStringLiteral("/api/pgp/qr/key"));
+    // endsWith, not contains: the wire contract is
+    // GET {base}/api/pgp/qr/key?t=<token> -- the capability token is the
+    // QUERY parameter, so the path ENDS at this route and nothing legitimate
+    // follows it. contains() also accepted "/api/pgp/qr/key-backup",
+    // "/api/pgp/qr/keyanything" and "/api/pgp/qr/key/admin"; applied to every
+    // redirect hop, that let a permitted host aim the token at any path it
+    // liked. The prefix is left open because a relay may be deployed under a
+    // base path.
+    return url.adjusted(QUrl::NormalizePathSegments).path().endsWith(QStringLiteral("/api/pgp/qr/key"));
 }
 
 } // namespace

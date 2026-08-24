@@ -1252,7 +1252,7 @@ void MailControllerTest::hostileLocationRefusesToOpenNonAllowlistedAttachmentTyp
     QTemporaryDir settingsDir;
     QVERIFY(settingsDir.isValid());
     SettingsStore settingsStore(settingsDir.filePath(QStringLiteral("settings.ini")));
-    settingsStore.setHostileLocationProtectionEnabled(true);
+    QVERIFY(settingsStore.setHostileLocationProtectionEnabled(true));
     KeywordRepository keywordRepository(settingsStore);
 
     QTemporaryDir runtimeDir;
@@ -1313,7 +1313,7 @@ void MailControllerTest::hostileLocationForcesTheExtensionToMatchTheDeclaredType
     QTemporaryDir settingsDir;
     QVERIFY(settingsDir.isValid());
     SettingsStore settingsStore(settingsDir.filePath(QStringLiteral("settings.ini")));
-    settingsStore.setHostileLocationProtectionEnabled(true);
+    QVERIFY(settingsStore.setHostileLocationProtectionEnabled(true));
     KeywordRepository keywordRepository(settingsStore);
 
     QTemporaryDir runtimeDir;
@@ -1396,7 +1396,7 @@ void MailControllerTest::hostileLocationRefusesASymlinkPlantedAtThePredictableTe
     QTemporaryDir settingsDir;
     QVERIFY(settingsDir.isValid());
     SettingsStore settingsStore(settingsDir.filePath(QStringLiteral("settings.ini")));
-    settingsStore.setHostileLocationProtectionEnabled(true);
+    QVERIFY(settingsStore.setHostileLocationProtectionEnabled(true));
     KeywordRepository keywordRepository(settingsStore);
 
     QTemporaryDir runtimeDir;
@@ -1473,7 +1473,7 @@ void MailControllerTest::hostileLocationRefusesATemporaryDirectoryItCannotCreate
     QTemporaryDir settingsDir;
     QVERIFY(settingsDir.isValid());
     SettingsStore settingsStore(settingsDir.filePath(QStringLiteral("settings.ini")));
-    settingsStore.setHostileLocationProtectionEnabled(true);
+    QVERIFY(settingsStore.setHostileLocationProtectionEnabled(true));
     KeywordRepository keywordRepository(settingsStore);
 
     // A plain FILE sitting where the directory has to go.
@@ -1541,7 +1541,7 @@ void MailControllerTest::anAttachmentNoApplicationWillOpenIsDeletedRatherThanLef
     QTemporaryDir settingsDir;
     QVERIFY(settingsDir.isValid());
     SettingsStore settingsStore(settingsDir.filePath(QStringLiteral("settings.ini")));
-    settingsStore.setHostileLocationProtectionEnabled(true);
+    QVERIFY(settingsStore.setHostileLocationProtectionEnabled(true));
     KeywordRepository keywordRepository(settingsStore);
 
     QTemporaryDir runtimeDir;

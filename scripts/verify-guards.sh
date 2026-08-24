@@ -168,13 +168,23 @@ PY
     status=$?
     set -e
 
-    if [ "$status" -eq 0 ]; then
+    if [ "$status" -ne 0 ]; then
+        echo "proven          $test_name"
+        checked=$((checked + 1))
+    elif ! grep -q '^PASS   : ' "$BACKUP_DIR/run.log"; then
+        # QtTest exits 0 for a SKIPPED test, so a zero status can mean the test
+        # never ran at all -- a build without SQLCipher skips the whole
+        # migration case in initTestCase(). Reporting that as "measuring
+        # something else" sends the next reader hunting a defect in a test that
+        # is fine. Still not proven, still counted against the run: a guard
+        # this build cannot speak to is a guard nobody has checked.
+        echo "NOT RUN         $test_name"
+        echo "    the test was skipped in this build, so the guard is unproven here, not disproven."
+        failed=$((failed + 1))
+    else
         echo "STILL GREEN     $test_name"
         echo "    the guard was removed and this test did not notice. It is measuring something else."
         failed=$((failed + 1))
-    else
-        echo "proven          $test_name"
-        checked=$((checked + 1))
     fi
 
     restore

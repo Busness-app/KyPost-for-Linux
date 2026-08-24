@@ -29,16 +29,20 @@ struct ContactPhotoFetchResult
 // a result struct" flow) -- fetches one contact's photo bytes on demand.
 //
 // Unlike GroupsClient's fixed /api/groups path, this endpoint carries the
-// contact's uid as a path segment (/api/contacts/{id}/photo). endpointFor()
-// in the .cpp builds that URL via plain string concatenation followed by
-// QUrl::setPath()'s default DecodedMode, which percent-encodes whatever
-// characters contactUid happens to contain -- this repo's contact uids are
-// opaque server- or locally-generated strings, never expected to contain a
-// literal "/", so there's no realistic ambiguity between "id" and an extra
-// path segment in practice.
+// contact's uid as a path segment (/api/contacts/{id}/photo) -- the only
+// runtime value this repo interpolates into a URL path. endpointFor() in the
+// .cpp percent-encodes it to exactly one segment and refuses the handful of
+// values encoding cannot make safe; see the comment there for what went
+// through the raw concatenation this replaced.
 class ContactPhotoClient
 {
 public:
+    // Ceiling for one photo, well under HttpClient's generic 8 MiB default.
+    // This is an avatar: the default let a relay hand back 8 MiB per contact
+    // viewed, which is both an allocation and -- via ContactPhotoCache -- a
+    // write to the user's disk.
+    static constexpr qint64 kMaxPhotoBytes = 2LL * 1024 * 1024;
+
     explicit ContactPhotoClient(HttpClient& httpClient);
 
     ContactPhotoFetchResult fetch(const QUrl& serverBaseUrl, const QString& contactUid, const RelayAuth& auth) const;

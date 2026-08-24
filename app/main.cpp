@@ -599,8 +599,8 @@ int main(int argc, char* argv[])
         // crashed between "write the flag" and "delete the file", or the
         // erase at toggle time did not finish, there could still be a
         // database on disk holding exactly what this mode exists to prevent.
-        hostileLocationResidue = !SecurityWipe::eraseOnDiskProfile(
-            newDbPath, legacyDbPaths, dataDir + QStringLiteral("/contact-photos"));
+        hostileLocationResidue = !SecurityWipe::eraseOnDiskProfile(newDbPath, legacyDbPaths,
+                                                                    ContactPhotoCache::directoryFor(dataDir, true));
         if (hostileLocationResidue) {
             qCritical("main: Hostile Location Protection is on, but this device's on-disk data could "
                        "NOT be erased -- cached mail or contacts may still be readable on this disk");
@@ -655,7 +655,14 @@ int main(int argc, char* argv[])
     // above, in its own "contact-photos" subdirectory (see
     // core/stores/ContactPhotoCache.h's doc comment for why no invalidation
     // logic is needed here).
-    ContactPhotoCache contactPhotoCache(dataDir + QStringLiteral("/contact-photos"));
+    //
+    // Follows the SAME persistence decision the database made above, through
+    // the same directoryFor() the erase used. It did not: the erase a hundred
+    // lines up deleted this directory and then this line recreated it, so
+    // under Hostile Location Protection the first contact photo fetched wrote
+    // a recognisable face straight back onto the disk the mode promises holds
+    // nothing at all.
+    ContactPhotoCache contactPhotoCache(ContactPhotoCache::directoryFor(dataDir, !hostileLocation));
 
     // 2. DAOs, each borrowing database.handle(). PushDao has no
     // Phase 6 caller yet -- constructed anyway per the task-31 brief, since
@@ -736,9 +743,6 @@ int main(int argc, char* argv[])
     // records why the mail/contacts controllers cannot follow the same
     // route as this one (their call chains touch QSqlDatabase, which is
     // bound to the thread that opened it).
-    //
-    // Currently used by MfaController alone, which is the reference
-    // conversion.
     NetworkExecutor networkExecutor;
 
     // 6c. The single sink every certificate-pin mutation goes through.

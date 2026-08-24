@@ -10,13 +10,15 @@ Plasma primary, packaged as a Flatpak) and **KDE Mobile** (Plasma Mobile,
 same Flatpak, mobile UI root). **Ubuntu Touch (Lomiri) support is
 deferred** — Qt5 is EOL and this codebase no longer builds against it; see
 Section 4 for the re-check trigger. It is the fourth sibling client after
-the Android app (`~/git/kypost-android`) and the SwiftUI macOS/iOS app
-(`~/git/kypost-for-Mac`). The authoritative design source for this repo
-is `Linux_QT_Client_Plan.md` at the repo root — read it before making any
-architectural decision; this file only summarizes and carries forward the
-rules most likely to be violated by accident (note: that plan document
-predates the Qt5-drop decision and still describes a dual-Qt/Ubuntu Touch
-target — this file is the current source of truth on that point).
+the Android app (`~/busness.app/kypost-android`) and the SwiftUI macOS/iOS
+app (`~/busness.app/kypost-for-Mac`); the relay is
+`~/busness.app/kypost-server`. **This file and `docs/PARITY.md` describe
+what exists today.** `Linux_QT_Client_Plan.md` at the repo root is the
+original architectural design record and is worth reading for the
+reasoning, but it predates the Qt5-drop, the parity matrix and the
+client-side OpenPGP reversal; where it disagrees with this file or
+`docs/PARITY.md`, it is the stale one. It says so itself in its own
+header — do not resolve a conflict in its favour.
 
 ## 2. Repo layout map
 
@@ -27,10 +29,11 @@ map, not a duplicate:
 ```
 core/       — libkypostcore: models/net/db/stores/domain/theme, QtCore+Network+Sql only
 app/        — main.cpp, push/ (KUnifiedPush glue, Qt6-only), platform/ (SecureStore backends), qml/ (MobileRoot, DesktopRoot, pages, components)
-tests/      — QtTest, stubbed HttpClient; ctest-driven
-packaging/  — flatpak/ (Flatpak manifest + desktop file), dbus/ (session D-Bus activation .service), and click/ (Clickable manifest + apparmor)
+tests/      — QtTest, stubbed HttpClient; ctest-driven. tests/qml/ is the QML suite (QmlTests); tests/guards.tsv is the security-guard manifest (§5a)
+packaging/  — flatpak/ (manifest, desktop file, metainfo, notifyrc, icons), dbus/ (session D-Bus activation .service), click/ (empty .gitkeep placeholder — Ubuntu Touch is deferred, there is no Clickable manifest)
 po/         — gettext catalogs
-docs/       — local tooling/setup notes (see docs/SETUP.md); docs/PARITY.md is the authoritative Android-parity matrix
+scripts/    — build-sqlcipher.sh, verify-guards.sh, verify-version.sh, verify-pgp-against-relay.sh
+docs/       — local tooling/setup notes (see docs/SETUP.md); docs/PARITY.md is the authoritative Android-parity matrix; docs/THREADING.md records the async-controller constraints
 ```
 
 ## 3. Build instructions
@@ -48,7 +51,16 @@ A change is not verified until this builds cleanly and `ctest` is green.
 `RelWithDebInfo` is part of the command, not decoration: the hardening flags
 in `CMakeLists.txt` include `_FORTIFY_SOURCE=3`, which does nothing without
 `-O`. A build with no configuration verifies unfortified code. Use
-`-DCMAKE_BUILD_TYPE=Debug -DKYPOST_SANITIZE=ON` for the sanitizer build.
+`-DCMAKE_BUILD_TYPE=Debug -DKYPOST_SANITIZE=ON` for the sanitizer build, which
+CI runs as a second pass over the same tree.
+
+**Add `-DKYPOST_SQLCIPHER_ROOT=...` before believing a green `ctest`.** Without
+it, configure prints `SQLCipher: not configured` and the encryption tests
+`QSKIP` rather than fail — so the suite goes green having never exercised the
+at-rest encryption path, and `scripts/verify-guards.sh` reports the guards on
+that path as `NOT RUN`. `./scripts/build-sqlcipher.sh /tmp/sqlcipher` builds one
+with the SONAME and the column-metadata flag §6h requires; both CI and the
+Flatpak manifest do exactly this.
 
 `ctest` covers both the C++ tests and the QML suite (`QmlTests`, Qt Quick
 Test, added 2026-07-26 — see `tests/qml/`). The QML tests run against fake
@@ -260,31 +272,6 @@ in than to retrofit.
   malicious QR can drive on its own. `PgpQrTargetValidator` exists because
   the public-key path already had this problem.
 
-## 5. Single-Qt rules
-
-Qt5/KF5 support was dropped (Qt5 is EOL); Ubuntu Touch is deferred until it
-ships its own Qt6/KF6 track — see Section 1 and the locked decision in
-Section 4. There is no longer a KF5/KF6 divergence to guard against, so
-most of what used to live in this section (dual-Qt QML-type restrictions, a
-`Compat` singleton escape hatch) is moot and has been removed. One rule
-carries forward unchanged, independent of the Qt5 decision:
-
-- `core/`'s **QtCore/QtNetwork/QtSql-only boundary** is the rule most likely
-  to be accidentally violated in a single commit: nothing in `core/` may
-  pull in QtDBus, QtGui/QtQuick, KUnifiedPush, KNotifications, KF6::I18n, or
-  any Lomiri glue. That code belongs in `app/`. Check `core/`'s own
-  CMakeLists/includes before adding a dependency there.
-  - Practical consequence seen in the PGP work: user-facing strings cannot
-    live in `core/`, because `i18n()` needs KF6::I18n. The *decision* stays
-    in core (`core/domain/PgpMessageState.h`); its *wording* lives in
-    `app/mail/PgpMessagePresentation.h`.
-  - **`core/` links one non-Qt library: OpenSSL's libcrypto**, PRIVATE, for
-    `core/security/CredentialCipher.cpp`. Qt exposes no AEAD anywhere in its
-    public API, and hand-rolling encrypt-then-MAC would be worse than linking
-    what Qt already links for TLS. No OpenSSL type appears in any public
-    header. `libssl-dev` is in the CI apt list; `org.kde.Platform` already
-    ships it, so the Flatpak needs no module.
-
 ### 4b. Recipient public keys go into the user's own GnuPG keyring
 
 Decided 2026-08-23 by the user, after the three options were put to them.
@@ -315,6 +302,38 @@ The consequences are binding on anything that touches `core/pgp/OpenPgpKeyImport
   that lies consistently. Persisting into the keyring gives the user a chance
   to notice. Say "a chance", never "prevents".
 
+## 5. Single-Qt rules
+
+Qt5/KF5 support was dropped (Qt5 is EOL); Ubuntu Touch is deferred until it
+ships its own Qt6/KF6 track — see Section 1 and the locked decision in
+Section 4. There is no longer a KF5/KF6 divergence to guard against, so
+most of what used to live in this section (dual-Qt QML-type restrictions, a
+`Compat` singleton escape hatch) is moot and has been removed. One rule
+carries forward unchanged, independent of the Qt5 decision:
+
+- `core/`'s **QtCore/QtNetwork/QtSql-only boundary** is the rule most likely
+  to be accidentally violated in a single commit: nothing in `core/` may
+  pull in QtDBus, QtGui/QtQuick, KUnifiedPush, KNotifications, KF6::I18n, or
+  any Lomiri glue. That code belongs in `app/`. Check `core/`'s own
+  CMakeLists/includes before adding a dependency there.
+  - Practical consequence seen in the PGP work: user-facing strings cannot
+    live in `core/`, because `i18n()` needs KF6::I18n. The *decision* stays
+    in core (`core/domain/PgpMessageState.h`); its *wording* lives in
+    `app/mail/PgpMessagePresentation.h`.
+  - **`core/` links exactly three non-Qt libraries, all PRIVATE, and no type
+    from any of them appears in a public header**: OpenSSL's libcrypto
+    (`core/security/CredentialCipher.cpp` — Qt exposes no AEAD anywhere in
+    its public API, and hand-rolling encrypt-then-MAC would be worse than
+    linking what Qt already links for TLS), libargon2 (the memory-hard KDF
+    behind the same seal), and gpgme — **the C API, never the `gpgmepp` C++
+    wrapper**, which broke CI: KDE neon's `libgpgmepp-dev` wants gpgme >= 2.0
+    while Ubuntu noble carries 1.x, and CI layers both archives. A fourth,
+    SQLCipher, is linked PUBLIC and only when `KYPOST_SQLCIPHER_ROOT` is set;
+    §6h is why it cannot be an ordinary distro package. Adding a fifth is a
+    decision, not a build tweak. `org.kde.Platform` ships libssl, so the
+    Flatpak needs no module for it; libargon2, sqlcipher, qtkeychain,
+    zxing-cpp and kunifiedpush are all built from source in the manifest.
+
 ### 5a. A guard is not proven until removing it turns a test red
 
 `scripts/verify-guards.sh` does that for every guard in `tests/guards.tsv`:
@@ -335,6 +354,12 @@ is a replacement that leaves the bytes unchanged.
 Search lines are matched WHOLE, indentation included. A deeper-indented copy
 of the same statement is a different guard, and substring matching reported
 the two as one ambiguous entry.
+
+A test that SKIPPED is reported as `NOT RUN`, not as proven and not as still
+green. QtTest exits 0 for a skip, so a build without SQLCipher — which skips
+the whole migration case in `initTestCase()` — looked exactly like a guard
+that had been removed without the test noticing. It counts against the run
+either way: a guard this build cannot speak to is a guard nobody has checked.
 
 The first run found two real things, which is the argument for having it:
 `oneMissingRecipientKeyFailsTheWholeMessage` proved only the pre-flight key
@@ -384,11 +409,19 @@ already produced a real defect in this repo.
 - **Anything QML-side that is a security control needs a QML test**
   (`tests/qml/`, ctest target `QmlTests`). The lock bypass above shipped
   because 73 C++ tests could not see a single `.qml` file.
-- **Guard network-calling invokables with `ReentrancyGuard`**
-  (`core/util/ReentrancyGuard.h`). `HttpClient` runs a nested `QEventLoop`,
-  so QML keeps delivering clicks while a call is suspended. Where a guarded
-  method legitimately calls another, split out an unguarded `*Internal`
-  body rather than removing the guard.
+- ~~**Guard network-calling invokables with `ReentrancyGuard`.**~~
+  **Superseded — `core/util/ReentrancyGuard.h` no longer exists.** The rule
+  was correct while controllers blocked: `HttpClient` runs a nested
+  `QEventLoop`, so QML kept delivering clicks into a method suspended
+  half-way through its own state changes. Every controller is now
+  asynchronous and nothing can re-enter what is never suspended, so the
+  guard was deleted with no users left. **The obligation it carried did not
+  go away**: a new network-calling invokable must publish a `busy`/`inFlight`
+  property, set synchronously before it returns, and coalesce repeat calls —
+  and a new nested `QEventLoop` anywhere needs an exit that does not depend
+  on the thing it is waiting for (§6f). `docs/THREADING.md` is the record of
+  which constraints decided that shape, and names the two GUI-thread blocking
+  calls that remain.
 - **Migrations are transactional.** `Database::open()` wraps each migration
   and its `user_version` bump in one transaction; statement splitting goes
   through `splitSqlStatements()`, not `QString::split(';')`.
@@ -839,6 +872,45 @@ never once run.
   which the database is unopenable by anyone including its owner, forever.
   `DatabaseKeyStore::existing()` reports Unreadable and Corrupt as their own
   answers for this reason alone.
+
+## 6i. Rules added by the 2026-08-24 security-boundary pass
+
+Same standard as 6b–6h. The theme of this round is that all three sites
+carried a comment promising the property the code did not provide, which is
+worse than no comment: the next reader stops looking.
+
+- **`gpgme_op_import()` imports EVERY key in the blob.** It reports them as a
+  linked list, and `importInto()` read only the head of it — under a comment
+  saying that was what stopped bundle smuggling. A relay could return the
+  expected key followed by keys of its own choosing and the whole lot went
+  into the user's real keyring. The full status list is now walked in the
+  scratch GNUPGHOME and anything other than one primary fingerprint is
+  refused before the real keyring is touched. **Compared by fingerprint, not
+  by counting entries** — a single secret key legitimately reports its
+  fingerprint twice. Measured against gpgme, not assumed.
+
+- **A partial secret-store outage fails the whole load.** Only `sub` went
+  through `SecureStore::read()`; the other seven fields used `get()`, which
+  collapses "the store could not be consulted" into an empty string. A Secret
+  Service that answered the first request and failed on the certificate pin
+  produced a pairing that loaded successfully **with no pin**, configured
+  `HttpClient` with no TOFU enforcement, and — since only mutations drop the
+  cache — was never re-read for the rest of the session. Every field uses
+  `read()`; any `Failed` fails the load and nothing is cached. This is §6d's
+  "absent is not unreadable" rule applied to the whole record rather than to
+  the one field somebody reported.
+
+- **Hostile Location Protection erases BEFORE it relaunches, and refuses the
+  mode if that erase fails.** The failure used to be logged and discarded: the
+  replacement process came up memory-only, showed the protection as on, and
+  the mail it was supposed to have destroyed was still on the disk.
+  `AppLockManager` now erases through an injected callable and, on false,
+  reverts the setting, raises the wipe-incomplete banner, and does not
+  relaunch. Deliberately **not** the existing `WipeTripwire`: its recovery
+  path calls `wipeEverything()`, which would turn a failed transition into an
+  unpaired device. Startup aggregates its own cleanup through
+  `SecurityWipe::eraseOnDiskProfile()` and feeds a failure into the same
+  banner rather than dropping three return values on the floor.
 
 ## 7. DOX framework
 

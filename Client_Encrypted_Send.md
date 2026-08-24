@@ -7,6 +7,32 @@ points to. Read it alongside `AGENTS.md` and `TESTING.md`.
 
 Written 2026-07-26 against the `kypost-server` branch `feat/mobile-encrypted-send`.
 
+> **Partly superseded, 2026-08-23. Read this before implementing anything below.**
+>
+> The custody decision this document rests on was **reversed**. Two of its
+> statements are now false:
+>
+> - *"Out of scope, deliberately: linking GPGME or Sequoia and doing OpenPGP in
+>   this client."* — GPGME is linked (`core/pgp/`), and this client decrypts,
+>   signs and encrypts locally. See `AGENTS.md` §4a and §4b.
+> - *"`client` custody → **Impossible here.** Save a draft and hand off to
+>   webmail."* — a client-custody account whose key has been enrolled sends and
+>   reads natively. The webmail hand-off remains, for accounts this machine has
+>   no key for.
+>
+> What replaced it: the account key reaches this device through the
+> authenticated ECDH enrolment ceremony and is handed to the user's own
+> `gpg-agent`. **"This client never holds the account's private key" is still
+> true in the sense that mattered** — KyPost never learns the account password or
+> the OpenPGP passphrase, and keeps no key store of its own — but it does briefly
+> handle the decrypted key bytes to import them, and it zeroises them afterwards.
+>
+> **Still current and still worth reading:** the wire contract for
+> `server`-custody native send, the recipient key preflight, the
+> keyless-recipient confirmation flow, and the reasoning about why a per-device
+> key or a Secret-Service-held key would each be worse. `docs/PARITY.md` §6 is
+> the record of what shipped; where the two disagree, PARITY wins.
+
 ## Prerequisite: the server side is not deployed yet
 
 Every endpoint and field below lives on `feat/mobile-encrypted-send` in `kypost-server`, which is

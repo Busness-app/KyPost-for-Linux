@@ -9,6 +9,7 @@
 #include <KLocalizedString>
 
 #include <QDateTime>
+#include <QDebug>
 #include <algorithm>
 
 AppLockManager::AppLockManager(AppLockStore& store, SettingsStore& settingsStore, CredentialSealer& sealer,
@@ -375,7 +376,19 @@ bool AppLockManager::setHostileLocationEnabled(bool enabled, const QString& curr
     // comes back up in the protective mode: the next launch opens ":memory:"
     // and retries the same erase rather than reopening the database that was
     // half-deleted.
-    m_settingsStore.setHostileLocationProtectionEnabled(enabled);
+    if (!m_settingsStore.setHostileLocationProtectionEnabled(enabled)) {
+        // The flag never reached the disk, so the next launch would come up in
+        // the OLD mode. Erasing now would destroy the user's mail and still
+        // leave them unprotected, so nothing is erased and nothing relaunches.
+        // Only the enable direction raises the banner: a disable that could
+        // not be written leaves the protective mode in place, which is not a
+        // broken promise.
+        if (enabled) {
+            setWipeIncomplete(true);
+            emit lockStateChanged();
+        }
+        return false;
+    }
 
     // Turning it ON must erase whatever is already on disk -- otherwise the
     // mode starts "protecting" a machine that still holds every cached
@@ -387,7 +400,14 @@ bool AppLockManager::setHostileLocationEnabled(bool enabled, const QString& curr
         // setting back, raise the same banner an unfinished wipe raises, and
         // do NOT relaunch: an app that comes back up looking protected on
         // top of surviving mail is worse than one that says it failed.
-        m_settingsStore.setHostileLocationProtectionEnabled(false);
+        if (!m_settingsStore.setHostileLocationProtectionEnabled(false)) {
+            // The rollback itself could not be written, so the on-disk flag
+            // still says "on". That errs the safe way -- the next launch opens
+            // ":memory:" and retries this same erase -- so it is logged rather
+            // than treated as a second failure.
+            qWarning("AppLockManager: the hostile-location flag could not be rolled back after a "
+                      "failed erase; the next launch will retry the erase");
+        }
         setWipeIncomplete(true);
         emit lockStateChanged();
         return false;

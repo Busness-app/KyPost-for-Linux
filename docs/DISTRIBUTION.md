@@ -3,6 +3,21 @@
 KyPost is distributed from its own signed Flatpak remote, published to this
 repository's `gh-pages` branch by `.github/workflows/flatpak.yml`.
 
+> **Status, 2026-08-24: nothing has been published yet.**
+> `FLATPAK_GPG_PRIVATE_KEY` is not configured, so `steps.mode.outputs.publish` is
+> false on every run: there is no `gh-pages` branch, no GitHub Release, and both
+> `.github.io` URLs below return 404. A green build is not a shipped app. The
+> three one-time maintainer steps that change this are in the next section.
+>
+> **Also unfixed: `PAGES_URL` in `.github/workflows/flatpak.yml` still names the
+> pre-transfer owner** (`https://yoshiofthewire.github.io/KyPost-for-Linux`). The
+> repository now lives at `Busness-app/KyPost-for-Linux` — the old URL 301s on
+> github.com but GitHub Pages does not follow a transfer, so Pages will serve at
+> `busness-app.github.io`, which is what this document now says. The workflow bakes
+> `PAGES_URL` into the generated `.flatpakrepo`'s `Url=` field, so the first publish
+> would advertise a host that does not serve the repo. Fix that one line before
+> step 2, or every early adopter adds a remote that cannot update.
+
 **KyPost will never be on Flathub.** Flathub bans applications that use AI, and
 KyPost's backend does (the Ollama-backed classifier). That is a policy ban, not a
 packaging gap — no amount of manifest compliance changes it. Don't spend effort on
@@ -19,7 +34,7 @@ working `flatpak update`.
 
 ```sh
 flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
-flatpak remote-add --if-not-exists kypost https://yoshiofthewire.github.io/KyPost-for-Linux/kypost.flatpakrepo
+flatpak remote-add --if-not-exists kypost https://busness-app.github.io/KyPost-for-Linux/kypost.flatpakrepo
 flatpak install kypost com.kysecurity.mail
 ```
 
@@ -71,16 +86,16 @@ This creates the `gh-pages` branch. It must exist before step 3.
 Settings → Pages → Source: *Deploy from a branch* → `gh-pages` / `/ (root)`. Or:
 
 ```sh
-gh api -X POST repos/Yoshiofthewire/KyPost-for-Linux/pages \
+gh api -X POST repos/Busness-app/KyPost-for-Linux/pages \
   -f 'source[branch]=gh-pages' -f 'source[path]=/'
 ```
 
 Then verify:
 
 ```sh
-curl -fsS https://yoshiofthewire.github.io/KyPost-for-Linux/kypost.flatpakrepo
+curl -fsS https://busness-app.github.io/KyPost-for-Linux/kypost.flatpakrepo
 flatpak remote-add --user --if-not-exists kypost-test \
-  https://yoshiofthewire.github.io/KyPost-for-Linux/kypost.flatpakrepo
+  https://busness-app.github.io/KyPost-for-Linux/kypost.flatpakrepo
 flatpak install --user kypost-test com.kysecurity.mail
 ```
 
@@ -165,9 +180,9 @@ fails, with it the second publish succeeds and generates a proper v1→v2 static
 ### Size
 
 GitHub Pages caps a published site at **1 GB**. The runtime is not in this repo (users
-get `org.kde.Platform//6.11` from Flathub); it holds only KyPost plus its three
-from-source modules (qtkeychain, zxing-cpp, kunifiedpush) — for two architectures, but
-without debuginfo (see below). `--prune-depth=3` bounds growth to the three most recent
+get `org.kde.Platform//6.11` from Flathub); it holds only KyPost plus its five
+from-source modules (libargon2, qtkeychain, sqlcipher, zxing-cpp, kunifiedpush) — for two
+architectures, but without debuginfo (see below). `--prune-depth=3` bounds growth to the three most recent
 commits per ref. The publish step logs the site size
 on every run — if it approaches the cap, lower `--prune-depth`, or move the repo to
 object storage and change `Url=` in the generated `.flatpakrepo`.

@@ -73,19 +73,29 @@ set(KYPOST_SQLCIPHER_ROOT "" CACHE PATH "Prefix containing a SQLCipher built by 
 # A shipped build without SQLCipher is a plaintext mail cache, and nothing
 # about it looks wrong: it builds, it runs, every test passes, and the
 # encryption tests report a skip nobody reads. One dropped -D in a release or
-# packaging job is all it takes. So a Release build STOPS here instead.
+# packaging job is all it takes. So an optimised build STOPS here instead.
+#
+# ALL THREE optimised types, not just Release. This check used to be
+# STREQUAL "Release", which let RelWithDebInfo through -- and RelWithDebInfo
+# is what this repo's own build/ directory was configured as: no SQLCipher,
+# every encryption test quietly skipped, and CTest reporting "100% tests
+# passed" over a suite that had not looked at encryption at all. A build type
+# somebody picked because they wanted symbols is not a statement that they
+# wanted plaintext mail.
 #
 # Debug and unspecified build types are left alone deliberately -- that is
 # where somebody is working on something unrelated and has no reason to build
-# SQLCipher first -- and a Release build that really does mean it can say so
-# with -DKYPOST_ALLOW_PLAINTEXT_DB=ON.
-option(KYPOST_ALLOW_PLAINTEXT_DB "Permit a Release build with no SQLCipher, which stores mail unencrypted" OFF)
-if(CMAKE_BUILD_TYPE STREQUAL "Release" AND NOT KYPOST_SQLCIPHER_ROOT AND NOT KYPOST_ALLOW_PLAINTEXT_DB)
+# SQLCipher first -- and an optimised build that really does mean it can say
+# so with -DKYPOST_ALLOW_PLAINTEXT_DB=ON.
+option(KYPOST_ALLOW_PLAINTEXT_DB "Permit an optimised build with no SQLCipher, which stores mail unencrypted" OFF)
+if(CMAKE_BUILD_TYPE MATCHES "^(Release|RelWithDebInfo|MinSizeRel)$"
+    AND NOT KYPOST_SQLCIPHER_ROOT AND NOT KYPOST_ALLOW_PLAINTEXT_DB)
   message(FATAL_ERROR
-    "Release build with no SQLCipher: this binary would store the user's mail unencrypted on disk.\n"
+    "${CMAKE_BUILD_TYPE} build with no SQLCipher: this binary would store the user's mail "
+    "unencrypted on disk, and its encryption tests would skip rather than fail.\n"
     "  Build it:   ./scripts/build-sqlcipher.sh /tmp/sqlcipher\n"
     "  Point here: -DKYPOST_SQLCIPHER_ROOT=/tmp/sqlcipher\n"
-    "If a plaintext Release build is genuinely what you want, say so: -DKYPOST_ALLOW_PLAINTEXT_DB=ON")
+    "If a plaintext build is genuinely what you want, say so: -DKYPOST_ALLOW_PLAINTEXT_DB=ON")
 endif()
 if(KYPOST_SANITIZE)
   add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer -g)

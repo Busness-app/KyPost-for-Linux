@@ -104,11 +104,26 @@ bool AppLockStore::setPin(const QString& pin)
         QString::fromLatin1(salt.toBase64()) + QLatin1Char(':') + QString::fromLatin1(hash.toBase64());
     if (!m_secureStore.set(kPinRecord, record))
         return false;
-    // Only once the new record is durable. A failure here is harmless: the
-    // record already wins over the legacy pair in verifyPin().
-    m_secureStore.remove(kPinSalt);
-    m_secureStore.remove(kPinHash);
-    return m_secureStore.set(kLockEnabled, QStringLiteral("1"));
+
+    // Past this line the NEW pin is the one verifyPin() answers to, so every
+    // remaining step is a step that cannot be rolled back -- which is exactly
+    // why none of them may have its result thrown away.
+    //
+    // Enabling comes first, so a store that dies part-way leaves the lock ON
+    // with a working pin rather than off with one.
+    bool replaced = m_secureStore.set(kLockEnabled, QStringLiteral("1"));
+
+    // Then the pre-2026-07-27 salt/hash pair. This is the OLD pin's material
+    // and it is left readable in the keyring if these are skipped: verifyPin()
+    // prefers the record so THIS build is unaffected, but any build that
+    // predates the record -- a downgrade, a distro package one release behind,
+    // a restored home directory -- reads the pair and unlocks on the pin the
+    // user just replaced. Discarding these two results reported that as a
+    // clean pin change. remove() returns true for an absent key in both
+    // backends, so the common no-legacy-material path still returns true.
+    replaced = m_secureStore.remove(kPinSalt) && replaced;
+    replaced = m_secureStore.remove(kPinHash) && replaced;
+    return replaced;
 }
 
 bool AppLockStore::verifyPin(const QString& pin) const

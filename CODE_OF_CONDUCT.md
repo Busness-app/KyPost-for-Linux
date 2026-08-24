@@ -104,8 +104,11 @@ someone else, and you may report an incident you witnessed but were not the
 target of.
 
 **Security vulnerabilities are not a Code of Conduct matter.** Report those
-through [GitHub Security Advisories](https://github.com/Yoshiofthewire/kypost-server/security/advisories),
-as described in [SECURITY.md](SECURITY.md).
+privately through [GitHub Security
+Advisories](https://github.com/Busness-app/KyPost-for-Linux/security/advisories)
+on this repository — not in a public issue, and not in a pull request. A finding
+in the relay rather than in this client belongs on the `kypost-server`
+repository instead.
 
 ## Enforcement
 
