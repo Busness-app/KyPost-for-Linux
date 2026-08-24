@@ -3,17 +3,21 @@
 KyPost is distributed from its own signed Flatpak remote, published to this
 repository's `gh-pages` branch by `.github/workflows/flatpak.yml`.
 
-> **Status, 2026-08-24: nothing has been published yet.**
-> `FLATPAK_GPG_PRIVATE_KEY` is not configured, so `steps.mode.outputs.publish` is
-> false on every run: there is no `gh-pages` branch, no GitHub Release, and both
-> `.github.io` URLs below return 404. A green build is not a shipped app. The
-> three one-time maintainer steps that change this are in the next section.
+> **Status, 2026-08-24: live.** The one-time setup below is done — the signing
+> key is configured, `gh-pages` exists, and Pages serves it. v0.2.0 is published
+> for x86_64 and aarch64, signed by `14FE17F06FEF936C8C4DEC3AE94FC98D33F667AB`.
+> Verified against the live URL, not inferred: the key embedded in the served
+> `.flatpakrepo` matches that fingerprint, `flatpak install` from the remote
+> works, `ostree show` reports a good signature on the installed commit, and a
+> client trusting a different key is refused with "public key not found".
 >
-> The owner half of this is now fixed: `PAGES_URL` and `gen-signing-key.sh`'s
-> `REPO_SLUG` both named the pre-transfer owner (`Yoshiofthewire`) and now name
-> `Busness-app`. Pages does not follow a repository transfer, so the old value
-> would have baked a host that does not serve the repo into every client's
-> `.flatpakrepo`, and the secrets would have been uploaded to the wrong slug.
+> **Known gap: the `.flatpak` bundles attached to a release do not update.**
+> `build-bundle` is called without `--repo-url`, so a bundle install creates its
+> origin remote with an empty `url=` and no GPG key — verified by installing the
+> released x86_64 asset. It installs and runs, but `flatpak update` can never
+> reach it and the signature it carries is not checked against the release key.
+> Tell users to add the remote; adding `--repo-url` and `--gpg-keys` to the
+> bundle step would close it.
 
 **KyPost will never be on Flathub.** Flathub bans applications that use AI, and
 KyPost's backend does (the Ollama-backed classifier). That is a policy ban, not a
