@@ -61,6 +61,6 @@
        apps that use AI; KyPost's backend does). These URLs point at the
        GitHub project and the self-hosted Flatpak remote published by
        .github/workflows/flatpak.yml. See docs/DISTRIBUTION.md. -->
-  <url type="homepage">https://github.com/Yoshiofthewire/KyPost-for-Linux</url>
-  <url type="bugtracker">https://github.com/Yoshiofthewire/KyPost-for-Linux/issues</url>
+  <url type="homepage">https://github.com/Busness-app/KyPost-for-Linux</url>
+  <url type="bugtracker">https://github.com/Busness-app/KyPost-for-Linux/issues</url>
 </component>
