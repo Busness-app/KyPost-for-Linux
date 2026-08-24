@@ -1,5 +1,6 @@
 add_executable(kypost
   main.cpp
+  WindowActivation.cpp
   qml/qml.qrc
 )
 

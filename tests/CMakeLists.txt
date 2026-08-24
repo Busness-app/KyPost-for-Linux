@@ -257,6 +257,21 @@ kypost_add_app_test(ContactsControllerTest
 # PairingController/MfaController (Task 34) live in app/pairing/, not
 # kypostcore -- same app/ test pattern as MailControllerTest/
 # ContactsControllerTest above.
+# Launching an already-running KyPost must put its window in front. The
+# Unique-mode relay made that a no-op, which stranded the user at the
+# launcher -- see the test's own header.
+kypost_add_app_test(WindowActivationTest
+  SOURCES
+    app/WindowActivationTest.cpp
+    ${CMAKE_SOURCE_DIR}/app/WindowActivation.cpp
+  LIBS Qt6::Quick Qt6::Qml
+)
+# Real QQuickWindows, so it needs a QPA platform. The Flatpak manifest runs
+# this suite inside flatpak-builder's build sandbox (run-tests: true), which
+# has no display at all -- without this the test aborts there and takes the
+# whole package build down with it, which is exactly how it was found.
+set_tests_properties(WindowActivationTest PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
 kypost_add_app_test(PairingControllerTest
   SOURCES
     app/pairing/PairingControllerTest.cpp

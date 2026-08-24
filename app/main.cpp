@@ -1,3 +1,4 @@
+#include "WindowActivation.h"
 #include "contacts/ContactsController.h"
 #include "general/GeneralController.h"
 #include "mail/MailController.h"
@@ -236,9 +237,13 @@ int main(int argc, char* argv[])
     // so it always sees the up-to-date value whenever activateRequested
     // actually fires.
     PairingController* pairingControllerForDeepLinks = nullptr;
+    // Captured by reference for the same reason as the pointer above: the
+    // engine is constructed further down, but activateRequested can only
+    // fire once app.exec() is running, by which point it exists.
+    QQmlApplicationEngine* engineForActivation = nullptr;
     KDBusService dbusService(KDBusService::Unique);
     QObject::connect(&dbusService, &KDBusService::activateRequested, &dbusService,
-                      [&pairingControllerForDeepLinks](const QStringList& arguments, const QString& workingDirectory) {
+                      [&pairingControllerForDeepLinks, &engineForActivation](const QStringList& arguments, const QString& workingDirectory) {
                           // Task 34 security fix: this used to log the raw `arguments` list
                           // (Task 11/12), which is fine while every kypost:// URL only
                           // ever carries a fake test token, but arguments can now carry a
@@ -253,6 +258,18 @@ int main(int argc, char* argv[])
                           // redirected here instead of spawning a duplicate process -- route
                           // its argv through the same deep-link router used at startup.
                           routeDeepLink(arguments, pairingControllerForDeepLinks);
+
+                          // ...and then actually show the window, which is what an
+                          // ordinary launch (no kypost:// URL at all) is asking for.
+                          // Without this the handler logged a line and returned, so
+                          // clicking KyPost in the launcher while it was already
+                          // running did nothing whatsoever -- and once the window had
+                          // been closed the process stayed alive with no way back to
+                          // it, because a desktop with no StatusNotifier host gives it
+                          // no tray icon either. Reproduced against the real Flatpak
+                          // build before fixing: second process relayed and exited,
+                          // one activateRequested logged, no window.
+                          activateMainWindow(engineForActivation);
                       });
 
     // Task 28: bundled fonts must be registered with QFontDatabase before
@@ -1225,6 +1242,20 @@ int main(int argc, char* argv[])
                                : QStringLiteral("qrc:/qml/DesktopRoot.qml")));
     if (engine.rootObjects().isEmpty())
         return -1;
+
+    // The activateRequested handler above captured this by reference; point
+    // it at the engine now that there is a window to raise. Set after the
+    // load, not before, so the handler can never see a half-built engine --
+    // and after the isEmpty() bail, because a failed load returns -1 here
+    // and there is nothing to activate in that case.
+    //
+    // This matters more than it looks on desktop: DesktopRoot's onClosing
+    // hides to the tray when minimizeToTrayOnClose is set, and a session
+    // with no StatusNotifier host silently provides no tray icon
+    // ("kf.statusnotifieritem: KDE platform plugin is loaded but SNI
+    // unavailable"). The launcher is then the only route back to the window,
+    // which is exactly the route that used to do nothing.
+    engineForActivation = &engine;
 
     // Desktop-only system tray icon (see GeneralController.trayIconEnabled /
     // minimizeToTrayOnClose, and DesktopRoot.qml's onClosing handler). Never
