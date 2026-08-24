@@ -47,6 +47,46 @@ public:
 };
 
 
+// Answers every key except one, whose read FAILS -- a Secret Service that
+// re-locked, timed out or was restarted part-way through a load. The one
+// case get() cannot express, because it turns a failure into std::nullopt.
+class PartiallyReadableSecureStore : public SecureStore
+{
+public:
+    explicit PartiallyReadableSecureStore(QString failingKey)
+        : m_failingKey(std::move(failingKey))
+    {
+    }
+
+    ReadResult read(const QString& key) const override
+    {
+        if (key == m_failingKey)
+            return ReadResult{ ReadStatus::Failed, QString() };
+        const auto it = m_values.constFind(key);
+        if (it == m_values.constEnd())
+            return ReadResult{ ReadStatus::Absent, QString() };
+        return ReadResult{ ReadStatus::Found, *it };
+    }
+    bool set(const QString& key, const QString& value) override
+    {
+        m_values.insert(key, value);
+        return true;
+    }
+    // get() keeps lying, exactly as the real keychain backend's does. That is
+    // the point: the load path must not be reading through it.
+    std::optional<QString> get(const QString& key) const override
+    {
+        const ReadResult result = read(key);
+        return result.found() ? std::optional<QString>(result.value) : std::nullopt;
+    }
+    bool remove(const QString& key) override { return m_values.remove(key) > 0; }
+    bool contains(const QString& key) const override { return m_values.contains(key); }
+
+private:
+    QString m_failingKey;
+    QHash<QString, QString> m_values;
+};
+
 } // namespace
 
 class PairingStoreTest : public QObject
@@ -65,6 +105,9 @@ private slots:
 
     void stillCurrentTracksTheAccountAndRegistrationButNotTheSecret();
     void loadCheckedTellsUnreadableApartFromUnpaired();
+
+    // Review-finding regression.
+    void aFailedReadOfAnyFieldFailsTheWholeLoad();
 
 private:
     static DevicePairing samplePairing();
@@ -273,6 +316,62 @@ void PairingStoreTest::loadCheckedTellsUnreadableApartFromUnpaired()
     QCOMPARE(loaded.status, PairingStore::LoadStatus::Loaded);
     QVERIFY(loaded.pairing.has_value());
     QCOMPARE(loaded.pairing->subscriberId, pairing.subscriberId);
+}
+
+// A keychain that answers "sub" and then fails on ANY later field must not
+// produce a pairing.
+//
+// The certificate pin is the one that made this critical. Every field after
+// "sub" was read through get(), which collapses "the store could not be
+// consulted" into std::nullopt and then into an empty string -- so a partial
+// outage produced a pairing with a valid subscriber id, a valid device
+// secret and NO pin. That was cached as a successful load, HttpClient was
+// configured with no TOFU enforcement, and because only mutations invalidate
+// the cache the keychain was never asked again for the rest of the session:
+// authenticated traffic kept flowing, unpinned, on a connection nothing was
+// checking.
+void PairingStoreTest::aFailedReadOfAnyFieldFailsTheWholeLoad()
+{
+    const QStringList fields = {
+        QStringLiteral("pairing.serverBaseUrl"),  QStringLiteral("pairing.registrationUrl"),
+        QStringLiteral("pairing.pairingToken"),   QStringLiteral("deviceId"),
+        QStringLiteral("pairing.deviceName"),     QStringLiteral("pairing.deviceSecret"),
+        QStringLiteral("pairing.certificateSpkiSha256"),
+    };
+
+    // Every field checked in one pass rather than stopping at the first, so
+    // the message names ALL the positions that fail closed -- the
+    // certificate pin above all, which is the one whose absence silently
+    // dropped TLS pinning.
+    QStringList accepted;
+    for (const QString& failing : fields) {
+        PartiallyReadableSecureStore store(failing);
+        PairingStore pairingStore(store);
+        QVERIFY(pairingStore.save(samplePairing()));
+        // The pin is not part of save(); written directly, as HttpClient's
+        // TOFU path does.
+        QVERIFY(store.set(QStringLiteral("pairing.certificateSpkiSha256"),
+                           QStringLiteral("abcd1234")));
+
+        const PairingStore::LoadResult result = pairingStore.loadChecked();
+        // Nothing may have been cached either: a cached half-pairing outlives
+        // the outage that produced it, since only mutations drop the cache.
+        if (result.status != PairingStore::LoadStatus::Unreadable || result.pairing.has_value()
+            || pairingStore.loadChecked().status != PairingStore::LoadStatus::Unreadable
+            || pairingStore.load().has_value()) {
+            accepted.append(failing);
+        }
+    }
+    QVERIFY2(accepted.isEmpty(),
+             qPrintable(QStringLiteral("a failed read of these fields did not fail the load: %1")
+                            .arg(accepted.join(QStringLiteral(", ")))));
+
+    // The same store with nothing failing still loads, so the check above is
+    // not passing for want of a working store.
+    PartiallyReadableSecureStore healthy(QStringLiteral("nothing.fails"));
+    PairingStore pairingStore(healthy);
+    QVERIFY(pairingStore.save(samplePairing()));
+    QCOMPARE(pairingStore.loadChecked().status, PairingStore::LoadStatus::Loaded);
 }
 
 QTEST_GUILESS_MAIN(PairingStoreTest)

@@ -28,6 +28,14 @@
 // keeps the old ones. OpenPgpKeyImporterTest proves both by importing a
 // second key and a merged copy and re-reading the keyring afterwards.
 //
+// ONE KEY, ALWAYS. An armored blob can carry any number of keys and
+// gpgme_op_import() imports every one of them, so anything carrying more
+// than a single primary key is refused before the user's keyring is touched.
+// Checking only the first entry of gpgme's import result -- which this code
+// did until 2026-08-24 -- let a relay return the expected key followed by
+// keys of its own choosing and put the lot in the user's keyring, under a
+// comment claiming that was exactly what it prevented.
+//
 // WHAT THIS DOES NOT DO. It cannot tell you the relay handed you the right
 // person's key. The fingerprint check below catches a relay whose key and
 // whose claim about that key disagree; it cannot catch one that lies
@@ -42,9 +50,9 @@ enum class PgpImportStatus
     // not churn the keyring, and this is a success.
     Unchanged,
 
-    // Not imported, and the user's keyring was NOT touched. Either the bytes
-    // are not a usable public key, or the fingerprint gpg computed is not the
-    // one the relay claimed.
+    // Not imported, and the user's keyring was NOT touched. The bytes are
+    // not a usable public key, or they carry more than one key, or the
+    // fingerprint gpg computed is not the one the relay claimed.
     Rejected,
 
     EngineUnavailable,
@@ -60,7 +68,8 @@ struct PgpImportResult
     QString detail;
 };
 
-// Imports one ASCII-armored public key.
+// Imports one ASCII-armored public key. More than one in the same blob is
+// rejected outright -- see ONE KEY, ALWAYS above.
 //
 // expectedFingerprint is checked BEFORE the user's keyring is touched at all.
 // The check happens in a throwaway GnuPG home, so a key whose fingerprint does

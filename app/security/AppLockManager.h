@@ -6,6 +6,8 @@
 #include <QTimer>
 #include <QString>
 
+#include <functional>
+
 class AppLockStore;
 class CredentialSealer;
 class SettingsStore;
@@ -153,9 +155,17 @@ public:
     //
     // Cannot take effect in the running process -- the database is chosen
     // before the composition root exists -- so on success this emits
-    // relaunchRequired() and the host wipes and restarts. Returns true when
-    // the setting was accepted, meaning "a relaunch is now happening", not
-    // "the mode is already active".
+    // relaunchRequired() and the host restarts. Returns true when the mode
+    // was accepted, meaning "a relaunch is now happening", not "the mode is
+    // already active".
+    //
+    // Turning it ON erases the on-disk profile FIRST and refuses the mode if
+    // that erase could not be completed. It used to relaunch regardless,
+    // logging a qCritical nobody reads: the replacement process came up in
+    // memory-only mode, showed Hostile Location Protection as on, and the
+    // mail it was supposed to have destroyed was still on the disk. A mode
+    // whose entire promise is "nothing is on this disk" must not report
+    // itself active on unverified ground.
     Q_INVOKABLE bool setHostileLocationEnabled(bool enabled, const QString& currentPin);
 
     // Re-locks immediately. Called by the explicit "Lock now" action; a
@@ -218,6 +228,20 @@ public:
     // Q_INVOKABLE: QML must never be able to clear this.
     void setWipeIncomplete(bool incomplete);
 
+    // Host-set at startup: erases the on-disk profile, returning false if
+    // anything survived. Called by setHostileLocationEnabled(true) before it
+    // commits to the mode.
+    //
+    // A callable returning bool rather than a signal, for the same reason
+    // CredentialSealer is not a signal (see core/security/CredentialSealer.h):
+    // a void return cannot tell this class whether the erase it ordered
+    // actually happened. Kept out of the constructor because it needs the
+    // composition root's LocalDataWipe, which is built later.
+    //
+    // Defaults to "could not erase", so a host that never wires it refuses
+    // the mode rather than enabling it on ground nothing has checked.
+    void setOnDiskDataWiper(std::function<bool()> wiper);
+
 signals:
     void lockedChanged();
     void lockStateChanged();
@@ -233,10 +257,10 @@ signals:
     void wipeRequested();
 
     // Emitted when a setting has been persisted that only takes effect at
-    // startup. The host wipes on-disk data if `wipeDisk` is set, then
+    // startup, and any erase it required has already succeeded. The host
     // relaunches. Carried as a signal so this class stays free of process
-    // and filesystem concerns.
-    void relaunchRequired(bool wipeDisk);
+    // concerns.
+    void relaunchRequired();
 
 private:
     void setCredentialsUnavailable(bool unavailable);
@@ -272,6 +296,7 @@ private:
     bool m_attemptRecordingBroken = false;
     bool m_wipeIncomplete = false;
     ProfileDatabaseMode m_databaseMode = ProfileDatabaseMode::PlaintextOnDisk;
+    std::function<bool()> m_wipeOnDiskData = []() { return false; };
     QTimer m_graceTimer;
     // In-process floor under the persisted counter, so even a store that
     // accepts writes and silently loses them still caps guessing per launch.

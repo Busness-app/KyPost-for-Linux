@@ -181,7 +181,71 @@ private slots:
     void aGracePeriodDelaysTheLockAndComingBackCancelsIt();
     void lockNowIgnoresAndCancelsTheGracePeriod();
     void changingTheGraceRequiresThePinAndIsClamped();
+
+    // Review-finding regression.
+    void hostileLocationIsRefusedWhenTheDiskCouldNotBeErased();
 };
+
+// Hostile Location Protection promises that nothing is on this disk. When
+// the erase that makes that true fails, the mode must not switch on.
+//
+// It used to. main() wiped, logged a qCritical if the wipe came back
+// incomplete, and relaunched anyway; the replacement process opened
+// ":memory:", Settings showed the mode as On, and the cached mail it was
+// supposed to have destroyed was still sitting on the disk. That is worse
+// than a visible failure: the user believes a hostile-location device holds
+// nothing and acts on it.
+void AppLockManagerTest::hostileLocationIsRefusedWhenTheDiskCouldNotBeErased()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    SecureStoreFile secureStore(dir.path());
+    AppLockStore store(secureStore);
+    SettingsStore settingsStore(dir.filePath(QStringLiteral("settings.ini")));
+    NullCredentialSealer sealer;
+    QVERIFY(store.setPin(kGoodPin));
+
+    AppLockManager manager(store, settingsStore, sealer);
+    QSignalSpy relaunchSpy(&manager, &AppLockManager::relaunchRequired);
+
+    bool eraseSucceeds = false;
+    int eraseCalls = 0;
+    manager.setOnDiskDataWiper([&eraseSucceeds, &eraseCalls]() {
+        ++eraseCalls;
+        return eraseSucceeds;
+    });
+
+    // 1. The erase fails: refused, setting back off, no relaunch, and the
+    // banner that says data the user was told about is still here.
+    QVERIFY(!manager.setHostileLocationEnabled(true, kGoodPin));
+    QCOMPARE(eraseCalls, 1);
+    QVERIFY2(!settingsStore.hostileLocationProtectionEnabled(),
+             "the mode stayed on after an erase that did not complete");
+    QVERIFY2(!manager.hostileLocationEnabled(), "the UI would show the mode as active");
+    QCOMPARE(relaunchSpy.count(), 0);
+    QVERIFY(manager.wipeIncomplete());
+
+    // 2. The erase succeeds: accepted, persisted, and the relaunch asked for.
+    eraseSucceeds = true;
+    QVERIFY(manager.setHostileLocationEnabled(true, kGoodPin));
+    QCOMPARE(eraseCalls, 2);
+    QVERIFY(settingsStore.hostileLocationProtectionEnabled());
+    QCOMPARE(relaunchSpy.count(), 1);
+
+    // 3. Turning it OFF has nothing to erase and must not consult the wiper.
+    QVERIFY(manager.setHostileLocationEnabled(false, kGoodPin));
+    QCOMPARE(eraseCalls, 2);
+    QVERIFY(!settingsStore.hostileLocationProtectionEnabled());
+    QCOMPARE(relaunchSpy.count(), 2);
+
+    // 4. A host that never wired an eraser cannot have erased anything, so
+    // the default refuses rather than enabling on unchecked ground.
+    AppLockManager unwired(store, settingsStore, sealer);
+    QSignalSpy unwiredRelaunchSpy(&unwired, &AppLockManager::relaunchRequired);
+    QVERIFY(!unwired.setHostileLocationEnabled(true, kGoodPin));
+    QVERIFY(!settingsStore.hostileLocationProtectionEnabled());
+    QCOMPARE(unwiredRelaunchSpy.count(), 0);
+}
 
 void AppLockManagerTest::startsUnlockedWhenLockDisabled()
 {

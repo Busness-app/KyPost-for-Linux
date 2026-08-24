@@ -109,6 +109,26 @@ public:
         return gpg.readAllStandardOutput();
     }
 
+    // SEVERAL keys in ONE armored blob -- what a hostile relay returns when
+    // it wants an extra key carried in beside the one that was asked for.
+    QByteArray exportPublicKeys(const QStringList& uids) const
+    {
+        return runGpg(QStringList{ QStringLiteral("--batch"), QStringLiteral("--armor"),
+                                    QStringLiteral("--export") }
+                       + uids);
+    }
+
+    // The armored PRIVATE key(s) -- what the enrollment path imports. One uid
+    // or several; the several-uid form is the smuggling case for that path.
+    QByteArray exportSecretKeys(const QStringList& uids) const
+    {
+        return runGpg(QStringList{ QStringLiteral("--batch"), QStringLiteral("--pinentry-mode"),
+                                    QStringLiteral("loopback"), QStringLiteral("--passphrase"),
+                                    QString(), QStringLiteral("--armor"),
+                                    QStringLiteral("--export-secret-keys") }
+                       + uids);
+    }
+
     QString fingerprintOf(const QString& uid) const { return firstFingerprint(m_home.path(), uid); }
 
     // The same ciphertext with one byte of the encrypted packet flipped, and a
@@ -237,6 +257,16 @@ public:
     }
 
 private:
+    QByteArray runGpg(const QStringList& args) const
+    {
+        QProcess gpg;
+        gpg.setProcessEnvironment(environment());
+        gpg.start(QStringLiteral("gpg"), args);
+        if (!gpg.waitForStarted(10000) || !gpg.waitForFinished(30000) || gpg.exitCode() != 0)
+            return {};
+        return gpg.readAllStandardOutput();
+    }
+
     QByteArray runWithInput(const QString& program, const QStringList& args,
                              const QByteArray& input) const
     {

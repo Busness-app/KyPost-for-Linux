@@ -40,11 +40,22 @@ void initialiseGpgme()
 
 // Imports into `home` and reports what gpg made of it.
 //
-// Returns the fingerprint of the first key in the import result, plus whether
-// anything actually changed. An armored blob can carry several keys; only the
-// first is reported, because the caller resolved ONE address and a bundle
-// smuggling extra keys past a single-fingerprint check is exactly what the
-// comparison exists to stop.
+// Refuses anything carrying more than ONE key, and returns that key's
+// fingerprint plus whether anything actually changed.
+//
+// The refusal is the security-relevant part. gpgme_op_import() imports EVERY
+// key in the blob, and gpgme_op_import_result()->imports is a LINKED LIST
+// with one entry per key. Reading only the head of that list -- which this
+// function used to do, under a comment claiming it stopped bundle smuggling
+// -- accepted a bundle whose first key was the expected one and whose
+// second, third and fourth were the attacker's: the scratch check passed on
+// the head fingerprint, and the whole bundle then went into the user's real
+// keyring. Measured, not assumed: a two-key export reports considered=2 with
+// two distinct fingerprints in the list.
+//
+// Compared by fingerprint rather than by counting list entries, because a
+// secret-key import legitimately reports the SAME fingerprint twice (once
+// public, once secret).
 bool importInto(const QString& home, const QByteArray& armored, bool requireSecret,
                 QString* fingerprint, bool* changed, QString* detail)
 {
@@ -84,7 +95,30 @@ bool importInto(const QString& home, const QByteArray& armored, bool requireSecr
         return false;
     }
 
-    *fingerprint = QString::fromLatin1(result->imports->fpr);
+    // Every status entry, not just the head. `considered` counts what gpg was
+    // asked to import even when a key was rejected or already held, so it
+    // catches a bundle whose extra keys did not make it in as well.
+    QString only;
+    for (gpgme_import_status_t status = result->imports; status != nullptr; status = status->next) {
+        if (status->fpr == nullptr)
+            continue;
+        const QString fpr = QString::fromLatin1(status->fpr);
+        if (!only.isEmpty() && fpr.compare(only, Qt::CaseInsensitive) != 0) {
+            *detail = QStringLiteral("the bytes carried more than one OpenPGP key");
+            return false;
+        }
+        only = fpr;
+    }
+    if (only.isEmpty()) {
+        *detail = QStringLiteral("the bytes carried no OpenPGP key");
+        return false;
+    }
+    if (result->considered != 1) {
+        *detail = QStringLiteral("the bytes carried more than one OpenPGP key");
+        return false;
+    }
+
+    *fingerprint = only;
     if (requireSecret) {
         gpgme_key_t key = nullptr;
         const gpgme_error_t lookup = gpgme_get_key(context.handle, result->imports->fpr, &key, 1);
@@ -100,7 +134,7 @@ bool importInto(const QString& home, const QByteArray& armored, bool requireSecr
     // keyring gained material -- a new key, or new signatures or user IDs on
     // one it already held.
     *changed = result->unchanged == 0;
-    return !fingerprint->isEmpty();
+    return true;
 }
 
 } // namespace

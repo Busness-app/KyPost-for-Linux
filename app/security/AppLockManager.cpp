@@ -371,15 +371,30 @@ bool AppLockManager::setHostileLocationEnabled(bool enabled, const QString& curr
     if (m_settingsStore.hostileLocationProtectionEnabled() == enabled)
         return true;
 
+    // Written BEFORE the erase, so a crash or a power loss part-way through
+    // comes back up in the protective mode: the next launch opens ":memory:"
+    // and retries the same erase rather than reopening the database that was
+    // half-deleted.
     m_settingsStore.setHostileLocationProtectionEnabled(enabled);
-    emit lockStateChanged();
 
     // Turning it ON must erase whatever is already on disk -- otherwise the
     // mode starts "protecting" a machine that still holds every cached
     // message. Turning it OFF has nothing to erase: the on-disk database was
     // already deleted when the mode was switched on, and the next launch
     // rebuilds it from the server via the roots' existing startup refresh.
-    emit relaunchRequired(/*wipeDisk=*/enabled);
+    if (enabled && !m_wipeOnDiskData()) {
+        // The erase did not complete, so the promise cannot be kept. Put the
+        // setting back, raise the same banner an unfinished wipe raises, and
+        // do NOT relaunch: an app that comes back up looking protected on
+        // top of surviving mail is worse than one that says it failed.
+        m_settingsStore.setHostileLocationProtectionEnabled(false);
+        setWipeIncomplete(true);
+        emit lockStateChanged();
+        return false;
+    }
+
+    emit lockStateChanged();
+    emit relaunchRequired();
     return true;
 }
 
@@ -409,6 +424,12 @@ bool AppLockManager::setWipeAfterAttempts(int attempts, const QString& currentPi
 bool AppLockManager::wipeIncomplete() const
 {
     return m_wipeIncomplete;
+}
+
+void AppLockManager::setOnDiskDataWiper(std::function<bool()> wiper)
+{
+    if (wiper)
+        m_wipeOnDiskData = std::move(wiper);
 }
 
 void AppLockManager::setWipeIncomplete(bool incomplete)

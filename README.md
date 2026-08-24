@@ -73,7 +73,7 @@ KyPost needs Qt6. The project dropped Qt5 and Ubuntu Touch support. [`AGENTS.md`
 gives the reason and the conditions for a new review. Use one out-of-tree build directory:
 
 ```sh
-cmake -B build -S .
+cmake -B build -S . -DCMAKE_BUILD_TYPE=RelWithDebInfo
 cmake --build build
 ctest --test-dir build
 ```
