@@ -1,5 +1,5 @@
 import QtQuick 2.15
-import com.urlxl.mail 1.0
+import com.kysecurity.mail 1.0
 
 // STYLE_GUIDE.md §4 "Section eyebrow label" (mirrors web's
 // `.sidebar-section-label`, `.contact-details-section-title`): small

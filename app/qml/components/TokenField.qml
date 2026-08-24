@@ -1,5 +1,5 @@
 import QtQuick 2.15
-import com.urlxl.mail 1.0
+import com.kysecurity.mail 1.0
 
 // Compose autocomplete (ContactAutocomplete.md): a wrapping row of address
 // "pill" tokens with a trailing plain-text sub-field, replacing Compose.qml's

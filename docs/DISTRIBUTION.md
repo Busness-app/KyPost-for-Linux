@@ -20,7 +20,7 @@ working `flatpak update`.
 ```sh
 flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
 flatpak remote-add --if-not-exists kypost https://yoshiofthewire.github.io/KyPost-for-Linux/kypost.flatpakrepo
-flatpak install kypost com.urlxl.mail
+flatpak install kypost com.kysecurity.mail
 ```
 
 Updates are then just `flatpak update`. The Flathub remote is required for the
@@ -81,7 +81,7 @@ Then verify:
 curl -fsS https://yoshiofthewire.github.io/KyPost-for-Linux/kypost.flatpakrepo
 flatpak remote-add --user --if-not-exists kypost-test \
   https://yoshiofthewire.github.io/KyPost-for-Linux/kypost.flatpakrepo
-flatpak install --user kypost-test com.urlxl.mail
+flatpak install --user kypost-test com.kysecurity.mail
 ```
 
 ---
@@ -138,7 +138,7 @@ object storage and change `Url=` in the generated `.flatpakrepo`.
 
 ## Cutting a release
 
-1. Add a `<release>` entry to `packaging/flatpak/com.urlxl.mail.metainfo.xml`.
+1. Add a `<release>` entry to `packaging/flatpak/com.kysecurity.mail.metainfo.xml`.
    `appstreamcli validate` runs in CI and is blocking.
 2. Tag and push:
    ```sh

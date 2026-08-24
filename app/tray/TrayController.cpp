@@ -27,8 +27,8 @@ void TrayController::setEnabled(bool enabled)
         return;
     }
 
-    m_item = std::make_unique<KStatusNotifierItem>(QStringLiteral("com.urlxl.mail"), this);
-    m_item->setIconByName(QStringLiteral("com.urlxl.mail"));
+    m_item = std::make_unique<KStatusNotifierItem>(QStringLiteral("com.kysecurity.mail"), this);
+    m_item->setIconByName(QStringLiteral("com.kysecurity.mail"));
     m_item->setTitle(QStringLiteral("KyPost"));
     m_item->setCategory(KStatusNotifierItem::Communications);
     m_item->setStatus(KStatusNotifierItem::Active);

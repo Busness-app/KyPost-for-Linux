@@ -8,7 +8,7 @@ import "qrc:/qml/utils/format.js" as Format
 //
 // These live in utils/format.js rather than EmailDetail.qml precisely so
 // this file can reach them -- EmailDetail needs QtWebEngine and the whole
-// com.urlxl.mail singleton graph to instantiate, which is why the rules
+// com.kysecurity.mail singleton graph to instantiate, which is why the rules
 // inside it went untested long enough to grow the two bugs below.
 TestCase {
     name: "EmailBodyRendering"

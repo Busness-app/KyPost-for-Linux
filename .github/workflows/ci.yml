@@ -41,7 +41,7 @@
 # libkf6dbusaddons-dev, libkf6i18n-dev, kunifiedpush-dev, and -- under a
 # different name than the brief guessed -- qtkeychain-qt6-dev (Qt6Keychain
 # 0.16.0 in this archive as of this check; the Flatpak manifate
-# `packaging/flatpak/com.urlxl.mail.yaml` separately pins 0.17.0 for
+# `packaging/flatpak/com.kysecurity.mail.yaml` separately pins 0.17.0 for
 # its from-source build, a different mechanism for a different
 # distribution channel -- 0.16 vs 0.17 is not an ABI/API-breaking gap for
 # the calls SecureStoreKeychain.cpp makes).
@@ -87,7 +87,7 @@
 # WriteBarcode.h that PgpQrController.cpp uses (confirmed by extracting that
 # .deb directly), and neon's archive doesn't package zxing-cpp at all. This
 # project already solved that exact gap for the Flatpak manifest
-# (packaging/flatpak/com.urlxl.mail.yaml) by building zxing-cpp v3.1.0 from
+# (packaging/flatpak/com.kysecurity.mail.yaml) by building zxing-cpp v3.1.0 from
 # source, so this job now does the same (see the dedicated step below) --
 # simplified since, unlike flatpak-builder's network-isolated build phase,
 # this runner has network access throughout, so ZXING_DEPENDENCIES' default
@@ -157,7 +157,7 @@ jobs:
       # packages.ubuntu.com for noble, not guessed, per the note above.
       # Unlike libssl-dev this one DOES need a Flatpak module:
       # org.kde.Platform ships OpenSSL but not libargon2, so
-      # packaging/flatpak/com.urlxl.mail.yaml builds it from the reference
+      # packaging/flatpak/com.kysecurity.mail.yaml builds it from the reference
       # implementation.
       #
       # No package was added for the QmlTests target (Qt Quick Test, added
@@ -204,7 +204,7 @@ jobs:
       # contents directly -- neither file is present), and KDE neon's "user"
       # archive added above doesn't package zxing-cpp at all. Built from
       # source instead, pinned to the same v3.1.0 tag/commit the Flatpak
-      # manifest (packaging/flatpak/com.urlxl.mail.yaml) already builds for
+      # manifest (packaging/flatpak/com.kysecurity.mail.yaml) already builds for
       # the identical reason -- see that manifest's own comments for the
       # version research. Unlike that manifest's sandboxed, network-isolated
       # build phase, this runner has network access throughout, so the

@@ -9,7 +9,7 @@ set -eu
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 repo_root="$script_dir/../.."
-manifest="$script_dir/com.urlxl.mail.yaml"
+manifest="$script_dir/com.kysecurity.mail.yaml"
 
 # cd to the repo root so build_dir lands there as plain "build-flatpak",
 # matching .gitignore's /build*/ pattern and the README/CI convention --

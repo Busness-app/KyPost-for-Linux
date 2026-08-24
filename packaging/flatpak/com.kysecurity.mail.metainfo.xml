@@ -6,14 +6,14 @@
      "no net" flag, targeting this file's path.
 -->
 <component type="desktop-application">
-  <id>com.urlxl.mail</id>
+  <id>com.kysecurity.mail</id>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>GPL-3.0-only</project_license>
 
   <name>KyPost</name>
   <summary>Relay-based email client for KDE Plasma and Plasma Mobile</summary>
 
-  <developer id="com.urlxl">
+  <developer id="com.kysecurity">
     <name>Busnes Games</name>
   </developer>
 
@@ -43,7 +43,7 @@
     </p>
   </description>
 
-  <launchable type="desktop-id">com.urlxl.mail.desktop</launchable>
+  <launchable type="desktop-id">com.kysecurity.mail.desktop</launchable>
 
   <categories>
     <category>Network</category>

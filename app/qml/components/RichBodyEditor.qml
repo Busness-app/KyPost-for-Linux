@@ -2,7 +2,7 @@ import QtQuick 2.15
 import QtQuick.Controls 2.15
 import QtQuick.Layouts 1.15
 import QtWebEngine
-import com.urlxl.mail 1.0
+import com.kysecurity.mail 1.0
 
 // Compose's rich HTML body editor (supersedes the earlier plain-TextArea-
 // only constraint). The editing surface is a contenteditable WebEngineView.

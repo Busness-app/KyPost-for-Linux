@@ -1,5 +1,5 @@
 import QtQuick 2.15
-import com.urlxl.mail 1.0
+import com.kysecurity.mail 1.0
 import "../utils/format.js" as Format
 
 // Compose autocomplete (ContactAutocomplete.md): a floating result list below

@@ -40,6 +40,6 @@ re-verification pass.
 
 ## `org.kde.Sdk` Flatpak runtime — resolved in Task 9
 
-Was the one real gap surfaced by the Task 8 re-verification pass: `org.kde.Platform//6.10` was installed but not the matching `org.kde.Sdk`, so `flatpak-builder` had nothing to build against. Task 9 installed it (`flatpak install --user -y flathub org.kde.Sdk//6.10`, verify: `flatpak list --user --runtime | grep -i kde`) and used it to build `packaging/flatpak/com.urlxl.mail.yaml` end to end.
+Was the one real gap surfaced by the Task 8 re-verification pass: `org.kde.Platform//6.10` was installed but not the matching `org.kde.Sdk`, so `flatpak-builder` had nothing to build against. Task 9 installed it (`flatpak install --user -y flathub org.kde.Sdk//6.10`, verify: `flatpak list --user --runtime | grep -i kde`) and used it to build `packaging/flatpak/com.kysecurity.mail.yaml` end to end.
 
 One additional gap surfaced during that build, not predicted here: `Qt6Keychain` (installed natively via the `qtkeychain-qt6` pacman package) has no Flatpak/KDE-runtime equivalent, so the manifest builds it from source as a `qtkeychain` module pinned to release `0.17.0` (matches the native package's upstream version) ahead of the `kypost` module. The manifest also needed `app/CMakeLists.txt` to gain an `install(TARGETS kypost ...)` rule — the native build never needed one since it only ever ran the binary in-tree, but `flatpak-builder`'s `cmake-ninja` buildsystem runs `ninja install` unconditionally.

@@ -27,9 +27,21 @@ private slots:
     void roundTripsSetGetContainsRemove();
     void aTimedOutReadIsFailedNeverAbsent();
     void everyCallReturnsEvenWhenTheStoreCannotBeConsulted();
+    void readsFallBackToTheLegacyServiceAndCopyForward();
+    void removeClearsTheLegacyServiceToo();
+    void anAbsentLegacyServiceIsNotReportedAsFailure();
 
 private:
+    // Writes `value` under `service`, or QSKIPs if no Secret Service backend
+    // will accept it. Same escape hatch as roundTripsSetGetContainsRemove(),
+    // hoisted so the fallback tests below do not each re-derive it.
+    void seedOrSkip(const QString& service, const QString& key, const QString& value);
+
     QString m_service;
+    // The stand-in for the pre-rename com.urlxl.mail service. Unique per run
+    // for the same reason m_service is: these tests write real entries into
+    // whatever keyring is live on this machine.
+    QString m_legacyService;
     // Well above the ~25s Qt D-Bus floor a wedged Secret Service imposes, so
     // a genuinely-stuck backend still terminates here, but far below QtTest's
     // 300s watchdog so a failure is reported as a failure rather than a kill.
@@ -40,12 +52,33 @@ void SecureStoreKeychainTest::init()
 {
     m_service = QStringLiteral("kypost-securestore-test-%1")
                     .arg(QUuid::createUuid().toString(QUuid::WithoutBraces));
+    m_legacyService = QStringLiteral("kypost-securestore-legacy-test-%1")
+                          .arg(QUuid::createUuid().toString(QUuid::WithoutBraces));
 }
 
 void SecureStoreKeychainTest::cleanup()
 {
     SecureStoreKeychain store(m_service, kTestTimeoutMs);
     store.remove(QStringLiteral("sub"));
+    // No legacy service configured on either store here: cleanup must reach
+    // each service explicitly rather than relying on the very fallback these
+    // tests exercise, or a broken fallback would also leak the entries it
+    // failed to migrate.
+    SecureStoreKeychain legacy(m_legacyService, kTestTimeoutMs);
+    legacy.remove(QStringLiteral("sub"));
+}
+
+void SecureStoreKeychainTest::seedOrSkip(const QString& service, const QString& key,
+                                         const QString& value)
+{
+    SecureStoreKeychain seed(service, kTestTimeoutMs);
+    if (!seed.set(key, value)) {
+        const SecureStore::ReadResult probe = seed.read(key);
+        QVERIFY2(probe.status != SecureStore::ReadStatus::Found,
+                 "the write reported failure but the value is readable -- that is a real bug, not "
+                 "an absent backend");
+        QSKIP("No usable Secret Service backend reachable (write failed)");
+    }
 }
 
 void SecureStoreKeychainTest::roundTripsSetGetContainsRemove()
@@ -114,6 +147,61 @@ void SecureStoreKeychainTest::everyCallReturnsEvenWhenTheStoreCannotBeConsulted(
     // "hung forever" into an unexplained kill.
     QVERIFY2(elapsed.elapsed() < 200000,
              "SecureStoreKeychain calls must terminate; this is the hang this test exists for");
+}
+
+// The app-id rename's whole point: a device paired under com.urlxl.mail must
+// not look unpaired under com.kysecurity.mail. Reads find the old value, and
+// copy it forward so the fallback stops firing.
+void SecureStoreKeychainTest::readsFallBackToTheLegacyServiceAndCopyForward()
+{
+    seedOrSkip(m_legacyService, QStringLiteral("sub"), QStringLiteral("legacy-subscriber"));
+
+    SecureStoreKeychain store(m_service, kTestTimeoutMs, m_legacyService);
+
+    const SecureStore::ReadResult result = store.read(QStringLiteral("sub"));
+    QCOMPARE(result.status, SecureStore::ReadStatus::Found);
+    QCOMPARE(result.value, QStringLiteral("legacy-subscriber"));
+
+    // Copied forward, not merely proxied: a store with NO legacy fallback
+    // configured must now find it under the new service on its own.
+    SecureStoreKeychain migrated(m_service, kTestTimeoutMs);
+    QCOMPARE(migrated.get(QStringLiteral("sub")).value(), QStringLiteral("legacy-subscriber"));
+
+    // Copied, not moved -- docs/RENAME_NOTES.md's rule that a bad migration
+    // stays recoverable by hand.
+    SecureStoreKeychain legacy(m_legacyService, kTestTimeoutMs);
+    QCOMPARE(legacy.get(QStringLiteral("sub")).value(), QStringLiteral("legacy-subscriber"));
+}
+
+// A wipe must not be undone by the next launch reading the credential back
+// out of the pre-rename service.
+void SecureStoreKeychainTest::removeClearsTheLegacyServiceToo()
+{
+    seedOrSkip(m_legacyService, QStringLiteral("sub"), QStringLiteral("legacy-subscriber"));
+
+    SecureStoreKeychain store(m_service, kTestTimeoutMs, m_legacyService);
+    QVERIFY(store.remove(QStringLiteral("sub")));
+
+    SecureStoreKeychain legacy(m_legacyService, kTestTimeoutMs);
+    QVERIFY2(!legacy.contains(QStringLiteral("sub")),
+             "remove() left the credential in the pre-rename service, where the next read would "
+             "resurrect it");
+    QVERIFY(!store.contains(QStringLiteral("sub")));
+}
+
+// The overwhelmingly common case: a fresh install with no pre-rename profile
+// at all. The legacy service holds nothing, which is an answer -- Absent --
+// and must not be dressed up as a failure that would fail the app closed.
+void SecureStoreKeychainTest::anAbsentLegacyServiceIsNotReportedAsFailure()
+{
+    // Establishes that a backend is reachable, so that an Absent below is the
+    // backend answering rather than the no-keyring path.
+    seedOrSkip(m_service, QStringLiteral("sub"), QStringLiteral("present"));
+
+    SecureStoreKeychain store(m_service, kTestTimeoutMs, m_legacyService);
+
+    const SecureStore::ReadResult result = store.read(QStringLiteral("never-written"));
+    QCOMPARE(result.status, SecureStore::ReadStatus::Absent);
 }
 
 QTEST_GUILESS_MAIN(SecureStoreKeychainTest)

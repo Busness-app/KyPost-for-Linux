@@ -1,5 +1,5 @@
 import QtQuick 2.15
-import com.urlxl.mail 1.0
+import com.kysecurity.mail 1.0
 
 // STYLE_GUIDE.md §4 "Empty state" (mirrors web's `.contacts-empty`,
 // `.inbox-empty-state`): dashed 1px border in an accent-tinted line color,

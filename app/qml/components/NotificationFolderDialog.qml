@@ -1,7 +1,7 @@
 import QtQuick 2.15
 import QtQuick.Controls 2.15
 import QtQuick.Layouts 1.15
-import com.urlxl.mail 1.0
+import com.kysecurity.mail 1.0
 
 // Asks which copy of a message the user meant, when a notification tap-through
 // cannot tell.

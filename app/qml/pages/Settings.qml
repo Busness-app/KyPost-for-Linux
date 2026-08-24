@@ -1,13 +1,13 @@
 import QtQuick 2.15
 import QtQuick.Controls 2.15
 import QtQuick.Layouts 1.15
-import com.urlxl.mail 1.0
+import com.kysecurity.mail 1.0
 import "../components"
 // Qualified import of this same directory, aliased to PairingPage -- the
 // bare name "Pairing" is ambiguous in this file: the automatic IMPLICIT
 // same-directory import (every .qml file in pages/ is implicitly visible by
 // filename to every other file in pages/, no import statement needed) would
-// resolve "Pairing" to Pairing.qml, but the "com.urlxl.mail 1.0"
+// resolve "Pairing" to Pairing.qml, but the "com.kysecurity.mail 1.0"
 // import above explicitly registers a QML singleton ALSO named "Pairing"
 // (the PairingController instance, see main.cpp) -- and per QML's import
 // precedence rules, an explicit import always wins over the implicit

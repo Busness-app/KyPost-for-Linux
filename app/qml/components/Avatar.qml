@@ -1,5 +1,5 @@
 import QtQuick 2.15
-import com.urlxl.mail 1.0
+import com.kysecurity.mail 1.0
 
 // STYLE_GUIDE.md §4 "Circular gradient avatar with initials" (mirrors
 // web's `.users-avatar`, `.contacts-avatar`): circle, two-stop gradient

@@ -1,5 +1,5 @@
 import QtQuick 2.15
-import com.urlxl.mail 1.0
+import com.kysecurity.mail 1.0
 
 // STYLE_GUIDE.md §4 "Danger button" (mirrors web's `.users-action-danger`,
 // `.contacts-action-danger`): 1px Theme.dangerBorderColor stroke +

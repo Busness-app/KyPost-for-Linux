@@ -1,5 +1,5 @@
 import QtQuick 2.15
-import com.urlxl.mail 1.0
+import com.kysecurity.mail 1.0
 
 // STYLE_GUIDE.md §4 "Primary button" (mirrors web's `.users-create-submit`):
 // solid Theme.accent fill, Theme.shapeButton corner radius, text color

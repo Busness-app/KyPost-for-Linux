@@ -16,7 +16,7 @@
 # qmllint emits ~900 warnings over this tree, almost all `unqualified` (the
 # house style reaches singletons and ids directly) plus every member access on
 # the C++-registered singletons. Those singletons come from
-# qmlRegisterSingletonInstance against a plain qrc, so `com.urlxl.mail` ships
+# qmlRegisterSingletonInstance against a plain qrc, so `com.kysecurity.mail` ships
 # no qmltypes and qmllint cannot resolve any of them. Gating on the full
 # output would be gating on noise.
 #

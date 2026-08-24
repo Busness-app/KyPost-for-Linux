@@ -179,12 +179,12 @@ int main(int argc, char* argv[])
 
     // Task 11: applicationName + organizationDomain feed KDBusService's name
     // derivation (reversed domain + app name -- see KDBusService::KDBusService
-    // docs), which must produce the same "com.urlxl.mail" well-known
+    // docs), which must produce the same "com.kysecurity.mail" well-known
     // name that UnifiedPushConnector registers below and that the .service
-    // file at ~/.local/share/dbus-1/services/com.urlxl.mail.service
+    // file at ~/.local/share/dbus-1/services/com.kysecurity.mail.service
     // advertises to the D-Bus daemon for on-demand activation.
     app.setApplicationName(QStringLiteral("mail"));
-    app.setOrganizationDomain(QStringLiteral("urlxl.com"));
+    app.setOrganizationDomain(QStringLiteral("kysecurity.com"));
 
     // Task 48: KI18n translation domain. Per KLocalizedString::
     // setApplicationDomain()'s own doc comment ("This function should be
@@ -216,7 +216,7 @@ int main(int argc, char* argv[])
     // export D-Bus objects before the event loop (app.exec()) runs.
     //
     // Must also stay constructed before UnifiedPushConnector below: this is
-    // what actually claims the "com.urlxl.mail" well-known bus name on
+    // what actually claims the "com.kysecurity.mail" well-known bus name on
     // the session bus. UnifiedPushConnector relies on that name already
     // being owned by this same connection by the time it constructs -- it
     // does not register the name itself. Reordering these two would make
@@ -310,10 +310,10 @@ int main(int argc, char* argv[])
     // and therefore never hardened.
     // Suffixed with the D-Bus service name UnifiedPushConnector is
     // constructed with further down, NOT applicationName() -- those differ
-    // ("com.urlxl.mail" vs "mail").
+    // ("com.kysecurity.mail" vs "mail").
     const QString unifiedPushStatePath =
         QStandardPaths::writableLocation(QStandardPaths::ConfigLocation)
-        + QStringLiteral("/kunifiedpush-com.urlxl.mail");
+        + QStringLiteral("/kunifiedpush-com.kysecurity.mail");
     // Checked, and load-bearing: this is the one hardening step here whose
     // failure hands out a live remote capability, so registering for push
     // afterwards is refused rather than logged. A distributor registration
@@ -357,14 +357,14 @@ int main(int argc, char* argv[])
     // singleton registers and loads cleanly.
     ThemeController themeController(settingsStore);
     qmlRegisterSingletonInstance<ThemeController>(
-        "com.urlxl.mail", 1, 0, "Theme", &themeController);
+        "com.kysecurity.mail", 1, 0, "Theme", &themeController);
 
     // GeneralController: Desktop/Mobile mode preference + desktop-only tray
     // settings. Shares no state with ThemeController -- registered the same
     // way, right next to it.
     GeneralController generalController(settingsStore, !isMobile);
     qmlRegisterSingletonInstance<GeneralController>(
-        "com.urlxl.mail", 1, 0, "General", &generalController);
+        "com.kysecurity.mail", 1, 0, "General", &generalController);
 
     // Task 31: composition root for the rest of core/db, core/net, and
     // core/domain -- every later Phase 6 task (32-34) builds its
@@ -483,9 +483,21 @@ int main(int argc, char* argv[])
     // pay that at most once, so nothing may ask the store a question ahead of
     // it.
     // SecureStore built in Phase 2 (SecureStoreFile is for tests/UT only).
-    // Reuses the same "com.urlxl.mail" service name KDBusService and
+    // Reuses the same "com.kysecurity.mail" service name KDBusService and
     // UnifiedPushConnector already use above, for consistency.
-    SecureStoreKeychain secureStore(QStringLiteral("com.urlxl.mail"));
+    //
+    // The third argument is the pre-rename service name, read-only. The
+    // app-id rename (2026-08-23) gives Flatpak installs a new
+    // ~/.var/app/<id> and therefore an empty profile, but secrets go through
+    // --talk-name=org.freedesktop.secrets to the HOST keyring, where they are
+    // keyed by this string and survive untouched. Without the fallback, an
+    // upgrading device would find the keyring "empty", re-pair from scratch,
+    // and strand its old deviceSecret; with it, the pairing and app-lock
+    // state come across on first read. See SecureStoreKeychain.h for why the
+    // fallback is key-agnostic rather than a list of key names to migrate.
+    SecureStoreKeychain secureStore(QStringLiteral("com.kysecurity.mail"),
+                                    SecureStoreKeychain::kDefaultTimeoutMs,
+                                    QStringLiteral("com.urlxl.mail"));
 
     // Probe the secret store before anything depends on it.
     //
@@ -818,7 +830,7 @@ int main(int argc, char* argv[])
                                    folderRepository, settingsStore, pgpBootstrapClient, pgpRecipientChecker,
                                    networkExecutor);
     qmlRegisterSingletonInstance<MailController>(
-        "com.urlxl.mail", 1, 0, "MailApp", &mailController);
+        "com.kysecurity.mail", 1, 0, "MailApp", &mailController);
 
     // App lock ("AppLock"). Registered here rather than beside
     // Theme/General above because AppLockStore is part of the composition
@@ -839,7 +851,7 @@ int main(int argc, char* argv[])
     appLockManager.setWipeIncomplete(wipeRecovery.wasInterrupted && !wipeRecovery.nowErased);
     appLockManager.setDatabaseMode(profileDatabaseMode);
     qmlRegisterSingletonInstance<AppLockManager>(
-        "com.urlxl.mail", 1, 0, "AppLock", &appLockManager);
+        "com.kysecurity.mail", 1, 0, "AppLock", &appLockManager);
 
     // Wipe on repeated PIN failure. AppLockManager knows only that the
     // threshold was crossed; deciding what "wipe" means is the host's job,
@@ -961,7 +973,7 @@ int main(int argc, char* argv[])
     ContactsController contactsController(contactSyncRepository, groupsRepository, contactPhotoRepository,
                                            networkExecutor);
     qmlRegisterSingletonInstance<ContactsController>(
-        "com.urlxl.mail", 1, 0, "ContactsApp", &contactsController);
+        "com.kysecurity.mail", 1, 0, "ContactsApp", &contactsController);
 
     // PGP QR key exchange: QML-facing bridge over pgpQrRepository/
     // pgpQrClient (both constructed above). Persistence of a scanned key
@@ -969,16 +981,16 @@ int main(int argc, char* argv[])
     // ContactsApp -- see PgpQrController.h's doc comment.
     PgpQrController pgpQrController(pgpQrRepository, networkExecutor);
     qmlRegisterSingletonInstance<PgpQrController>(
-        "com.urlxl.mail", 1, 0, "PgpQr", &pgpQrController);
+        "com.kysecurity.mail", 1, 0, "PgpQr", &pgpQrController);
     // This repo's first creatable (non-singleton) QML-registered C++ type --
     // PgpScanContactKey.qml instantiates one per scan screen, attaching it
     // to the live VideoOutput's videoSink (see PgpQrScanner.h's doc comment).
-    qmlRegisterType<PgpQrScanner>("com.urlxl.mail", 1, 0, "PgpQrScanner");
+    qmlRegisterType<PgpQrScanner>("com.kysecurity.mail", 1, 0, "PgpQrScanner");
 
     // VibeSec fix: EmailDetail.qml instantiates one of these per its
     // WebEngineProfile, binding its imagesLoaded property to the "Show
     // images" toggle -- see RemoteContentInterceptor.h's class doc comment.
-    qmlRegisterType<RemoteContentInterceptor>("com.urlxl.mail", 1, 0, "RemoteContentInterceptor");
+    qmlRegisterType<RemoteContentInterceptor>("com.kysecurity.mail", 1, 0, "RemoteContentInterceptor");
 
     // Task 34: QML-facing bridge over deviceRegistrationService/pairingStore
     // (both constructed above). Refreshes its isPaired/pairedServerHost/
@@ -993,7 +1005,7 @@ int main(int argc, char* argv[])
     PairingController pairingController(deviceRegistrationService, pairingStore, settingsStore,
                                         certificatePinSink, networkExecutor);
     qmlRegisterSingletonInstance<PairingController>(
-        "com.urlxl.mail", 1, 0, "Pairing", &pairingController);
+        "com.kysecurity.mail", 1, 0, "Pairing", &pairingController);
 
     // Keep PairingController's view of the lock current, so a
     // kypost://native-pair link arriving while the app is locked cannot raise a
@@ -1215,7 +1227,7 @@ int main(int argc, char* argv[])
     // after every wiring connection below is already in place) is safe to
     // call on every startup -- KUnifiedPush persists registration state
     // itself.
-    UnifiedPushConnector pushConnector(QStringLiteral("com.urlxl.mail"));
+    UnifiedPushConnector pushConnector(QStringLiteral("com.kysecurity.mail"));
 
     // Distributor-tier availability: only KUnifiedPush::Connector::Registered
     // means "available" (phase7-global-constraints.md item 5) -- Registering
@@ -1421,7 +1433,7 @@ int main(int argc, char* argv[])
     mailController.clearEphemeralAttachments();
 
     // Relaunch AFTER the event loop has returned, never from inside it.
-    // KDBusService(Unique) holds the com.urlxl.mail well-known name for this
+    // KDBusService(Unique) holds the com.kysecurity.mail well-known name for this
     // process's lifetime; a child spawned while the parent still owned it
     // would be treated as a duplicate launch, activate the dying parent and
     // exit -- leaving the user staring at a closed app. Sequencing it here

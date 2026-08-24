@@ -47,7 +47,7 @@ A change is not verified until this builds cleanly and `ctest` is green.
 
 `ctest` covers both the C++ tests and the QML suite (`QmlTests`, Qt Quick
 Test, added 2026-07-26 — see `tests/qml/`). The QML tests run against fake
-`com.urlxl.mail` singletons (`tests/qml/FakeSingletons.h`) and load their
+`com.kysecurity.mail` singletons (`tests/qml/FakeSingletons.h`) and load their
 components from the shipped `app/qml/qml.qrc`, so a component missing from
 the resource bundle fails there rather than at runtime.
 
@@ -148,7 +148,7 @@ Added 2026-07-25 (parity work with `kypost-android`):
   singleton; there is no supported way to re-point it at a different database
   at runtime. `AppRelauncher` spawns the replacement only *after*
   `app.exec()` returns, so `KDBusService(Unique)` has released
-  `com.urlxl.mail` first. Don't "fix" that ordering.
+  `com.kysecurity.mail` first. Don't "fix" that ordering.
 - **MFA over push is a non-goal on Linux.** Settled 2026-08-23 by the user:
   Linux cannot do MFA push. Not a backend oversight to wait out -- the server
   excludes it deliberately, and `MFATransportEligible`'s own comment gives the

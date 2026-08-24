@@ -338,7 +338,7 @@ kypost_add_app_test(NotificationDispatcherTest
 # (pop-out Windows were never covered by the overlay) shipped exactly because
 # nothing here could go red.
 #
-# The runner registers fake "com.urlxl.mail" singletons (tests/qml/
+# The runner registers fake "com.kysecurity.mail" singletons (tests/qml/
 # FakeSingletons.h) rather than the real controllers, which would drag in a
 # Database, a SecureStore and a live QNetworkAccessManager. That keeps these
 # tests about QML behaviour -- bindings, gating, visibility -- which is the

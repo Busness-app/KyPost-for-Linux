@@ -25,7 +25,7 @@ class UnifiedPushConnector : public QObject
     Q_OBJECT
 public:
     // serviceName is the app-unique identifier registered with the local
-    // UnifiedPush distributor over D-Bus, e.g. "com.urlxl.mail".
+    // UnifiedPush distributor over D-Bus, e.g. "com.kysecurity.mail".
     explicit UnifiedPushConnector(const QString& serviceName, QObject* parent = nullptr);
 
     // Subscribes with the local distributor. Persisted until explicitly

@@ -1,5 +1,5 @@
 import QtQuick 2.15
-import com.urlxl.mail 1.0
+import com.kysecurity.mail 1.0
 
 // STYLE_GUIDE.md §4 "Ghost/secondary button" (mirrors web's
 // `.notifications-ghost`): transparent fill, 1px Theme.line stroke,

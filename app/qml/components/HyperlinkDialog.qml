@@ -1,7 +1,7 @@
 import QtQuick 2.15
 import QtQuick.Controls 2.15
 import QtQuick.Layouts 1.15
-import com.urlxl.mail 1.0
+import com.kysecurity.mail 1.0
 
 // Compose's rich-body "Insert Link" toolbar action: label + URL, with an
 // optional "Style as button" checkbox that renders the same <a> with an

@@ -31,7 +31,7 @@ UPLOAD=0
 
 REPO_SLUG="${REPO_SLUG:-Yoshiofthewire/KyPost-for-Linux}"
 KEY_NAME="KyPost Flatpak Signing Key"
-KEY_EMAIL="${KEY_EMAIL:-kypost-flatpak@urlxl.com}"
+KEY_EMAIL="${KEY_EMAIL:-kypost-flatpak@kysecurity.com}"
 
 OUT_DIR="${OUT_DIR:-$HOME/kypost-flatpak-signing-key}"
 GNUPGHOME_TMP="$(mktemp -d)"

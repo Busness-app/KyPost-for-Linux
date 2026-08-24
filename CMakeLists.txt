@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.21)
 # as KYPOST_VERSION (a PUBLIC compile definition on kypostcore, set in
 # core/CMakeLists.txt) and is currently consumed by the User-Agent header in
 # core/net/HttpClient.cpp. Keep it in step with the <release> entries in
-# packaging/flatpak/com.urlxl.mail.metainfo.xml.
+# packaging/flatpak/com.kysecurity.mail.metainfo.xml.
 project(KyPost VERSION 0.1.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

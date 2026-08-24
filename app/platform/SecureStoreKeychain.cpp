@@ -2,11 +2,15 @@
 
 #include <QEventLoop>
 #include <QTimer>
+#include <QtLogging>
 #include <qt6keychain/keychain.h>
 
-SecureStoreKeychain::SecureStoreKeychain(const QString& service, int timeoutMs)
+SecureStoreKeychain::SecureStoreKeychain(const QString& service, int timeoutMs,
+                                         const QString& legacyService)
     : m_service(service)
     , m_timeoutMs(timeoutMs)
+    , m_legacyService(legacyService)
+    , m_legacyReachable(!legacyService.isEmpty())
 {
 }
 
@@ -51,7 +55,13 @@ SecureStoreKeychain::JobOutcome SecureStoreKeychain::runBlocking(QKeychain::Job*
 
 bool SecureStoreKeychain::set(const QString& key, const QString& value)
 {
-    auto* job = new QKeychain::WritePasswordJob(m_service);
+    return writeTo(m_service, key, value);
+}
+
+bool SecureStoreKeychain::writeTo(const QString& service, const QString& key,
+                                  const QString& value) const
+{
+    auto* job = new QKeychain::WritePasswordJob(service);
     job->setKey(key);
     job->setTextData(value);
 
@@ -61,7 +71,38 @@ bool SecureStoreKeychain::set(const QString& key, const QString& value)
 
 SecureStore::ReadResult SecureStoreKeychain::read(const QString& key) const
 {
-    auto* job = new QKeychain::ReadPasswordJob(m_service);
+    const ReadResult result = readFrom(m_service, key);
+
+    // Found, or the store could not be consulted at all: the legacy service
+    // has nothing to add either way, and asking would only cost another
+    // blocking call.
+    if (result.status != ReadStatus::Absent || !m_legacyReachable)
+        return result;
+
+    const ReadResult legacy = readFrom(m_legacyService, key);
+    if (legacy.failed()) {
+        m_legacyReachable = false;
+        // Fail closed, once. See the header: the primary answering Absent
+        // means the daemon is up, so this is not the ordinary
+        // no-legacy-profile path -- that one returns EntryNotFound/Absent.
+        return ReadResult{ ReadStatus::Failed, QString() };
+    }
+    if (!legacy.found())
+        return result;
+
+    // Copy forward, best-effort. A failure here costs nothing but a repeat of
+    // this fallback on the next read, so it is not worth failing the read the
+    // caller actually asked for.
+    if (!writeTo(m_service, key, legacy.value))
+        qWarning("SecureStoreKeychain: could not copy '%s' forward from the pre-rename service; "
+                 "it will be read from there again next launch",
+                 qUtf8Printable(key));
+    return legacy;
+}
+
+SecureStore::ReadResult SecureStoreKeychain::readFrom(const QString& service, const QString& key) const
+{
+    auto* job = new QKeychain::ReadPasswordJob(service);
     job->setKey(key);
 
     const JobOutcome outcome = runBlocking(job);
@@ -92,7 +133,30 @@ std::optional<QString> SecureStoreKeychain::get(const QString& key) const
 
 bool SecureStoreKeychain::remove(const QString& key)
 {
-    auto* job = new QKeychain::DeletePasswordJob(m_service);
+    const bool removed = removeFrom(m_service, key);
+
+    // Clear the pre-rename copy too. This is not tidiness: PairingStore::
+    // clear() and the ten-failure wipe are both implemented as remove() over
+    // their keys, and read() above resurrects anything the legacy service
+    // still holds. Without this line a wipe the user was told had happened
+    // would be silently undone on the next launch.
+    if (m_legacyReachable && !removeFrom(m_legacyService, key)) {
+        m_legacyReachable = false;
+        qWarning("SecureStoreKeychain: could not clear '%s' from the pre-rename service; a copy "
+                 "may remain in the keyring",
+                 qUtf8Printable(key));
+        // The caller asked for this key to be gone and it is not gone
+        // everywhere. Reporting success here is the reporting-a-write-that-
+        // never-landed failure mode, so it reports the removal as failed.
+        return false;
+    }
+
+    return removed;
+}
+
+bool SecureStoreKeychain::removeFrom(const QString& service, const QString& key)
+{
+    auto* job = new QKeychain::DeletePasswordJob(service);
     job->setKey(key);
 
     const JobOutcome outcome = runBlocking(job);

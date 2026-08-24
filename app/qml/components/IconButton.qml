@@ -1,7 +1,7 @@
 import QtQuick 2.15
 import QtQuick.Controls 2.15
 import org.kde.kirigami 2.20 as Kirigami
-import com.urlxl.mail 1.0
+import com.kysecurity.mail 1.0
 
 // Compact icon-only button for toolbars/action rows where a full text
 // button (PrimaryButton/GhostButton/DangerButton) reads as too heavy -- e.g.

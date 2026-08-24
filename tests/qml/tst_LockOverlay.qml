@@ -1,6 +1,6 @@
 import QtQuick 2.15
 import QtTest 1.15
-import com.urlxl.mail 1.0
+import com.kysecurity.mail 1.0
 import "qrc:/qml/components" as Components
 
 // Regression coverage for the app-lock bypass.
