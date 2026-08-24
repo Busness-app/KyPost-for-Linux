@@ -70,7 +70,7 @@ flatpak remote-delete kypost</code></pre>
       <p>
         Source and issue tracker:
         <a href="https://github.com/@REPOSITORY@">github.com/@REPOSITORY@</a>.
-        Licensed GPL-3.0-only.
+        Licensed under the MIT License.
       </p>
     </footer>
   </body>
