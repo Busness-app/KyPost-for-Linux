@@ -83,7 +83,10 @@ permissions:
 env:
   APP_ID: com.kysecurity.mail
   MANIFEST: packaging/flatpak/com.kysecurity.mail.yaml
-  PAGES_URL: https://yoshiofthewire.github.io/KyPost-for-Linux
+  # Must match the *current* owner: Pages does not follow a repository
+  # transfer, and this string is baked into the published .flatpakrepo's
+  # Url= field, i.e. where every installed client goes to look for updates.
+  PAGES_URL: https://busness-app.github.io/KyPost-for-Linux
 
 jobs:
   build:

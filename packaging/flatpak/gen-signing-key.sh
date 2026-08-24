@@ -29,7 +29,7 @@ set -euo pipefail
 UPLOAD=0
 [ "${1:-}" = "--upload" ] && UPLOAD=1
 
-REPO_SLUG="${REPO_SLUG:-Yoshiofthewire/KyPost-for-Linux}"
+REPO_SLUG="${REPO_SLUG:-Busness-app/KyPost-for-Linux}"
 KEY_NAME="KyPost Flatpak Signing Key"
 KEY_EMAIL="${KEY_EMAIL:-kypost-flatpak@kysecurity.com}"
 

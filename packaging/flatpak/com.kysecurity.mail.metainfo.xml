@@ -32,8 +32,10 @@
       attachments and drafts, and a contacts list with a detail/edit view.
       Pairing a new device with the relay account is done by pasting or
       opening a pairing link. PGP public keys can be exchanged with other
-      devices by QR code, and end-to-end encrypted mail this app cannot read
-      is explained rather than shown blank.
+      devices by QR code. For accounts whose private keys live on the client,
+      KyPost reads and sends end-to-end encrypted mail through the user's own
+      gpg-agent, which is the only thing that ever touches the private key;
+      where it cannot, encrypted mail is explained rather than shown blank.
     </p>
     <p>
       Optional security features: a PIN lock with lockout and
@@ -53,7 +55,32 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
-    <release version="0.2.0" date="2026-08-24"/>
+    <release version="0.2.0" date="2026-08-24">
+      <description>
+        <p>
+          The first release published to the signed KyPost Flatpak channel,
+          for x86_64 and aarch64.
+        </p>
+        <ul>
+          <li>End-to-end encrypted mail: for accounts whose private keys live
+          on the client, KyPost decrypts and verifies incoming OpenPGP mail
+          and signs and encrypts outgoing mail, including attachments, before
+          the relay sees it. The private key stays with gpg-agent.</li>
+          <li>Mail and contacts held on disk are now stored in a
+          SQLCipher-encrypted database, and existing profiles are encrypted in
+          place on first launch.</li>
+          <li>Each device pairs with its own credential, enrolled over ECDH,
+          and can be deregistered by itself without disturbing the others.</li>
+          <li>An HTML composer, a system tray icon with pop-out message and
+          compose windows, server-side folders, and contacts that hold more
+          than one address.</li>
+          <li>Relay requests and mail actions moved off the GUI thread, so the
+          interface no longer freezes while the relay is slow.</li>
+          <li>The application is now com.kysecurity.mail; data from the
+          previous application ID is migrated automatically.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.0" date="2026-07-14"/>
   </releases>
 
@@ -61,6 +88,6 @@
        apps that use AI; KyPost's backend does). These URLs point at the
        GitHub project and the self-hosted Flatpak remote published by
        .github/workflows/flatpak.yml. See docs/DISTRIBUTION.md. -->
-  <url type="homepage">https://github.com/Yoshiofthewire/KyPost-for-Linux</url>
-  <url type="bugtracker">https://github.com/Yoshiofthewire/KyPost-for-Linux/issues</url>
+  <url type="homepage">https://github.com/Busness-app/KyPost-for-Linux</url>
+  <url type="bugtracker">https://github.com/Busness-app/KyPost-for-Linux/issues</url>
 </component>

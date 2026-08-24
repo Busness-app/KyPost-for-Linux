@@ -9,14 +9,11 @@ repository's `gh-pages` branch by `.github/workflows/flatpak.yml`.
 > `.github.io` URLs below return 404. A green build is not a shipped app. The
 > three one-time maintainer steps that change this are in the next section.
 >
-> **Also unfixed: `PAGES_URL` in `.github/workflows/flatpak.yml` still names the
-> pre-transfer owner** (`https://yoshiofthewire.github.io/KyPost-for-Linux`). The
-> repository now lives at `Busness-app/KyPost-for-Linux` — the old URL 301s on
-> github.com but GitHub Pages does not follow a transfer, so Pages will serve at
-> `busness-app.github.io`, which is what this document now says. The workflow bakes
-> `PAGES_URL` into the generated `.flatpakrepo`'s `Url=` field, so the first publish
-> would advertise a host that does not serve the repo. Fix that one line before
-> step 2, or every early adopter adds a remote that cannot update.
+> The owner half of this is now fixed: `PAGES_URL` and `gen-signing-key.sh`'s
+> `REPO_SLUG` both named the pre-transfer owner (`Yoshiofthewire`) and now name
+> `Busness-app`. Pages does not follow a repository transfer, so the old value
+> would have baked a host that does not serve the repo into every client's
+> `.flatpakrepo`, and the secrets would have been uploaded to the wrong slug.
 
 **KyPost will never be on Flathub.** Flathub bans applications that use AI, and
 KyPost's backend does (the Ollama-backed classifier). That is a policy ban, not a
