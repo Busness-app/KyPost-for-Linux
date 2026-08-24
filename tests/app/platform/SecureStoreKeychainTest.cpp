@@ -1,6 +1,7 @@
 #include "platform/SecureStoreKeychain.h"
 
 #include <QElapsedTimer>
+#include <QTimer>
 #include <QTest>
 #include <QUuid>
 
@@ -30,6 +31,8 @@ private slots:
     void readsFallBackToTheLegacyServiceAndCopyForward();
     void removeClearsTheLegacyServiceToo();
     void anAbsentLegacyServiceIsNotReportedAsFailure();
+    void theCallingThreadIsReleasedByTheTimeoutNotByDBus();
+    void theCallingThreadKeepsProcessingEventsWhileAJobRuns();
 
 private:
     // Writes `value` under `service`, or QSKIPs if no Secret Service backend
@@ -202,6 +205,78 @@ void SecureStoreKeychainTest::anAbsentLegacyServiceIsNotReportedAsFailure()
 
     const SecureStore::ReadResult result = store.read(QStringLiteral("never-written"));
     QCOMPARE(result.status, SecureStore::ReadStatus::Absent);
+}
+
+// THE FIX OF 2026-08-24, and the only test here that can tell whether it is
+// still in place.
+//
+// The jobs run on their own thread now. Before that they ran on the calling
+// thread, inside a synchronous D-Bus call that did not process events -- so
+// `timeoutMs` could not be delivered until that call returned on its own at
+// Qt's ~25 s D-Bus default, and the caller was pinned for the whole time. For
+// every startup caller that thread is the GUI thread, which is why a broken
+// keyring made KyPost look dead rather than slow.
+//
+// So: a one-second timeout must release the CALLER in about one second, even
+// when the backend behind it is going to sit there for twenty-five. This test
+// is meaningful only on a machine whose Secret Service does not answer
+// promptly -- exactly the machine the bug was about -- and is trivially true
+// on one that does, which is why it asserts a ceiling rather than a window.
+void SecureStoreKeychainTest::theCallingThreadIsReleasedByTheTimeoutNotByDBus()
+{
+    SecureStoreKeychain store(m_service, /*timeoutMs=*/1000);
+
+    QElapsedTimer elapsed;
+    elapsed.start();
+    const SecureStore::ReadResult result = store.read(QStringLiteral("never-written"));
+    const qint64 blockedFor = elapsed.elapsed();
+
+    // Absent (a fast, working keyring) or Failed (the timeout fired). Both are
+    // correct answers; what is not correct is taking 25 s to give either.
+    QVERIFY(result.status == SecureStore::ReadStatus::Absent
+            || result.status == SecureStore::ReadStatus::Failed);
+    QVERIFY2(blockedFor < 10000,
+             qPrintable(QStringLiteral("read() pinned the calling thread for %1 ms against a 1000 ms "
+                                        "timeout -- the QKeychain job is back on the caller's thread")
+                            .arg(blockedFor)));
+}
+
+// The other half of the same fix, and the half main() depends on.
+//
+// Releasing the caller on time is not enough on its own: KyPost puts a startup
+// window up before it opens the secret store, and that window can only paint
+// if the GUI thread is still delivering its own events while the store is
+// being consulted. Before the jobs moved off this thread, it was not -- it sat
+// inside a synchronous D-Bus call, so no timer fired, nothing repainted, and
+// the application looked dead rather than busy.
+//
+// Asserted conditionally, because it can only be observed on a machine whose
+// Secret Service is slow. Where the store answers immediately there is no
+// window during which anything could have been starved, and the test says so
+// rather than pretending to have checked.
+void SecureStoreKeychainTest::theCallingThreadKeepsProcessingEventsWhileAJobRuns()
+{
+    SecureStoreKeychain store(m_service, /*timeoutMs=*/2000);
+
+    int ticks = 0;
+    QTimer heartbeat;
+    heartbeat.setInterval(50);
+    QObject::connect(&heartbeat, &QTimer::timeout, &heartbeat, [&ticks]() { ++ticks; });
+    heartbeat.start();
+
+    QElapsedTimer elapsed;
+    elapsed.start();
+    store.read(QStringLiteral("never-written"));
+    const qint64 blockedFor = elapsed.elapsed();
+    heartbeat.stop();
+
+    if (blockedFor < 200)
+        QSKIP("this Secret Service answers immediately -- there is no starvation window to observe");
+
+    QVERIFY2(ticks > 0,
+             qPrintable(QStringLiteral("the calling thread processed no events during a %1 ms "
+                                        "keychain call -- a startup window could not paint")
+                            .arg(blockedFor)));
 }
 
 QTEST_GUILESS_MAIN(SecureStoreKeychainTest)

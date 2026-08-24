@@ -374,7 +374,11 @@ Item {
                         // by loadContact() below), so photoRef is available
                         // here with no extra model wiring, unlike
                         // ContactsList.qml's row delegate.
-                        photoSource: root.contact.photoRef ? ContactsApp.photoPathFor(root.contact.uid) : ""
+                        // ContactsApp.photoRevision is read for its binding
+                        // dependency, not its value -- see ContactsList.qml's
+                        // Avatar for why the call alone is not enough.
+                        photoSource: root.contact.photoRef && ContactsApp.photoRevision >= 0
+                                     ? ContactsApp.photoPathFor(root.contact.uid) : ""
                         size: 72
                     }
 

@@ -60,8 +60,8 @@ class QNetworkReply;
 // class and its QNetworkAccessManager onto a worker thread -- and making the
 // controllers dispatch-and-return against the busy/state properties they
 // already expose -- is what removes the category. That is now underway; see
-// MfaController for the shape and docs/THREADING.md for the order and the
-// two constraints that decide it.
+// PairingController for the shape and docs/THREADING.md for the order and
+// the two constraints that decide it.
 //
 // Until a given caller is converted: treat its call sites as re-entrant, and
 // assume any member read after a call may have changed underneath it.
@@ -189,26 +189,47 @@ public:
                     const QList<QPair<QString, QString>>& headers = {},
                     const RedirectValidator& redirectValidator = {});
 
-    // --- TOFU certificate pinning ---------------------------------------
-    // Trust-on-first-use: the SPKI SHA-256 of the server's TLS certificate
-    // is captured when the device pairs, then every later request must
-    // match it. Not a hardcoded pin -- this client talks to whatever server
-    // the user paired with, so there is no build-time value to bake in.
+    // --- TOFU certificate pinning ----------------------------------------
     //
-    // SPKI rather than whole-certificate: the pin then survives an ordinary
-    // certificate renewal that keeps the same key, which a full-certificate
-    // hash would not. Verified that QSslKey::toDer() on a certificate's
-    // public key yields SubjectPublicKeyInfo DER, byte-identical to
-    // `openssl pkey -pubin -outform der`, so this hash matches what standard
-    // pin-generation tooling (and kypost-android's OkHttp CertificatePinner)
-    // produces.
+    // THIS IS AN ISSUER PIN, NOT A PIN ON THE RELAY'S OWN KEY, and the
+    // difference is the whole of what it does and does not prove.
+    //
+    // Trust-on-first-use: an SPKI SHA-256 is captured from the handshake that
+    // completes pairing, and every later request to that origin must match it.
+    // Not a hardcoded pin -- this client talks to whatever server the user
+    // paired with, so there is no build-time value to bake in.
+    //
+    // What is hashed is the SPKI of the LEAF'S ISSUER; see
+    // pinnedSpkiFromChain() below for the measurement that forced that and for
+    // the CDN constraint behind it. So what this establishes is continuity of
+    // the AUTHORITY vouching for the relay, not continuity of the relay's own
+    // key: it narrows trust from "any CA in the store" to "certificates issued
+    // under this one intermediate", which is what catches hostile Wi-Fi and a
+    // corporate MITM root. It does NOT uniquely identify mail.urlxl.com, and
+    // it does not detect mis-issuance by that same CA.
+    //
+    // This comment used to describe a leaf pin and say the SPKI form let the
+    // pin "survive an ordinary certificate renewal that keeps the same key".
+    // Both were true when it was written and neither is now: the anchor moved
+    // to the issuer precisely BECAUSE Cloudflare's renewals do not keep the
+    // same key. Read as a live claim it credited this pin with proving
+    // something it never checks.
+    //
+    // SPKI rather than whole-certificate is still the right form: it survives
+    // a re-issue of the intermediate that keeps its key, which a
+    // full-certificate hash would not. Verified that QSslKey::toDer() on a
+    // certificate's public key yields SubjectPublicKeyInfo DER, byte-identical
+    // to `openssl pkey -pubin -outform der`, so this hash matches what
+    // standard pin-generation tooling (and kypost-android's OkHttp
+    // CertificatePinner) produces.
 
     // Empty spkiSha256 disables enforcement. Set from the stored pairing at
     // startup.
     //
     // The pin is scoped to `origin` (scheme+host+port) and enforced ONLY on
-    // requests to that origin. It describes the paired relay and nothing
-    // else. Enforcing it on every reply made the PGP QR key-exchange feature
+    // requests to that origin. It describes the authority vouching for the
+    // paired relay's origin and nothing else -- see the block above for why
+    // that is a weaker statement than "the paired relay". Enforcing it on every reply made the PGP QR key-exchange feature
     // -- which deliberately fetches from other servers
     // (PgpQrController::scanQrPayload) -- impossible on any paired device,
     // and worse, raised the persistent "your mail server's certificate
@@ -348,8 +369,8 @@ bool sameUrlOrigin(const QUrl& a, const QUrl& b);
 // baseUrl and ensures exactly one slash between the two, regardless of
 // whether the caller's base URL was given with or without a trailing
 // slash. Shared by every Relay HTTP client's endpointFor()-style helper
-// (GroupsClient, MfaResponseClient, ContactSyncClient, ContactPhotoClient,
-// RelayMailSource), which all used to hand-roll this same join.
+// (GroupsClient, ContactSyncClient, ContactPhotoClient, RelayMailSource),
+// which all used to hand-roll this same join.
 //
 // apiPath MUST already be percent-encoded. Every caller but one passes a
 // fixed ASCII literal, for which that is a no-op; the one that interpolates

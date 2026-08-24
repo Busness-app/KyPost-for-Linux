@@ -1,6 +1,7 @@
 <RCC>
   <qresource prefix="/qml">
     <file>MobileRoot.qml</file>
+    <file>Startup.qml</file>
     <file>DesktopRoot.qml</file>
     <file>utils/format.js</file>
     <file>components/PrimaryButton.qml</file>

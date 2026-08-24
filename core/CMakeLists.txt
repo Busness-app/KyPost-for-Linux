@@ -5,7 +5,6 @@ add_library(kypostcore STATIC
   models/ContactFieldJson.h
   models/StandardFolder.h
   models/KeywordSettings.h
-  models/MfaChallenge.h
   models/PushNotification.h
   models/Group.h
   models/MailFolder.h
@@ -70,6 +69,8 @@ add_library(kypostcore STATIC
   security/CredentialCipher.h
   db/DatabaseEncryptionMigration.cpp
   db/ProfileDatabase.cpp
+  pgp/GpgmeInit.cpp
+  pgp/GpgmeInit.h
   pgp/OpenPgpDecryptor.cpp
   pgp/MimeBodyReader.cpp
   pgp/PgpMimeWriter.cpp
@@ -111,8 +112,6 @@ add_library(kypostcore STATIC
   net/NativeRegistrationClient.h
   net/PushNotificationClient.cpp
   net/PushNotificationClient.h
-  net/MfaResponseClient.cpp
-  net/MfaResponseClient.h
   net/DeregisterClient.cpp
   net/DeregisterClient.h
   net/ContactSyncClient.cpp

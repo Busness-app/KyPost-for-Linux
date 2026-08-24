@@ -686,8 +686,50 @@ QString ContactsController::photoPathFor(const QString& uid)
     if (!found || !found->photoRef.has_value() || found->photoRef->isEmpty())
         return QString();
 
-    const QString path = m_photoRepository.photoPathFor(uid, *found->photoRef);
-    if (path.isEmpty())
+    const QString path = m_photoRepository.cachedPathFor(*found->photoRef);
+    if (path.isEmpty()) {
+        // A miss, not an answer. Start one fetch and let the delegate render
+        // initials until photoRevision brings it back here.
+        fetchPhoto(uid, *found->photoRef);
         return QString();
+    }
     return QUrl::fromLocalFile(path).toString();
+}
+
+void ContactsController::fetchPhoto(const QString& uid, const QString& photoRef)
+{
+    // The deduplication, and it is load-bearing rather than an optimisation.
+    // This is reached from a QML binding, which re-evaluates whenever the view
+    // feels like it -- on scroll, on model change, on window resize. Without
+    // this set, one contact scrolling in and out of view would queue an
+    // unbounded number of identical requests at the relay.
+    if (m_photoFetchesAttempted.contains(photoRef))
+        return;
+
+    const std::optional<RelayRequestPlan> plan = m_photoRepository.planFetch();
+    if (!plan.has_value())
+        return; // not paired -- nothing to fetch against, and not an error
+
+    m_photoFetchesAttempted.insert(photoRef);
+
+    // Deliberately NOT pushBusy(): a contact photo arriving late is not an
+    // operation the user started, and spinning the whole contacts screen for
+    // one avatar would be worse than the avatar being late.
+    m_executor.run(
+        this,
+        [endpoint = plan->endpoint, uid](HttpClient& http) {
+            return ContactPhotoRepository::fetchWith(http, endpoint, uid);
+        },
+        [this, plan = *plan, photoRef](const ContactPhotoFetchResult& result) {
+            if (m_photoRepository.applyFetch(plan, photoRef, result).isEmpty())
+                return; // failed, re-paired, or unwritable -- stays on initials
+            // Forgotten again on success, so the marker only ever suppresses
+            // retries of a FAILURE. The cache answers from here on, and if it
+            // later evicts this entry (it is bounded -- see
+            // ContactPhotoCache::kMaxCacheBytes) the next binding evaluation
+            // is free to fetch it again.
+            m_photoFetchesAttempted.remove(photoRef);
+            ++m_photoRevision;
+            emit photoRevisionChanged();
+        });
 }

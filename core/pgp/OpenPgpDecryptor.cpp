@@ -1,5 +1,7 @@
 #include "pgp/OpenPgpDecryptor.h"
 
+#include "pgp/GpgmeInit.h"
+
 #include <gpgme.h>
 
 #include <cstring>
@@ -95,18 +97,6 @@ struct DataHandle
     }
 };
 
-// gpgme requires this before any other call, and the first call is not
-// thread-safe. Doing it once at first use keeps that guarantee without
-// making every caller remember it.
-void initialiseGpgme()
-{
-    static const bool initialised = []() {
-        gpgme_check_version(nullptr);
-        return true;
-    }();
-    Q_UNUSED(initialised);
-}
-
 } // namespace
 
 OpenPgpDecryptor::OpenPgpDecryptor(qint64 maxPlaintextBytes) : m_maxPlaintextBytes(maxPlaintextBytes)
@@ -115,7 +105,7 @@ OpenPgpDecryptor::OpenPgpDecryptor(qint64 maxPlaintextBytes) : m_maxPlaintextByt
 
 bool OpenPgpDecryptor::engineAvailable()
 {
-    initialiseGpgme();
+    ensureGpgmeInitialised();
     return gpgme_err_code(gpgme_engine_check_version(GPGME_PROTOCOL_OpenPGP)) == GPG_ERR_NO_ERROR;
 }
 
@@ -128,7 +118,7 @@ PgpDecryptResult OpenPgpDecryptor::decrypt(const QByteArray& ciphertext, const Q
         return result;
     }
 
-    initialiseGpgme();
+    ensureGpgmeInitialised();
 
     ContextHandle context;
     if (gpgme_err_code(gpgme_new(&context.handle)) != GPG_ERR_NO_ERROR || context.handle == nullptr) {

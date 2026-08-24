@@ -65,6 +65,24 @@ enum class PgpPayloadStatus
 struct PgpSignerKey
 {
     QString publicKey; // ASCII-armored; public, nothing secret here
+
+    // The fingerprint the relay's address book has pinned to this key, as it
+    // claims it. NOT trusted as an identity -- it is checked against what gpg
+    // computes from `publicKey` itself, in a throwaway keyring, before the
+    // user's own keyring is touched at all. That catches a relay whose key and
+    // whose claim about that key disagree; it cannot catch one that lies
+    // consistently, and nothing on this wire can.
+    //
+    // EMPTY IS FAIL-CLOSED, and that is the point. The SEND path has always
+    // required this check (OpenPgpKeyImporter.h) while the read path passed an
+    // empty string and skipped it, so opening any signed message wrote
+    // relay-chosen keys into the user's durable GnuPG keyring with nothing
+    // verified. An empty fingerprint here now means the key is used for
+    // nothing and imported nowhere: the signature verdict degrades to
+    // CannotCheck, which is honest, rather than a badge bought with a
+    // permanent write to security state the user owns.
+    QString fingerprint;
+
     // The relay saw more than one key claiming this address and cannot say
     // which is right. Offering it anyway would let whichever key verified
     // decide the answer.

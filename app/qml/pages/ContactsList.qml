@@ -155,7 +155,14 @@ Item {
                         // all (photoPathFor() itself also short-circuits on
                         // an empty photoRef, but skipping the call here
                         // avoids it entirely for the common no-photo case).
-                        photoSource: model.photoRef !== "" ? ContactsApp.photoPathFor(model.uid) : ""
+                        // ContactsApp.photoRevision is read for its binding
+                        // dependency, not its value. photoPathFor() is a
+                        // function call and is now cache-only, so on a miss it
+                        // returns "" and starts a background fetch -- without
+                        // something notifying to depend on, this binding would
+                        // never re-run and the photo would never appear.
+                        photoSource: model.photoRef !== "" && ContactsApp.photoRevision >= 0
+                                     ? ContactsApp.photoPathFor(model.uid) : ""
                         size: 34
                     }
 

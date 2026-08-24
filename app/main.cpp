@@ -3,7 +3,6 @@
 #include "general/GeneralController.h"
 #include "mail/MailController.h"
 #include "mail/RemoteContentInterceptor.h"
-#include "pairing/MfaController.h"
 #include "pairing/PairingController.h"
 #include "pgp/PgpQrController.h"
 #include "pgp/PgpQrScanner.h"
@@ -52,7 +51,6 @@
 #include "net/CertificatePinSink.h"
 #include "net/HttpClient.h"
 #include "net/NetworkExecutor.h"
-#include "net/MfaResponseClient.h"
 #include "net/DeregisterClient.h"
 #include "net/NativeRegistrationClient.h"
 #include "net/PgpBootstrapClient.h"
@@ -75,6 +73,9 @@
 #include <QNetworkAccessManager>
 #include <QQmlApplicationEngine>
 #include <QStandardPaths>
+#include <memory>
+
+#include <QPointer>
 #include <QTimer>
 #include <QUrl>
 #include <QWindow>
@@ -383,6 +384,50 @@ int main(int argc, char* argv[])
     GeneralController generalController(settingsStore, !isMobile);
     qmlRegisterSingletonInstance<GeneralController>(
         "com.kysecurity.mail", 1, 0, "General", &generalController);
+
+    // The startup window, up BEFORE anything that can block.
+    //
+    // Everything from here to engine.load() is the composition root, and two
+    // steps in it are unbounded in practice: opening the platform secret store
+    // (~25 s against a wedged Secret Service -- see SecureStoreKeychain.h) and
+    // opening the database, whose key comes out of that store. Until
+    // 2026-08-24 the application had NO WINDOW for that whole time. Not a
+    // frozen one: none at all, which is indistinguishable from a launch that
+    // failed silently, and the user's only recourse was to run it again.
+    //
+    // This is what makes it visible, and it only works because the secret
+    // store's D-Bus calls moved off this thread in the same change. The waits
+    // below now run this thread's event loop rather than blocking it, so the
+    // timer here is actually delivered and the window actually paints.
+    //
+    // Held back for 400 ms rather than shown immediately. A healthy keyring
+    // answers in milliseconds, and flashing a window that says "Starting..."
+    // on every launch would be a worse experience than the one being fixed.
+    auto startupWindowEngine = std::make_unique<QQmlApplicationEngine>();
+    startupWindowEngine->load(QUrl(QStringLiteral("qrc:/qml/Startup.qml")));
+    QPointer<QObject> startupWindow = startupWindowEngine->rootObjects().isEmpty()
+        ? nullptr
+        : startupWindowEngine->rootObjects().constFirst();
+    // QPointer, because the engine below is torn down as soon as the real root
+    // window exists -- which on a healthy machine happens well inside these
+    // 400 ms, leaving this timer to fire at a window that is already gone.
+    QTimer::singleShot(400, qApp, [startupWindow]() {
+        if (!startupWindow)
+            return; // the real window beat us to it, which is the normal case
+        // Logged because "KyPost took ages to start" is otherwise an
+        // unfalsifiable report: this line, and its absence, is what says
+        // whether the slow step was before the UI or after it.
+        qInfo("main: startup is taking a while -- showing the startup window");
+        startupWindow->setProperty("visible", true);
+    });
+    // Names the step rather than just spinning, so a user staring at a stalled
+    // launch is told which one it is. There is exactly one message because
+    // there is exactly one step that is ever slow.
+    const auto sayStartupStep = [startupWindow](const QString& text) {
+        if (startupWindow)
+            startupWindow->setProperty("statusText", text);
+    };
+    sayStartupStep(i18n("Opening the system secret store..."));
 
     // Task 31: composition root for the rest of core/db, core/net, and
     // core/domain -- every later Phase 6 task (32-34) builds its
@@ -749,10 +794,10 @@ int main(int argc, char* argv[])
     //
     // There is more than one HttpClient while the threading migration is in
     // progress, and naming one of them directly is how the first conversion
-    // shipped an unpinned path: MfaController moved to the executor's client,
-    // which nobody had given a pin or a mismatch handler, so its requests
-    // went out under whatever certificate the CA chain accepted and the
-    // impersonation banner had nothing to compare against. Everything that
+    // shipped an unpinned path: the converted controller moved to the
+    // executor's client, which nobody had given a pin or a mismatch handler,
+    // so its requests went out under whatever certificate the CA chain
+    // accepted and the impersonation banner had nothing to compare against. Everything that
     // touches pin state now takes this fan-out instead of an HttpClient, so
     // "remember to set it on both" is not something anyone has to remember.
     // Retiring the GUI-thread client later means deleting one entry here.
@@ -1205,25 +1250,22 @@ int main(int argc, char* argv[])
     // to route a native-pair link to.
     routeDeepLink(app.arguments(), pairingControllerForDeepLinks);
 
-    // Task 34: QML-facing bridge over the executor/pairingStore (both
-    // constructed above).
+    // There is deliberately no MFA controller here, and this note is what
+    // stops one being added back. Settled 2026-08-23, deleted 2026-08-24:
+    // Linux cannot do MFA push. The relay excludes the unifiedpush transport
+    // on purpose -- a challenge carries sign-in metadata (IP, user agent, the
+    // match digits) and UnifiedPush delivers through an unencrypted public
+    // broker -- and platform "linux" maps onto that transport, so no
+    // challenge ever reaches this device. That filter is a privacy control,
+    // not an oversight to wait out; see AGENTS.md section 4.
     //
-    // Constructed but deliberately NOT registered as a QML singleton, and now
-    // dead rather than pending. Settled 2026-08-23: Linux cannot do MFA push.
-    // The relay excludes the unifiedpush transport on purpose -- a challenge
-    // carries sign-in metadata and UnifiedPush delivers through an
-    // unencrypted public broker -- and platform "linux" maps onto that
-    // transport, so no challenge ever reaches this device. The earlier note
-    // here called that filter temporary; it is not. See AGENTS.md section 4.
-    //
-    // Registering it anyway made a subsystem with no user reachable from
-    // every QML file in the app, where respond() reads the pairing and fires
-    // an authenticated POST. Dead code is tolerable; dead code wired to the
-    // engine as `Mfa` is attack surface with nothing on the other end.
-    // Do not re-add the qmlRegisterSingletonInstance line. There is no
-    // approval screen coming, because there is no challenge to approve.
-    MfaController mfaController(networkExecutor, pairingStore);
-    Q_UNUSED(mfaController);
+    // The controller, its client and its model survived here for a while as
+    // dead-but-compiled code, which is worse than absent: it read as finished,
+    // tested machinery that only needed reconnecting. Answering a challenge
+    // means reading the pairing and firing an authenticated POST, so the next
+    // maintainer to "just wire it up" would have exposed sign-in metadata to
+    // a public broker without ever learning why it was unplugged. Git has the
+    // implementation if the transport ever gains RFC 8291 payload encryption.
 
     QQmlApplicationEngine engine;
 
@@ -1258,6 +1300,12 @@ int main(int argc, char* argv[])
     // (see that comment for the persisted-preference-over-env-var precedence).
     engine.load(QUrl(isMobile ? QStringLiteral("qrc:/qml/MobileRoot.qml")
                                : QStringLiteral("qrc:/qml/DesktopRoot.qml")));
+
+    // The real root window exists, so the startup window has done its job.
+    // Destroying the engine takes the window with it; leaving it alive would
+    // put a second, permanently "Starting..." window in the user's task
+    // switcher for the rest of the session.
+    startupWindowEngine.reset();
     if (engine.rootObjects().isEmpty())
         return -1;
 
@@ -1340,14 +1388,14 @@ int main(int argc, char* argv[])
     bool deferredReregistrationEndpointPending = false;
     QString deferredReregistrationEndpoint;
 
-    const auto reregisterAndReport = [&deviceRegistrationService, &pairingController,
-                                       &deferredReregistrationEndpointPending,
-                                       &deferredReregistrationEndpoint](const QString& endpoint) {
-        const std::optional<NativeRegistrationResult> result =
-            deviceRegistrationService.reregisterIfPaired(endpoint);
-        if (!result.has_value())
-            return; // not paired yet -- an ordinary state, not a failure
-        if (result->outcome == RegistrationOutcome::CredentialsLocked) {
+    // What to do with an outcome, once one exists. Split out from the dispatch
+    // below because it is now reached from a completion handler rather than
+    // from the return value of a blocking call.
+    const auto reportReregistration = [&pairingController, &deferredReregistrationEndpointPending,
+                                        &deferredReregistrationEndpoint](
+                                           const NativeRegistrationResult& result,
+                                           const QString& endpoint) {
+        if (result.outcome == RegistrationOutcome::CredentialsLocked) {
             // Not an error and deliberately not surfaced to the user: the
             // pairing is fine, the secret is simply sealed right now.
             qDebug("main: re-registration deferred -- the device secret is sealed and the app is "
@@ -1357,22 +1405,76 @@ int main(int argc, char* argv[])
             return;
         }
         deferredReregistrationEndpointPending = false;
-        if (result->outcome == RegistrationOutcome::Unauthorized) {
+        if (result.outcome == RegistrationOutcome::Unauthorized) {
             qWarning("main: re-registration was rejected (401) -- the pairing token has expired, "
                      "push delivery is now broken until the user pairs again");
             pairingController.setReregistrationRejected(true);
         }
     };
 
+    // ASYNCHRONOUS since 2026-08-24, and this is the last blocking network
+    // call that ran on the GUI thread from the composition root.
+    //
+    // It used to be a plain reregisterIfPaired(), which blocks on HttpClient's
+    // nested QEventLoop. That was defensible only on the startup path, where
+    // there is no window to freeze -- but the same lambda is reached from
+    // UnifiedPushConnector::endpointChanged and from TransportStateMachine::
+    // tierChanged, both of which fire with the UI up. A distributor rotating
+    // its endpoint against a slow relay therefore froze the application, and
+    // froze it inside a nested loop that keeps delivering QML input into a
+    // half-finished transport transition. There was no missing abstraction
+    // here; the three-phase split below already existed for PairingController.
+    //
+    // Phase 1 and 3 stay on this thread because they touch PairingStore, the
+    // certificate-pin fan-out and SettingsStore, none of which may leave it.
+    // Only sendRegistration() -- which touches nothing but the HttpClient it
+    // is handed -- moves. `pairingController` is the receiver because it is
+    // what the outcome is reported to and it outlives networkExecutor::
+    // shutdown(), which main() calls immediately after app.exec() returns.
+    const auto reregisterAndReport = [&deviceRegistrationService, &networkExecutor,
+                                       &pairingController, reportReregistration](const QString& endpoint) {
+        const std::optional<PairingParams> params = deviceRegistrationService.reregistrationParams();
+        if (!params.has_value())
+            return; // not paired yet -- an ordinary state, not a failure
+
+        // Phase 1: guards, sealing-key snapshot, pin suspension.
+        DeviceRegistrationService::PairAttempt attempt = deviceRegistrationService.beginPair();
+        if (const std::optional<RegistrationOutcome> refused = attempt.refusedOutcome()) {
+            // Refused before any network contact -- today only
+            // CredentialsLocked, which the deferral below replays on unlock.
+            NativeRegistrationResult out;
+            out.outcome = *refused;
+            reportReregistration(out, endpoint);
+            return;
+        }
+
+        // The attempt is MOVED into the completion handler so it survives the
+        // gap. Dropping it here would run its destructor, restoring the
+        // certificate pin while the registration was still in flight.
+        networkExecutor.run(
+            &pairingController,
+            [params = *params, endpoint](HttpClient& http) {
+                return DeviceRegistrationService::sendRegistration(http, params, endpoint);
+            },
+            [&deviceRegistrationService, reportReregistration, params = *params, endpoint,
+             attempt = std::move(attempt)](const NativeRegistrationResult& result) mutable {
+                // Phase 3, back on this thread: persists, installs the new
+                // pin, writes the delivery settings.
+                reportReregistration(deviceRegistrationService.finishPair(std::move(attempt), params, result),
+                                      endpoint);
+            });
+    };
+
     // The retry half of the deferral above. Fires on every lock transition;
     // the pending flag makes the unlock case the only one that does work.
     //
-    // Queued to the next event-loop turn rather than run inline: this signal
-    // is emitted from the middle of AppLockManager::tryUnlock(), and
-    // reregisterAndReport() blocks on HttpClient's nested QEventLoop, which
-    // keeps delivering QML input while it is suspended. Letting a network
-    // call run inside a half-finished unlock is not a risk worth taking for
-    // a retry that is in no hurry.
+    // Still queued to the next event-loop turn rather than run inline, though
+    // for a smaller reason than before: reregisterAndReport() no longer
+    // blocks, but its phase 1 reads PairingStore and suspends the certificate
+    // pin, and this signal is emitted from the middle of
+    // AppLockManager::tryUnlock(). Starting a registration inside a
+    // half-finished unlock is not a risk worth taking for a retry that is in
+    // no hurry.
     QObject::connect(&appLockManager, &AppLockManager::lockedChanged, &appLockManager,
                       [&appLockManager, &deferredReregistrationEndpointPending,
                        &deferredReregistrationEndpoint, reregisterAndReport]() {

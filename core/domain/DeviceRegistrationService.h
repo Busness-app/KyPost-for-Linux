@@ -43,6 +43,21 @@ public:
 
     std::optional<NativeRegistrationResult> reregisterIfPaired(const QString& deviceToken);
 
+    // Phase 0 of the ASYNCHRONOUS re-registration, on the calling thread.
+    //
+    // reregisterIfPaired() above is reregistrationParams() + the synchronous
+    // pair(), and it is what the tests drive. Callers that must not block --
+    // which since 2026-08-24 is every caller in the running application, since
+    // a distributor endpoint can rotate at any moment with the UI up -- take
+    // these params, then beginPair()/sendRegistration()/finishPair() exactly
+    // as PairingController does. Reading PairingStore is the part that cannot
+    // leave this thread, which is why it is a separate call rather than
+    // something the executor could do for itself.
+    //
+    // std::nullopt means there is no stored pairing: an ordinary state on a
+    // device that has never paired, not a failure.
+    std::optional<PairingParams> reregistrationParams() const;
+
     // ---- three-phase form, for callers that must not block ---------------
     //
     // pair() above touches four things: PairingStore, SettingsStore, the

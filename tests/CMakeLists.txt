@@ -28,7 +28,6 @@ kypost_add_test(EmailTest core/models/EmailTest.cpp)
 kypost_add_test(ContactTest core/models/ContactTest.cpp)
 kypost_add_test(StandardFolderTest core/models/StandardFolderTest.cpp)
 kypost_add_test(KeywordSettingsTest core/models/KeywordSettingsTest.cpp)
-kypost_add_test(MfaChallengeTest core/models/MfaChallengeTest.cpp)
 kypost_add_test(PushNotificationTest core/models/PushNotificationTest.cpp)
 
 # core/security: PIN policy, lockout backoff, and the PIN-derived AEAD that
@@ -114,7 +113,6 @@ kypost_add_test(CertificatePinAnchorTest core/net/CertificatePinAnchorTest.cpp)
 target_include_directories(NetworkExecutorTest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/core/net)
 kypost_add_test(NativeRegistrationClientTest core/net/NativeRegistrationClientTest.cpp)
 kypost_add_test(PushNotificationClientTest core/net/PushNotificationClientTest.cpp)
-kypost_add_test(MfaResponseClientTest core/net/MfaResponseClientTest.cpp)
 kypost_add_test(DeregisterClientTest core/net/DeregisterClientTest.cpp)
 kypost_add_test(ContactSyncClientTest core/net/ContactSyncClientTest.cpp)
 kypost_add_test(FolderClientTest core/net/FolderClientTest.cpp)
@@ -254,9 +252,8 @@ kypost_add_app_test(ContactsControllerTest
   LIBS KF6::I18n
 )
 
-# PairingController/MfaController (Task 34) live in app/pairing/, not
-# kypostcore -- same app/ test pattern as MailControllerTest/
-# ContactsControllerTest above.
+# PairingController (Task 34) lives in app/pairing/, not kypostcore -- same
+# app/ test pattern as MailControllerTest/ContactsControllerTest above.
 # Launching an already-running KyPost must put its window in front. The
 # Unique-mode relay made that a no-op, which stranded the user at the
 # launcher -- see the test's own header.
@@ -279,15 +276,8 @@ kypost_add_app_test(PairingControllerTest
   LIBS KF6::I18n
 )
 
-kypost_add_app_test(MfaControllerTest
-  SOURCES
-    app/pairing/MfaControllerTest.cpp
-    ${CMAKE_SOURCE_DIR}/app/pairing/MfaController.cpp
-  LIBS KF6::I18n
-)
-
 # PgpQrController (PGP QR key exchange) lives in app/pgp/, not kypostcore --
-# same app/ test pattern as PairingControllerTest/MfaControllerTest above.
+# same app/ test pattern as PairingControllerTest above.
 # Needs Qt6::Gui (QImage/QBuffer) and ZXing::ZXing (plain ZXing:: C++ API,
 # see app/CMakeLists.txt's PgpQrController comment) in addition to KF6::I18n.
 find_package(ZXing CONFIG REQUIRED)

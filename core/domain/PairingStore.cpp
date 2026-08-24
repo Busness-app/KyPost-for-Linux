@@ -76,9 +76,9 @@ PairingStore::LoadResult PairingStore::loadChecked() const
     // that is a QKeychain job on a nested QEventLoop and a D-Bus round trip
     // to the Secret Service -- eight of them per call. isPaired() is
     // load().has_value(), so answering a yes/no cost eight; MailController
-    // calls requirePairing() (hence load()) on every mail operation; and
-    // MfaController::respond() made nine blocking IPC calls before a single
-    // byte went on the wire. On a session where kwalletd is slow or
+    // calls requirePairing() (hence load()) on every mail operation; and a
+    // single authenticated POST made nine blocking IPC calls before one byte
+    // went on the wire. On a session where kwalletd is slow or
     // prompting, opening one email visibly froze the UI.
     //
     // Each of those nested loops was also a re-entrancy window, so this cut

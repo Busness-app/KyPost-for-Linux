@@ -78,6 +78,12 @@ PgpPayloadResult PgpPayloadClient::fetch(const QUrl& serverBaseUrl, const RelayA
         const QJsonObject object = value.toObject();
         PgpSignerKey key;
         key.publicKey = object.value(QStringLiteral("publicKey")).toString();
+        // Absent leaves this empty, which EncryptedMessageReader reads as
+        // "do not import, do not credit" -- see PgpSignerKey::fingerprint.
+        // Deliberately not derived from the key material: a fingerprint the
+        // client computed from the same bytes it is checking cannot disagree
+        // with them, so deriving it would turn the check into a tautology.
+        key.fingerprint = object.value(QStringLiteral("fingerprint")).toString().trimmed();
         // Absent means false on the wire (omitempty), and false is the
         // permissive reading -- which is right here only because the relay
         // sets it when it knows of a conflict. Nothing is inferred.
