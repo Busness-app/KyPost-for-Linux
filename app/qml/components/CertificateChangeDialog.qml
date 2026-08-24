@@ -112,7 +112,7 @@ Item {
             spacing: 10
 
             Text {
-                text: i18n("This server's security certificate changed")
+                text: i18n("A different authority is vouching for this server")
                 color: Theme.inkStrong
                 font.family: Theme.fontUi
                 font.pixelSize: 16
@@ -122,7 +122,7 @@ Item {
 
             Text {
                 Layout.fillWidth: true
-                text: i18n("KyPost pinned this server's key when this device was paired, and the key it is presenting now is different. Every request is being refused until you decide.")
+                text: i18n("KyPost pinned the certificate authority that vouched for this server when this device was paired, and a different one is vouching for it now. Routine certificate renewals do not change this; being sent to a different server, or through something intercepting the connection, does. Every request is being refused until you decide.")
                 color: Theme.inkStrong
                 font.family: Theme.fontUi
                 font.pixelSize: 14
@@ -130,7 +130,7 @@ Item {
                 textFormat: Text.PlainText
             }
 
-            SectionLabel { text: i18n("Pinned when paired") }
+            SectionLabel { text: i18n("Authority pinned when paired") }
             Text {
                 Layout.fillWidth: true
                 text: Pairing.expectedCertificateFingerprint
@@ -145,12 +145,12 @@ Item {
                 textFormat: Text.PlainText
             }
 
-            SectionLabel { text: i18n("Presented now") }
+            SectionLabel { text: i18n("Authority presented now") }
             Text {
                 Layout.fillWidth: true
                 text: Pairing.observedCertificateFingerprint.length > 0
                       ? Pairing.observedCertificateFingerprint
-                      : i18n("This server's key could not be read at all.")
+                      : i18n("The authority for this server's certificate could not be read at all.")
                 color: Theme.dangerColor
                 font.family: Theme.fontMono
                 font.pixelSize: 11

@@ -8,6 +8,7 @@
 #include <QNetworkRequest>
 #include <QCryptographicHash>
 #include <QSslCertificate>
+#include <QSslConfiguration>
 #include <QSslKey>
 #include <QUrlQuery>
 
@@ -25,6 +26,20 @@ namespace {
 QString userAgent()
 {
     return QStringLiteral("KyPost/%1 (Linux)").arg(QStringLiteral(KYPOST_VERSION));
+}
+
+// SHA-256 of a certificate's SubjectPublicKeyInfo, or empty when the key
+// cannot be read. QSslCertificate::publicKey() returns a NULL QSslKey when
+// the backend cannot represent the key type, and QSslKey::toDer() on a null
+// key returns an empty QByteArray -- hashing that yields SHA256("") =
+// e3b0c442..., a fixed public constant that EVERY unparseable certificate
+// would also satisfy. So the empty case propagates as empty, never as a hash.
+QByteArray spkiSha256(const QSslCertificate& cert)
+{
+    if (cert.isNull())
+        return {};
+    const QByteArray der = cert.publicKey().toDer();
+    return der.isEmpty() ? QByteArray() : QCryptographicHash::hash(der, QCryptographicHash::Sha256);
 }
 
 void applyDefaultHeaders(QNetworkRequest& request, const QList<QPair<QString, QString>>& headers)
@@ -86,6 +101,30 @@ QByteArray HttpClient::certificatePin() const
 {
     assertOwningThread("HttpClient::certificatePin");
     return m_certificatePin;
+}
+
+QByteArray HttpClient::pinnedSpkiFromChain(const QList<QSslCertificate>& chain)
+{
+    // chain[0] is the leaf and chain[1] is what signed it: TLS requires the
+    // chain be sent leaf-first with each certificate certifying the one
+    // before it, and Qt preserves that order. Verified against the live
+    // relay rather than assumed -- peerCertificateChain() returned
+    // [urlxl.com, WE1, GTS Root R4] with peerCertificate() == chain[0],
+    // on fresh AND pooled keep-alive connections alike.
+    if (chain.size() < 2)
+        return {};
+
+    const QSslCertificate& leaf = chain.at(0);
+    const QSslCertificate& issuer = chain.at(1);
+
+    // Cheap guard against pinning the wrong link. A chain that arrives
+    // reordered or cross-signed could otherwise anchor us to the ROOT, which
+    // every public site under that root would satisfy -- a silent widening
+    // of trust rather than a visible failure. Fail closed instead.
+    if (issuer.subjectDisplayName() != leaf.issuerDisplayName())
+        return {};
+
+    return spkiSha256(issuer);
 }
 
 HttpClient::CertificatePinState HttpClient::certificatePinState() const
@@ -281,28 +320,36 @@ HttpClient::HttpResult HttpClient::waitForReply(QNetworkReply* reply, const Redi
         if (!enforcePin)
             return;
 
-        const QSslCertificate peer = reply->sslConfiguration().peerCertificate();
-        if (peer.isNull())
+        const QSslConfiguration config = reply->sslConfiguration();
+        const QList<QSslCertificate> chain = config.peerCertificateChain();
+        if (chain.isEmpty())
             return;
 
-        // QSslCertificate::publicKey() returns a NULL QSslKey when the
-        // backend cannot represent the key type, and QSslKey::toDer() on a
-        // null key returns an empty QByteArray. Hashing that yields
-        // SHA256("") = e3b0c442... -- a fixed, public constant. Pinning it
-        // would mean every other certificate Qt also fails to parse
-        // satisfies the pin, silently degrading TOFU to trust-on-every-use.
-        // Never derive a pin from nothing: refuse the connection when
-        // enforcing, and leave lastPeerSpkiSha256 empty so the pairing flow
-        // records "no pin" (enforcement off) rather than a bogus one.
-        const QByteArray spkiDer = peer.publicKey().toDer();
-        const QByteArray peerSpki =
-            spkiDer.isEmpty() ? QByteArray() : QCryptographicHash::hash(spkiDer, QCryptographicHash::Sha256);
-        if (peerSpki.isEmpty() || peerSpki != m_certificatePin) {
+        // What we pin now: the leaf's issuer. See
+        // HttpClient::pinnedSpkiFromChain() for why it is not the leaf.
+        // Empty means the chain could not be anchored at all, which is a
+        // refusal and not a pass.
+        const QByteArray issuerSpki = pinnedSpkiFromChain(chain);
+
+        // Devices paired before the anchor moved carry a LEAF pin, and that
+        // pin is still evidence this is the server they paired with -- so
+        // honour it rather than greeting every existing install with an
+        // impersonation banner on upgrade. It keeps working until the CDN
+        // next rolls the leaf; the mismatch that follows is re-anchored by
+        // the dialog's Reconnect, which re-registers and stores an ISSUER
+        // pin, and it never fires again. One alarm, once, per legacy device.
+        const QByteArray legacyLeafSpki = spkiSha256(chain.first());
+
+        const bool anchored = (!issuerSpki.isEmpty() && issuerSpki == m_certificatePin)
+            || (!legacyLeafSpki.isEmpty() && legacyLeafSpki == m_certificatePin);
+        if (!anchored) {
             pinMismatch = true;
             // Recorded so the recovery UI can show what was actually
-            // presented. Stays empty when the key could not be read, which
-            // is a different situation and must not render as a fingerprint.
-            observedSpki = peerSpki;
+            // presented -- and it shows the value that WOULD be pinned, so
+            // the fingerprint in the dialog is the one the user is agreeing
+            // to. Stays empty when the chain could not be anchored, which is
+            // a different situation and must not render as a fingerprint.
+            observedSpki = issuerSpki;
             reply->abort();
         }
     });
@@ -356,15 +403,13 @@ HttpClient::HttpResult HttpClient::waitForReply(QNetworkReply* reply, const Redi
     // would still hold whatever host handshook most recently. peerCertificate()
     // is populated on reused connections, so this is the value the pairing
     // flow can actually trust to describe the server that answered.
-    if (const QSslCertificate peer = reply->sslConfiguration().peerCertificate(); !peer.isNull()) {
-        const QByteArray spkiDer = peer.publicKey().toDer();
-        // Never derive a pin from nothing: QSslCertificate::publicKey()
-        // yields a null key when the backend cannot represent the key type,
-        // and SHA256("") is a fixed public constant that every other
-        // unparseable certificate would also satisfy.
-        if (!spkiDer.isEmpty())
-            result.peerSpkiSha256 = QCryptographicHash::hash(spkiDer, QCryptographicHash::Sha256);
-    }
+    //
+    // This is the value the pairing flow stores and pins, so it is the
+    // ISSUER's SPKI, not the leaf's -- see pinnedSpkiFromChain(). Reading
+    // the chain here rather than in ::encrypted matters for the same
+    // keep-alive reason as above, and peerCertificateChain() was confirmed
+    // populated on pooled reuses too, not just fresh handshakes.
+    result.peerSpkiSha256 = pinnedSpkiFromChain(reply->sslConfiguration().peerCertificateChain());
     const QList<QNetworkReply::RawHeaderPair> rawHeaders = reply->rawHeaderPairs();
     result.headers.reserve(rawHeaders.size());
     for (const auto& header : rawHeaders)

@@ -113,7 +113,7 @@ Carried forward verbatim (in substance) from `Linux_QT_Client_Plan.md`'s own
   Do not "simplify" this back into an omitted `since`. Two rounds of this
   entry have now been wrong in opposite directions; the Go source above is
   the tiebreaker, not this file.
-- **License: GPL-3.0-only** (fine with Qt LGPL / KDE).
+- **License: MIT** (fine with Qt LGPL / KDE).
 - **Qt5/Ubuntu Touch (Clickable) support is dropped, not merely paused.**
   Qt5 is EOL upstream, so this codebase now hard-requires Qt6 and has no
   Qt5 build path at all (previously a dual-Qt CMake toggle selected between
@@ -874,7 +874,26 @@ never once run.
   stopping behind a green "Paired" badge.
 - **`mail.urlxl.com` sits behind Cloudflare** (bare `urlxl.com` → 530) and
   needs a real, non-default User-Agent set on QNAM for every request from
-  day one — a bare/default UA gets blocked.
+  day one — a bare/default UA gets blocked. Any non-default product token
+  works; the version inside it is not part of the rule, so bumping
+  `KYPOST_VERSION` does not affect access.
+- **Cloudflare rotates the TLS leaf every ~90 days with a NEW KEY, so the
+  TLS pin is anchored to the ISSUER, not the leaf.** Measured 2026-08-24:
+  the leaf `CN=urlxl.com` was valid 2026-07-20 → 2026-10-18, while its
+  issuer (Google Trust Services `WE1`) runs to 2029-02-20; both edge IPs
+  served the same key, so this is rotation, not per-PoP variance. A
+  leaf-SPKI pin therefore fired the "server is being impersonated" banner
+  roughly quarterly with no attacker involved, and the only remedy on
+  offer was a "reconnect" button — i.e. it was training users to click
+  through the one dialog that exists to stop a real impersonation.
+  `HttpClient::pinnedSpkiFromChain()` now pins `chain[1]`, guarded by a
+  check that it really did issue `chain[0]` so a reordered chain cannot
+  silently anchor to the root. Two things this does NOT do: catch
+  mis-issuance by that same CA, and protect the Cloudflare↔origin leg —
+  Cloudflare terminates TLS, so the pinned key is Cloudflare's and the
+  plaintext is visible to it regardless. Devices paired before the change
+  carry a leaf pin, which is still accepted; those get exactly one banner
+  at the next rotation, and Reconnect re-anchors them to the issuer.
 - **Deployment lag.** The backend deploys via a separate Docker pipeline on
   a remote host; a commit landing in the backend repo does not mean it is
   live yet. Verify the relevant backend commits are actually deployed to

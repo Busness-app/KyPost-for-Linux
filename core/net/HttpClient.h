@@ -9,6 +9,7 @@
 #include <QPair>
 #include <QString>
 #include <QThread>
+#include <QSslCertificate>
 #include <QUrl>
 #include <functional>
 #include <optional>
@@ -238,6 +239,31 @@ public:
 
     CertificatePinState certificatePinState() const;
     void restoreCertificatePin(const CertificatePinState& state);
+
+    // The SPKI this client pins for a given peer chain: the SHA-256 of the
+    // LEAF'S ISSUER, not of the leaf.
+    //
+    // The relay is behind Cloudflare (AGENTS.md section 8), which terminates
+    // TLS on a ~90-day Universal SSL certificate and generates a new key at
+    // every renewal. Pinning the leaf therefore fired "this server is being
+    // impersonated" roughly quarterly with no attacker involved -- measured
+    // on the live endpoint, a leaf valid 2026-07-20/2026-10-18 under an
+    // issuer (Google Trust Services WE1) valid until 2029. A quarterly false
+    // alarm whose only remedy is a "reconnect" button teaches the user to
+    // click through the one dialog that exists to stop a real impersonation,
+    // which is worse than not pinning.
+    //
+    // Pinning the issuer keeps the defence that applies to a CDN-fronted
+    // origin -- a chain from some OTHER CA, i.e. hostile Wi-Fi or a
+    // corporate MITM root -- and lets rotation pass unnoticed. It does not
+    // detect mis-issuance by that same CA. That is the deliberate trade, and
+    // it is why this is the issuer rather than the root, which any public
+    // site under the same root would satisfy.
+    //
+    // Empty means "cannot pin", and every caller treats that as a failure
+    // rather than a pass: deriving a pin from nothing is what turns
+    // trust-on-first-use into trust-on-every-use.
+    static QByteArray pinnedSpkiFromChain(const QList<QSslCertificate>& chain);
 
     // Drops the in-memory pin and its origin. Must be called wherever the
     // trust anchor is discarded or re-established -- unpairing, and before a
