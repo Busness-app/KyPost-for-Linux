@@ -25,12 +25,33 @@
 # while git history stays one commit deep so the branch doesn't grow without
 # bound as pruned objects pile up.
 #
+# --- Why two jobs ---
+#
+# The app is published for x86_64 and aarch64 (Plasma Mobile is a target, so
+# arm64 is not optional). Each arch builds on its own native runner --
+# GitHub's ubuntu-24.04-arm is free for public repos, and qemu emulation
+# would put an hour on a QtWebEngine build and make the smoke test
+# meaningless.
+#
+# Two matrix jobs cannot both force-push gh-pages; the workflow-level
+# concurrency group serialises whole runs, not jobs within one. So the
+# matrix only builds, into a per-arch unsigned OSTree repo it hands over as
+# an artifact, and a single `publish` job merges both into the published
+# repo and pushes once.
+#
+# That split also keeps the signing key out of the matrix entirely: build
+# jobs never see it. Commits are signed on the way into the published repo
+# by `flatpak build-commit-from --gpg-sign`, which is what a client with
+# gpg-verify actually checks -- a signed summary alone would not be enough.
+#
 # --- Size ---
 #
 # GitHub Pages caps a published site at 1 GB. The runtime is NOT in here
 # (users get org.kde.Platform//6.11 from Flathub); this repo holds only
-# KyPost plus its three from-source modules. --prune-depth below bounds
-# growth; if the site ever approaches the cap, lower it.
+# KyPost plus its three from-source modules -- now for two architectures.
+# The .Debug refs are deliberately NOT published (see the merge step), which
+# is what keeps two arches from costing much more than one did. --prune-depth
+# below bounds growth; if the site ever approaches the cap, lower it.
 
 name: Flatpak
 
@@ -65,28 +86,30 @@ env:
   PAGES_URL: https://yoshiofthewire.github.io/KyPost-for-Linux
 
 jobs:
-  flatpak:
-    runs-on: ubuntu-24.04
+  build:
+    strategy:
+      # One arch failing should not hide whether the other is also broken.
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runs_on: ubuntu-24.04
+          - arch: aarch64
+            runs_on: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runs_on }}
     steps:
       - uses: actions/checkout@v4
+
+      # First, because a tagged run that gets this wrong publishes a signed
+      # build claiming the wrong version to everyone on the remote, and the
+      # OSTree repo is append-only -- there is no unpublishing it.
+
+      - name: Verify version consistency
+        run: ./scripts/verify-version.sh
 
       # Publishing needs the signing key, which pull_request events from
       # forks never get. Those runs still build and smoke-test; they just
       # produce an unsigned local repo and a bundle artifact.
-      - name: Decide whether this run publishes
-        id: mode
-        env:
-          HAS_KEY: ${{ secrets.FLATPAK_GPG_PRIVATE_KEY != '' }}
-          EVENT_NAME: ${{ github.event_name }}
-        run: |
-          if [ "$EVENT_NAME" != "pull_request" ] && [ "$HAS_KEY" = "true" ]; then
-            echo "publish=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "publish=false" >> "$GITHUB_OUTPUT"
-            if [ "$EVENT_NAME" != "pull_request" ]; then
-              echo "::warning::FLATPAK_GPG_PRIVATE_KEY is not set - building only, not publishing. See docs/DISTRIBUTION.md."
-            fi
-          fi
 
       - name: Install flatpak tooling
         run: |
@@ -139,98 +162,76 @@ jobs:
       # fail in seconds. This metadata is the software-centre listing users
       # actually see, which matters more for a self-hosted remote than it
       # would for a store-reviewed one.
+
       - name: Validate AppStream and desktop metadata
         run: |
           appstreamcli validate --no-net packaging/flatpak/com.kysecurity.mail.metainfo.xml
           desktop-file-validate packaging/flatpak/com.kysecurity.mail.desktop
 
+      # Flathub is not reliable enough to be a single-shot dependency on.
+      # Observed twice on 2026-08-24: the aarch64 build died with
+      #   While pulling runtime/org.kde.Sdk/aarch64/6.11 from remote flathub:
+      #   [92] Stream error in the HTTP/2 framing layer
+      # and, locally, a summary fetch that hung until timeout while
+      # dl.flathub.org/repo/summary itself answered in under a second. Both
+      # are transient CDN faults, not missing refs -- all three of these are
+      # published for aarch64 and x86_64 alike (checked directly).
+      #
+      # Pulled here, retried, rather than left to flatpak-builder's
+      # --install-deps-from=flathub: that flag fails the whole build on the
+      # first fetch error, after the runner has already done the setup work,
+      # and reports it as a build failure rather than a download one.
+      # `flatpak install` is idempotent, so a retry resumes rather than
+      # restarts.
+      - name: Install runtime and SDK (retried -- Flathub is flaky)
+        run: |
+          set -euo pipefail
+          for ref in org.kde.Platform//6.11 org.kde.Sdk//6.11 io.qt.qtwebengine.BaseApp//6.11; do
+            ok=""
+            for attempt in 1 2 3 4; do
+              if flatpak install --user -y --noninteractive flathub "$ref"; then
+                ok=yes
+                break
+              fi
+              echo "::warning::Flathub pull of $ref failed (attempt $attempt/4); retrying"
+              sleep $(( attempt * 20 ))
+            done
+            if [ -z "$ok" ]; then
+              echo "::error::Could not pull $ref from Flathub after 4 attempts" >&2
+              exit 1
+            fi
+          done
+
       # Without this, qtkeychain 0.17.0, zxing-cpp v3.1.0 and kunifiedpush
       # 26.04.3 rebuild from source on every single run.
+
       - name: Cache flatpak-builder state
         uses: actions/cache@v4
         with:
           path: .flatpak-builder
-          key: flatpak-builder-${{ hashFiles('packaging/flatpak/com.kysecurity.mail.yaml') }}-${{ github.run_id }}
+          key: flatpak-builder-${{ matrix.arch }}-${{ hashFiles('packaging/flatpak/com.kysecurity.mail.yaml') }}-${{ github.run_id }}
           # No bare "flatpak-builder-" fallback: that key is writable by any
           # branch, so a pull request could seed the .flatpak-builder state
           # that a later publishing run builds from.
           restore-keys: |
             flatpak-builder-${{ hashFiles('packaging/flatpak/com.kysecurity.mail.yaml') }}-
 
-      - name: Import signing key
-        if: steps.mode.outputs.publish == 'true'
-        env:
-          GPG_PRIVATE_KEY: ${{ secrets.FLATPAK_GPG_PRIVATE_KEY }}
-        run: |
-          GNUPGHOME="$RUNNER_TEMP/gnupg"
-          mkdir -p "$GNUPGHOME"
-          chmod 700 "$GNUPGHOME"
-          printf '%s\n' "$GPG_PRIVATE_KEY" | gpg --homedir "$GNUPGHOME" --batch --import
-          echo "GNUPGHOME=$GNUPGHOME" >> "$GITHUB_ENV"
-
-      # Clone the currently-published repo so the new commit lands on top of
-      # the existing OSTree history (see the header comment). .git is
-      # discarded because the publish step re-inits an orphan commit.
-      - name: Restore published OSTree repo
-        if: steps.mode.outputs.publish == 'true'
-        run: |
-          if git clone --depth 1 --branch gh-pages \
-              "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" _site; then
-            rm -rf _site/.git
-            echo "Restored existing published repo."
-          else
-            rm -rf _site
-            mkdir -p _site
-            echo "No gh-pages branch yet - starting a fresh repo."
-          fi
-
-          # git cannot represent an empty directory, so every OSTree scratch
-          # directory that happened to be empty at publish time is missing
-          # from the clone. This is not cosmetic: verified locally that
-          # without this, the *second* publish onto a restored repo dies with
-          #   error: Listing refs: opendir(refs/remotes): No such file or directory
-          # i.e. the very first update would have been the one that broke.
-          # The exact set git drops from a freshly-built repo is
-          # extensions/, state/, tmp/, tmp/cache/, refs/mirrors/,
-          # refs/remotes/ -- recreate all of them plus refs/heads/.
-          if [ -d _site/repo ]; then
-            mkdir -p _site/repo/tmp/cache _site/repo/state _site/repo/extensions \
-                     _site/repo/refs/heads _site/repo/refs/mirrors _site/repo/refs/remotes
-            ostree --repo=_site/repo fsck --quiet \
-              || echo "::warning::Restored OSTree repo failed fsck; continuing (build-update-repo may repair it)."
-          fi
-
-      - name: Build, export, and bundle
-        env:
-          GPG_KEY_ID: ${{ secrets.FLATPAK_GPG_KEY_ID }}
-          PUBLISH: ${{ steps.mode.outputs.publish }}
+      # Unsigned, into a per-arch repo this job hands to `publish`. The key
+      # never reaches a matrix job; signing happens once, on the way into the
+      # published repo. flatpak-builder resolves org.kde.Platform,
+      # org.kde.Sdk and the qtwebengine BaseApp for the runner's own arch --
+      # all three are published for aarch64 on Flathub (checked directly).
+      - name: Build and export
         run: |
           set -euo pipefail
-          mkdir -p _site/repo
+          mkdir -p "repo-${{ matrix.arch }}"
 
-          SIGN=()
-          if [ "$PUBLISH" = "true" ]; then
-            SIGN=(--gpg-sign="$GPG_KEY_ID" --gpg-homedir="$GNUPGHOME")
-          fi
-
-          flatpak-builder --user --force-clean --install-deps-from=flathub \
-            --repo=_site/repo "${SIGN[@]}" \
+          # No --install-deps-from: the step above already pulled them, with
+          # retries. Leaving it on would re-introduce the single-shot Flathub
+          # fetch this is working around.
+          flatpak-builder --user --force-clean \
+            --repo="repo-${{ matrix.arch }}" \
             build-flatpak "$MANIFEST"
-
-          # --generate-static-deltas is what makes `flatpak update` download a
-          # diff instead of the whole app. --prune-depth bounds how many old
-          # commits stay resolvable, which is the site-size control knob.
-          flatpak build-update-repo \
-            --title="KyPost" \
-            --generate-static-deltas \
-            --prune --prune-depth=3 \
-            "${SIGN[@]}" _site/repo
-
-          # Standalone bundle for people who'd rather not add a remote.
-          # --runtime-repo lets a bundle install pull org.kde.Platform itself.
-          flatpak build-bundle _site/repo kypost.flatpak "$APP_ID" \
-            --runtime-repo=https://flathub.org/repo/flathub.flatpakrepo \
-            "${SIGN[@]}"
 
       # DIAGNOSTIC, failure-only. This job has never once succeeded (36/36
       # failures since 2026-07-26), always at flatpak-builder's export step
@@ -290,6 +291,7 @@ jobs:
       # that the build succeeded -- catches components missing from
       # app/qml/qml.qrc, which has bitten this repo for real. Runs before the
       # publish step, so a broken build never reaches users.
+
       - name: Launch smoke test
         run: |
           set -o pipefail
@@ -335,6 +337,237 @@ jobs:
 
       # Generated rather than committed so the embedded public key can never
       # drift out of sync with the key the repo was actually signed with.
+
+      # Unsigned bundle, so pull requests and fork builds -- which have no key
+      # by design -- still produce something a human can download and install.
+      # Tagged releases get these rebuilt and signed in the publish job.
+      - name: Build unsigned bundle
+        run: |
+          set -euo pipefail
+          # --runtime-repo lets a bundle install pull org.kde.Platform itself.
+          flatpak build-bundle --arch="${{ matrix.arch }}" \
+            "repo-${{ matrix.arch }}" "kypost-${{ matrix.arch }}.flatpak" "$APP_ID" \
+            --runtime-repo=https://flathub.org/repo/flathub.flatpakrepo
+
+      - name: Upload bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kypost-flatpak-${{ matrix.arch }}-${{ github.sha }}
+          path: kypost-${{ matrix.arch }}.flatpak
+          if-no-files-found: error
+
+      # tar, then compression-level 0: an archive-z2 OSTree repo is already
+      # zlib-compressed per object, and it is thousands of small files --
+      # letting upload-artifact zip them again costs minutes and saves
+      # nothing. tar also preserves the layout ostree needs on the far side.
+      - name: Pack OSTree repo for the publish job
+        run: tar -cf "repo-${{ matrix.arch }}.tar" "repo-${{ matrix.arch }}"
+
+      - name: Upload OSTree repo artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: repo-${{ matrix.arch }}-${{ github.sha }}
+          path: repo-${{ matrix.arch }}.tar
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+  publish:
+    needs: build
+    # Pull requests never publish (no secrets on forks) and the matrix has
+    # already built and smoke-tested them, so there is nothing left to do.
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      # First, because a tagged run that gets this wrong publishes a signed
+      # build claiming the wrong version to everyone on the remote, and the
+      # OSTree repo is append-only -- there is no unpublishing it.
+
+      - name: Decide whether this run publishes
+        id: mode
+        env:
+          HAS_KEY: ${{ secrets.FLATPAK_GPG_PRIVATE_KEY != '' }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT_NAME" != "pull_request" ] && [ "$HAS_KEY" = "true" ]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            if [ "$EVENT_NAME" != "pull_request" ]; then
+              echo "::warning::FLATPAK_GPG_PRIVATE_KEY is not set - building only, not publishing. See docs/DISTRIBUTION.md."
+            fi
+          fi
+
+      # Only what merging and serving a repo needs -- this job builds nothing,
+      # so flatpak-builder, appstream and the SDK are all absent here.
+      - name: Install flatpak and ostree
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends flatpak ostree
+
+      - name: Download per-arch OSTree repos
+        uses: actions/download-artifact@v4
+        with:
+          pattern: repo-*-${{ github.sha }}
+          merge-multiple: true
+
+      # The unsigned bundles the matrix already built. On a tag with a signing
+      # key these get overwritten by signed ones below; without a key they are
+      # what the release gets, which keeps "a tag always ships a bundle" true
+      # rather than failing the attach step on a missing file.
+      - name: Download per-arch bundles
+        uses: actions/download-artifact@v4
+        with:
+          pattern: kypost-flatpak-*-${{ github.sha }}
+          merge-multiple: true
+
+      - name: Unpack per-arch OSTree repos
+        run: |
+          set -euo pipefail
+          for arch in x86_64 aarch64; do
+            tar -xf "repo-$arch.tar"
+            echo "$arch refs:"
+            ostree --repo="repo-$arch" refs | sed 's/^/  /'
+          done
+
+      - name: Import signing key
+        if: steps.mode.outputs.publish == 'true'
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.FLATPAK_GPG_PRIVATE_KEY }}
+        run: |
+          GNUPGHOME="$RUNNER_TEMP/gnupg"
+          mkdir -p "$GNUPGHOME"
+          chmod 700 "$GNUPGHOME"
+          printf '%s\n' "$GPG_PRIVATE_KEY" | gpg --homedir "$GNUPGHOME" --batch --import
+          echo "GNUPGHOME=$GNUPGHOME" >> "$GITHUB_ENV"
+
+      # Clone the currently-published repo so the new commit lands on top of
+      # the existing OSTree history (see the header comment). .git is
+      # discarded because the publish step re-inits an orphan commit.
+
+      - name: Restore published OSTree repo
+        if: steps.mode.outputs.publish == 'true'
+        run: |
+          if git clone --depth 1 --branch gh-pages \
+              "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" _site; then
+            rm -rf _site/.git
+            echo "Restored existing published repo."
+          else
+            rm -rf _site
+            mkdir -p _site
+            echo "No gh-pages branch yet - starting a fresh repo."
+          fi
+
+          # git cannot represent an empty directory, so every OSTree scratch
+          # directory that happened to be empty at publish time is missing
+          # from the clone. This is not cosmetic: verified locally that
+          # without this, the *second* publish onto a restored repo dies with
+          #   error: Listing refs: opendir(refs/remotes): No such file or directory
+          # i.e. the very first update would have been the one that broke.
+          # The exact set git drops from a freshly-built repo is
+          # extensions/, state/, tmp/, tmp/cache/, refs/mirrors/,
+          # refs/remotes/ -- recreate all of them plus refs/heads/.
+          if [ -d _site/repo ]; then
+            mkdir -p _site/repo/tmp/cache _site/repo/state _site/repo/extensions \
+                     _site/repo/refs/heads _site/repo/refs/mirrors _site/repo/refs/remotes
+            ostree --repo=_site/repo fsck --quiet \
+              || echo "::warning::Restored OSTree repo failed fsck; continuing (build-update-repo may repair it)."
+          fi
+
+      # Both arches into the one published repo, signed as they land.
+      #
+      # build-commit-from rather than `ostree pull-local`: pull-local copies
+      # commits verbatim, so unsigned build output would stay unsigned, and a
+      # client configured with GPGKey= verifies the *commit*, not just the
+      # summary -- it would refuse the install. Verified locally end to end:
+      # merged repo, both arches, every app/ and runtime/ ref carrying a
+      # signature, a client importing the public key resolving both arches,
+      # and a client importing a different key correctly refused.
+      #
+      # The appstream branches transfer along with app/; the .Debug refs do
+      # not. Debuginfo is the single largest thing this repo could carry and
+      # there are now two copies of it, one per arch, against a 1 GB Pages
+      # cap. It is dropped here rather than with flatpak-builder's
+      # --disable-debuginfo so that the app ref stays *stripped* -- builder
+      # separates debug info out of the binaries as part of producing that
+      # ref, and turning the whole mechanism off risks shipping fat binaries
+      # instead. Filtering after the fact cannot affect the app ref at all.
+      #
+      # Refs are arch-qualified, so the two sources cannot collide.
+      #
+      # Deleting the already-published .Debug refs is what actually reclaims
+      # the space -- skipping the new ones only stops it growing, while the
+      # old refs keep their objects alive against --prune forever. Measured
+      # on a synthetic repo: 20M -> 272K, fsck clean. The loop is a no-op
+      # once they are gone, which is every run after the first.
+      #
+      # `ostree init` first because on the very first publish there is no
+      # gh-pages branch to restore and build-commit-from does not create a
+      # repo -- it fails with `opendir(objects): No such file or directory`.
+      # It is a no-op against the restored repo on every later run.
+      - name: Merge both architectures into the published repo
+        if: steps.mode.outputs.publish == 'true'
+        env:
+          GPG_KEY_ID: ${{ secrets.FLATPAK_GPG_KEY_ID }}
+        run: |
+          set -euo pipefail
+          mkdir -p _site/repo
+          ostree --repo=_site/repo init --mode=archive-z2
+
+          # Retire debuginfo published before this was turned off.
+          for ref in $(ostree --repo=_site/repo refs | grep '\.Debug/' || true); do
+            ostree --repo=_site/repo refs --delete "$ref"
+            echo "retired $ref"
+          done
+
+          for arch in x86_64 aarch64; do
+            # `case`, not `grep -v`: a grep that filters every line exits 1,
+            # and inside $(...) that yields an empty list rather than an
+            # error -- the arch would silently not be published.
+            for ref in $(ostree --repo="repo-$arch" refs); do
+              case "$ref" in
+                *.Debug/*)
+                  echo "skipped $ref (debuginfo is not published)"
+                  continue
+                  ;;
+              esac
+              flatpak build-commit-from \
+                --src-repo="repo-$arch" \
+                --gpg-sign="$GPG_KEY_ID" --gpg-homedir="$GNUPGHOME" \
+                --no-update-summary \
+                _site/repo "$ref"
+              echo "committed $ref"
+            done
+          done
+
+          # --generate-static-deltas is what makes `flatpak update` download a
+          # diff instead of the whole app. --prune-depth bounds how many old
+          # commits stay resolvable, which is the site-size control knob.
+          flatpak build-update-repo \
+            --title="KyPost" \
+            --generate-static-deltas \
+            --prune --prune-depth=3 \
+            --gpg-sign="$GPG_KEY_ID" --gpg-homedir="$GNUPGHOME" \
+            _site/repo
+
+      # Only tags need a bundle to attach, and only a signed one is worth
+      # attaching. Every other run already uploaded the unsigned per-arch
+      # bundles as artifacts from the build job.
+      - name: Build signed bundles
+        if: steps.mode.outputs.publish == 'true' && startsWith(github.ref, 'refs/tags/v')
+        env:
+          GPG_KEY_ID: ${{ secrets.FLATPAK_GPG_KEY_ID }}
+        run: |
+          set -euo pipefail
+          for arch in x86_64 aarch64; do
+            flatpak build-bundle --arch="$arch" \
+              _site/repo "kypost-$arch.flatpak" "$APP_ID" \
+              --runtime-repo=https://flathub.org/repo/flathub.flatpakrepo \
+              --gpg-sign="$GPG_KEY_ID" --gpg-homedir="$GNUPGHOME"
+          done
+
       - name: Generate .flatpakrepo and landing page
         if: steps.mode.outputs.publish == 'true'
         env:
@@ -361,13 +594,6 @@ jobs:
           # byte-for-byte, so opt out entirely.
           touch _site/.nojekyll
 
-      - name: Upload bundle artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: kypost-flatpak-${{ github.sha }}
-          path: kypost.flatpak
-          if-no-files-found: error
-
       - name: Publish OSTree repo to gh-pages
         if: steps.mode.outputs.publish == 'true'
         run: |
@@ -389,6 +615,7 @@ jobs:
       # Flathub review layer behind it -- so it must not still be on disk when
       # third-party action code runs. Destroyed here rather than left for the
       # runner to reap.
+
       - name: Destroy signing key material
         if: always()
         run: |
@@ -397,11 +624,11 @@ jobs:
           fi
           echo "GNUPGHOME=" >> "$GITHUB_ENV"
 
-      - name: Attach bundle to release
+      - name: Attach bundles to release
         if: startsWith(github.ref, 'refs/tags/v')
         # Pinned to a commit, not the mutable v2 tag: a third-party action
         # repointed at malicious code runs with this repo's secrets in scope.
         uses: softprops/action-gh-release@da05d552573ad5aba039eaac05058a918a7bf631 # v2.2.2
         with:
-          files: kypost.flatpak
+          files: kypost-*.flatpak
           fail_on_unmatched_files: true

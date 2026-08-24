@@ -123,9 +123,41 @@ on:
 
 jobs:
   build-and-test:
+    # x86_64 only -- and NOT because arm64 does not matter. It ships, and
+    # Plasma Mobile is a target. This job simply cannot build it.
+    #
+    # An arm64 matrix entry was added here and reverted after a real run.
+    # neon's noble archive does publish a binary-arm64 index, and every
+    # package named in the apt list below exists in it; checking those names
+    # is what made the attempt look safe. The names were never the problem.
+    # `libkf6i18n-dev` and `libkf6notifications-dev` are transitional shims,
+    # and what they depend on is absent for arm64 -- 17 kf6-* packages in
+    # total (257 on amd64 vs 240 on arm64), including:
+    #
+    #   kf6-ki18n, kf6-ki18n-dev, kf6-knotifications, kf6-knotifications-dev,
+    #   kf6-kcmutils, kf6-kcmutils-dev, kf6-extra-cmake-modules
+    #
+    # apt ends at "E: Unable to correct problems, you have held broken
+    # packages". That is exactly the residual uncertainty this file's header
+    # flagged as unprovable without a real run, now measured. The lesson is
+    # cheap to state and was not: verifying a package list means resolving
+    # its dependency closure, not confirming its leaf names resolve.
+    #
+    # arm64 is still covered, and better than this job would have: flatpak.yml
+    # builds it on a native ubuntu-24.04-arm runner against org.kde.Sdk//6.11
+    # from Flathub (which does ship aarch64), and that manifest sets
+    # `run-tests: true` -- so the full ctest suite AND the launch smoke test
+    # run on real arm64 hardware there.
+    #
+    # Re-add a matrix here only once neon's arm64 archive is complete, and
+    # check the closure, not the names.
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+
+      # Cheap, and it fails before ~20 minutes of dependency building.
+      - name: Verify version consistency
+        run: ./scripts/verify-version.sh
 
       # Layer KDE neon's "user" apt archive on top of the stock noble repos
       # -- see the file-level comment above for why this is necessary (no

@@ -24,7 +24,7 @@ flatpak install kypost com.kysecurity.mail
 ```
 
 Updates are then just `flatpak update`. The Flathub remote is required for the
-`org.kde.Platform//6.10` runtime; the app itself is not on Flathub.
+`org.kde.Platform//6.11` runtime; the app itself is not on Flathub.
 
 The repo is GPG-signed and the public key is embedded in the `.flatpakrepo`, so
 `flatpak` refuses anything not signed by the release key.
@@ -88,15 +88,52 @@ flatpak install --user kypost-test com.kysecurity.mail
 
 ## How the workflow works
 
-| Trigger | Builds | Smoke-tests | Publishes | Release asset |
-|---|---|---|---|---|
-| `pull_request` | yes | yes | no (no secrets on forks) | no |
-| `push` to `main` | yes | yes | yes | no |
-| `push` tag `v*` | yes | yes | yes | yes |
-| nightly / manual | yes | yes | yes | no |
+Two jobs. `build` is a matrix over both shipped architectures, each on its own native
+runner; `publish` runs once, after both, and is the only thing that touches gh-pages.
 
-Every run uploads the single-file `kypost.flatpak` bundle as an artifact; tagged runs
-also attach it to the GitHub Release, for people who'd rather not add a remote.
+| Job | Trigger | Builds | Smoke-tests | Publishes | Release asset |
+|---|---|---|---|---|---|
+| `build` | every run | both arches | yes | no | no |
+| `publish` | `pull_request` | — | — | skipped entirely | no |
+| `publish` | `push` to `main` | — | — | yes | no |
+| `publish` | `push` tag `v*` | — | — | yes | yes |
+| `publish` | nightly / manual | — | — | yes | no |
+
+Every run uploads one `kypost-<arch>.flatpak` bundle per architecture as an artifact.
+Tagged runs attach both to the GitHub Release, for people who'd rather not add a remote.
+
+### Architectures
+
+`x86_64` and `aarch64`. Plasma Mobile is a target, so arm64 is not optional.
+
+Each builds natively — `ubuntu-24.04` and `ubuntu-24.04-arm`, both free for public
+repos. No qemu: emulating a QtWebEngine build would take hours and would make the
+launch smoke test meaningless, since it would no longer be running the code a user
+runs.
+
+Users do not choose an arch. `flatpak install` resolves it from the one repo, which
+carries both.
+
+Note that **`ci.yml` is x86_64-only**, and deliberately so: it builds natively against
+KDE neon's apt archive, which does not carry a complete KF6 set for arm64 (`kf6-ki18n`,
+`kf6-knotifications`, `kf6-kcmutils` and `kf6-extra-cmake-modules` among others are
+absent, so apt cannot resolve the dependency closure even though the leaf package names
+all exist). That costs nothing in coverage: this workflow builds arm64 against
+`org.kde.Sdk` from Flathub instead, and the manifest sets `run-tests: true`, so the
+whole ctest suite plus the launch smoke test run on real arm64 hardware here.
+
+### How two build jobs become one published repo
+
+Two matrix jobs cannot both force-push `gh-pages` — the workflow-level `concurrency`
+group serialises whole runs, not jobs inside one. So the matrix only *builds*, each arch
+exporting to its own unsigned OSTree repo that it hands over as an artifact, and the
+single `publish` job merges both in with `flatpak build-commit-from` before pushing once.
+
+That merge is also where signing happens, which means **the signing key is never
+present in a build job**. It has to be `build-commit-from` rather than
+`ostree pull-local`: pull-local copies commits verbatim, so unsigned build output would
+stay unsigned, and a client configured with `GPGKey=` verifies the *commit*, not just
+the summary — it would refuse to install.
 
 ### Why a `gh-pages` branch instead of `actions/deploy-pages`
 
@@ -128,24 +165,65 @@ fails, with it the second publish succeeds and generates a proper v1→v2 static
 ### Size
 
 GitHub Pages caps a published site at **1 GB**. The runtime is not in this repo (users
-get `org.kde.Platform//6.10` from Flathub); it holds only KyPost plus its three
-from-source modules (qtkeychain, zxing-cpp, kunifiedpush). `--prune-depth=3` bounds
-growth to the three most recent commits per ref. The publish step logs the site size
+get `org.kde.Platform//6.11` from Flathub); it holds only KyPost plus its three
+from-source modules (qtkeychain, zxing-cpp, kunifiedpush) — for two architectures, but
+without debuginfo (see below). `--prune-depth=3` bounds growth to the three most recent
+commits per ref. The publish step logs the site size
 on every run — if it approaches the cap, lower `--prune-depth`, or move the repo to
 object storage and change `Url=` in the generated `.flatpakrepo`.
+
+### Debuginfo is not published
+
+The merge step drops every `runtime/*.Debug` ref. Debuginfo was the largest thing the
+repo carried, and going dual-arch would have meant two copies of it; dropping it is
+what keeps two architectures from costing much more than one did.
+
+It is cut at the merge, not with flatpak-builder's `--disable-debuginfo`. Separating
+debug symbols out into that ref is *how* flatpak-builder produces stripped binaries, so
+turning the mechanism off risks shipping fat ones instead. Filtering afterwards cannot
+affect the app ref at all.
+
+Safe for users: the extension is declared `no-autodownload=true` and `autodelete=true`
+(verified against the real installed `com.kysecurity.mail` metadata), so no install or
+update ever pulls it and its absence cannot break either. Anyone who explicitly
+installed `com.kysecurity.mail.Debug` from the remote will simply stop receiving updates
+for it. `.Locale` is unaffected — translations still publish.
+
+The first publish after this change also deletes the `.Debug` refs already on gh-pages.
+Skipping the new ones only stops the repo growing; the old refs would otherwise keep
+their objects alive against `--prune` indefinitely. That deletion is a no-op on every
+run after the first. Measured on a synthetic repo: 20M → 272K, fsck clean.
+
+Getting debuginfo back for a build means building the manifest locally
+(`packaging/flatpak/build.sh`), which still produces it.
 
 ---
 
 ## Cutting a release
 
-1. Add a `<release>` entry to `packaging/flatpak/com.kysecurity.mail.metainfo.xml`.
-   `appstreamcli validate` runs in CI and is blocking.
-2. Tag and push:
+Three things carry the version and all three must agree, or the build fails before
+it publishes anything — `scripts/verify-version.sh` runs first in both workflows.
+
+1. Bump `project(KyPost VERSION ...)` in `CMakeLists.txt`. This is the source of
+   truth; it reaches C++ as `KYPOST_VERSION` and ends up in the User-Agent header.
+2. Add a matching `<release>` entry, newest first, to
+   `packaging/flatpak/com.kysecurity.mail.metainfo.xml`. This decides what Discover
+   shows and whether a user is offered the update at all. `appstreamcli validate`
+   runs in CI and is blocking.
+3. Tag and push:
    ```sh
    git tag -a v0.2.0 -m "KyPost 0.2.0" && git push origin v0.2.0
    ```
+   The tag must be `v<version>`, or `v<version>-<prerelease>` for an rc.
 
-The workflow publishes to the remote and attaches the bundle to the release.
+The workflow then publishes both architectures to the remote and attaches
+`kypost-x86_64.flatpak` and `kypost-aarch64.flatpak` to the release.
+
+Check locally before tagging:
+
+```sh
+./scripts/verify-version.sh v0.2.0
+```
 
 ## Rotating the signing key
 

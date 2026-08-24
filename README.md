@@ -129,4 +129,4 @@ checklist. `AGENTS.md` summarizes the rules that a change breaks most easily.
 
 ## License
 
-GPL-3.0-only — see [`LICENSE.txt`](LICENSE.txt).
+MIT, developed by Busnes.app — see [`LICENSE.txt`](LICENSE.txt).

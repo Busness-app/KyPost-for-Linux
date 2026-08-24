@@ -1,4 +1,5 @@
 import QtQuick 2.15
+import QtQuick.Controls 2.15
 import QtQuick.Layouts 1.15
 import com.kysecurity.mail 1.0
 
@@ -14,6 +15,22 @@ import com.kysecurity.mail 1.0
 // Anchored rather than laid out, so a root can drop one in without
 // restructuring its own layout. z sits under the app-lock overlay (1000) --
 // a locked app must not leak account state through a banner.
+//
+// BOUNDED AND COLLAPSIBLE, because anchoring means every pixel here is
+// painted OVER the app rather than beside it. Seven of the rows below can be
+// active at once and the stack used to grow without any limit: two were
+// already enough to swallow DesktopRoot's 66px top bar, which carries the
+// Settings button -- so the pairing strip sat there telling the user to
+// "pair this device again in Settings" while covering the only way to reach
+// Settings. A warning that blocks its own remedy is worse than no warning.
+//
+// Two properties keep the app reachable no matter how many fire:
+//   - the expanded stack is capped at maxExpandedHeight and scrolls past it,
+//     so it can never take more than its share of the window;
+//   - the summary line collapses it to a single row on demand.
+// Collapsed is NOT dismissed: the summary line stays, and it keeps saying
+// how many warnings are live. Nothing here can be turned off outright --
+// these are the conditions the user most needs to know about.
 Item {
     id: root
 
@@ -23,8 +40,6 @@ Item {
     // cannot host one itself.
     signal certificateReviewRequested()
 
-    // Hoisted out of the Repeater so the root can ask how many of these are
-    // active WITHOUT going through the laid-out height. See `visible` below.
     readonly property var rows: [
         {
             // The relay's TLS certificate no longer matches the one
@@ -40,10 +55,11 @@ Item {
             // decision itself still belongs in a dialog that names
             // both fingerprints -- see CertificateChangeDialog.qml.
             active: Pairing.certificateMismatch,
-            message: i18n("KyPost stopped trusting this server: its security certificate "
-                           + "changed since this device was paired, so no requests are "
-                           + "being sent. Review the change before deciding — if you did "
-                           + "not expect it, do not reconnect until you know why."),
+            message: i18n("KyPost stopped trusting this server: a different authority is "
+                           + "vouching for its certificate than when this device was "
+                           + "paired, so no requests are being sent. Review the change "
+                           + "before deciding — if you did not expect it, do not "
+                           + "reconnect until you know why."),
             actionLabel: i18n("Review certificate change…")
         },
         {
@@ -127,11 +143,28 @@ Item {
         }
     ]
 
+    // Hoisted so the summary line and the height below can both ask how many
+    // warnings are live WITHOUT going through the laid-out height.
+    readonly property int activeCount: root.rows.filter(row => row.active).length
+
+    // Set by the user, never by a condition appearing: a new warning must not
+    // silently expand a banner the user deliberately collapsed, and an
+    // existing one must not be hidden by a condition clearing elsewhere.
+    property bool collapsed: false
+
+    // The share of the host window the expanded stack may take before it
+    // starts scrolling instead of growing. The floor keeps it usable in a
+    // short window (Plasma Mobile), where 40% of very little is nothing.
+    readonly property real maxExpandedHeight: parent ? Math.max(96, parent.height * 0.4) : 0
+
+    readonly property string summaryText:
+        i18np("%1 warning", "%1 warnings", root.activeCount)
+
     anchors.top: parent ? parent.top : undefined
     anchors.left: parent ? parent.left : undefined
     anchors.right: parent ? parent.right : undefined
     z: 950
-    height: column.implicitHeight
+
     // Asked of the model, NOT of the measured height, and that is the whole
     // point.
     //
@@ -145,59 +178,133 @@ Item {
     // mismatch, the rejected re-registration, the undecryptable credentials
     // -- was unreachable. Found by the first test that drove one of these
     // conditions from false to true and looked at the screen.
-    visible: root.rows.some(row => row.active)
+    visible: root.activeCount > 0
 
-    ColumnLayout {
-        id: column
+    height: !root.visible ? 0
+            : root.collapsed ? summaryStrip.implicitHeight
+            : Math.min(summaryStrip.implicitHeight + column.implicitHeight,
+                       root.maxExpandedHeight)
+
+    // Always present while anything is live -- it is what makes the collapse
+    // reversible, and what keeps a collapsed banner honest about how much it
+    // is hiding.
+    Rectangle {
+        id: summaryStrip
+        objectName: "statusBannerSummary"
+        anchors.top: parent.top
         anchors.left: parent.left
         anchors.right: parent.right
-        anchors.top: parent.top
-        spacing: 0
+        implicitHeight: summaryRow.implicitHeight + 16
+        color: Theme.panel
+        border.width: 1
+        border.color: Theme.dangerColor
 
-        Repeater {
-            model: root.rows
+        RowLayout {
+            id: summaryRow
+            anchors.fill: parent
+            anchors.margins: 8
+            spacing: 8
 
-            delegate: Rectangle {
-                required property var modelData
-
-                // Named so a test can find the strips that are actually on
-                // screen. Which of these conditions is visible is the whole
-                // behaviour of this component, and walking anonymous
-                // children to work it out was brittle enough to assert the
-                // wrong thing.
-                objectName: "statusBannerRow"
-
+            Text {
                 Layout.fillWidth: true
-                visible: modelData.active
-                // modelData.active, not `visible`: see the root's `visible` above
-                // for what reading effective visibility here cost.
-                implicitHeight: modelData.active ? bannerLabel.implicitHeight + 16 : 0
-                color: Theme.panel
-                border.width: 1
-                border.color: Theme.dangerColor
+                textFormat: Text.PlainText
+                text: root.summaryText
+                color: Theme.dangerColor
+                font.family: Theme.fontUi
+                font.pixelSize: 12
+                font.weight: Font.Medium
+                elide: Text.ElideRight
+            }
 
-                RowLayout {
-                    id: bannerLabel
+            // Deliberately a plain text toggle rather than a GhostButton:
+            // this strip is the height floor for the whole component, and a
+            // GhostButton's padding alone is taller than the line it sits in.
+            Text {
+                objectName: "statusBannerToggle"
+                text: root.collapsed ? i18n("Show") : i18n("Hide")
+                color: Theme.dangerColor
+                font.family: Theme.fontUi
+                font.pixelSize: 12
+                font.underline: toggleArea.containsMouse
+
+                MouseArea {
+                    id: toggleArea
                     anchors.fill: parent
-                    anchors.margins: 8
-                    spacing: 8
+                    anchors.margins: -6 // a 12px line is a small hit target
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: root.collapsed = !root.collapsed
+                }
+            }
+        }
+    }
 
-                    Text {
-                        Layout.fillWidth: true
-                        textFormat: Text.PlainText
-                        text: modelData.message
-                        color: Theme.dangerColor
-                        font.family: Theme.fontUi
-                        font.pixelSize: 12
-                        wrapMode: Text.WordWrap
-                        verticalAlignment: Text.AlignVCenter
-                    }
+    // Scrolls rather than clips: capping the height must not be able to hide
+    // a warning outright, which is the failure this component exists to
+    // prevent in the first place.
+    Flickable {
+        id: stack
+        anchors.top: summaryStrip.bottom
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        visible: !root.collapsed
+        clip: true
+        contentHeight: column.implicitHeight
+        boundsBehavior: Flickable.StopAtBounds
 
-                    GhostButton {
-                        visible: modelData.actionLabel.length > 0
-                        text: modelData.actionLabel
-                        // Only the certificate row carries an action today.
-                        onClicked: root.certificateReviewRequested()
+        ScrollBar.vertical: ThemedScrollBar {}
+
+        ColumnLayout {
+            id: column
+            width: stack.width
+            spacing: 0
+
+            Repeater {
+                model: root.rows
+
+                delegate: Rectangle {
+                    required property var modelData
+
+                    // Named so a test can find the strips that are actually on
+                    // screen. Which of these conditions is visible is the whole
+                    // behaviour of this component, and walking anonymous
+                    // children to work it out was brittle enough to assert the
+                    // wrong thing.
+                    objectName: "statusBannerRow"
+
+                    Layout.fillWidth: true
+                    visible: modelData.active
+                    // modelData.active, not `visible`: see the root's `visible` above
+                    // for what reading effective visibility here cost.
+                    implicitHeight: modelData.active ? bannerLabel.implicitHeight + 16 : 0
+                    color: Theme.panel
+                    border.width: 1
+                    border.color: Theme.dangerColor
+
+                    RowLayout {
+                        id: bannerLabel
+                        anchors.fill: parent
+                        anchors.margins: 8
+                        spacing: 8
+
+                        Text {
+                            Layout.fillWidth: true
+                            textFormat: Text.PlainText
+                            text: modelData.message
+                            color: Theme.dangerColor
+                            font.family: Theme.fontUi
+                            font.pixelSize: 12
+                            wrapMode: Text.WordWrap
+                            verticalAlignment: Text.AlignVCenter
+                        }
+
+                        GhostButton {
+                            visible: modelData.actionLabel.length > 0
+                            text: modelData.actionLabel
+                            // Only the certificate row carries an action today.
+                            onClicked: root.certificateReviewRequested()
+                        }
                     }
                 }
             }
