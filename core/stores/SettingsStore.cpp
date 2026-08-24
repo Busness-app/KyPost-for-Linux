@@ -69,12 +69,17 @@ bool SettingsStore::hostileLocationProtectionEnabled() const
     return m_settings.value(kHostileLocationKey, false).toBool();
 }
 
-void SettingsStore::setHostileLocationProtectionEnabled(bool enabled)
+bool SettingsStore::setHostileLocationProtectionEnabled(bool enabled)
 {
     m_settings.setValue(kHostileLocationKey, enabled);
-    // Flushed immediately: the caller's very next act is to relaunch the
-    // process, and QSettings' lazy write would otherwise be lost.
+    // Flushed immediately, and the result CHECKED -- same rule as
+    // CursorStore::flush(). The caller's very next act is to relaunch, so
+    // QSettings' lazy write would otherwise be lost; and a read-only
+    // settings.ini or a full disk is visible only through status() after
+    // sync(). Reading the value back would prove nothing: QSettings answers
+    // from its in-memory copy, which holds the new value either way.
     m_settings.sync();
+    return m_settings.status() == QSettings::NoError;
 }
 
 QString SettingsStore::deliveryMode() const

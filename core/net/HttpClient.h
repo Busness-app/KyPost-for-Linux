@@ -350,6 +350,12 @@ bool sameUrlOrigin(const QUrl& a, const QUrl& b);
 // slash. Shared by every Relay HTTP client's endpointFor()-style helper
 // (GroupsClient, MfaResponseClient, ContactSyncClient, ContactPhotoClient,
 // RelayMailSource), which all used to hand-roll this same join.
+//
+// apiPath MUST already be percent-encoded. Every caller but one passes a
+// fixed ASCII literal, for which that is a no-op; the one that interpolates
+// a runtime value (ContactPhotoClient's contact uid) has to encode it to a
+// single segment first, because this function will not do it for them -- an
+// unencoded '/' is a segment separator here, not data.
 QUrl joinUrlPath(const QUrl& baseUrl, const QString& apiPath);
 
 // Parses body as JSON and returns its top-level value as a QJsonObject, or

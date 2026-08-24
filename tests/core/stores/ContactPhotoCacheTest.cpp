@@ -1,6 +1,7 @@
 #include "stores/ContactPhotoCache.h"
 
 #include <QCryptographicHash>
+#include <QDateTime>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -35,6 +36,10 @@ private slots:
     void aCacheDirectoryOtherUsersCanReadDisablesTheCacheEntirely();
     void aCacheDirectoryThatCannotBeCreatedDisablesTheCache();
     void aStoredPhotoIsUnreadableToOtherUsers();
+    void aProfileThatKeepsNothingOnDiskGetsNoCacheDirectoryAtAll();
+    void anEmptyCacheDirectoryDisablesTheCacheEntirely();
+    void theCacheDoesNotGrowPastItsBudget();
+    void evictionKeepsTheEntryItJustHandedBackEvenWhenItSortsFirst();
 };
 
 void ContactPhotoCacheTest::cachedPathForReturnsEmptyWhenNothingStored()
@@ -200,6 +205,124 @@ void ContactPhotoCacheTest::aStoredPhotoIsUnreadableToOtherUsers()
 
     // And nothing half-written was left beside it by QSaveFile.
     QCOMPARE(QDir(dir.path()).entryList(QDir::Files).size(), 1);
+}
+
+// The composition decision itself, not the two halves of it. main() erases
+// this directory under Hostile Location Protection and then constructs a cache
+// over the same path; when those were two separate expressions hundreds of
+// lines apart, the second one recreated what the first had deleted and the
+// next contact photo fetched was written straight back to disk. One function
+// answers both questions, so they cannot disagree again.
+void ContactPhotoCacheTest::aProfileThatKeepsNothingOnDiskGetsNoCacheDirectoryAtAll()
+{
+    const QString dataDir = QStringLiteral("/tmp/kypost-profile");
+
+    QCOMPARE(ContactPhotoCache::directoryFor(dataDir, true),
+             dataDir + QStringLiteral("/contact-photos"));
+    QVERIFY2(ContactPhotoCache::directoryFor(dataDir, false).isEmpty(),
+             "a non-persistent profile was handed a disk path to cache faces in");
+}
+
+// And the empty string that decision produces must actually disable the
+// cache -- not fall through to QDir and resolve against the working directory,
+// which would put the faces in whatever directory the app happened to start
+// in.
+void ContactPhotoCacheTest::anEmptyCacheDirectoryDisablesTheCacheEntirely()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString previousCwd = QDir::currentPath();
+    QVERIFY(QDir::setCurrent(dir.path()));
+
+    ContactPhotoCache cache((QString()));
+
+    const QString path = cache.store(QStringLiteral("photo-ref-1"), QByteArrayLiteral("jpeg-bytes"));
+    QVERIFY2(path.isEmpty(), "a disabled cache reported a stored path");
+    QVERIFY(cache.cachedPathFor(QStringLiteral("photo-ref-1")).isEmpty());
+
+    // Nothing landed anywhere -- including the working directory an empty
+    // QDir path resolves to.
+    QCOMPARE(QDir(dir.path()).entryList(QDir::Files | QDir::Dirs | QDir::NoDotAndDotDot).count(), 0);
+
+    QVERIFY(QDir::setCurrent(previousCwd));
+}
+
+// Content-addressed keys remove staleness, not growth: every distinct photoRef
+// deposits another file and nothing here ever expired. A relay handing out a
+// fresh reference per request -- or simply a long-lived profile -- filled the
+// user's disk one avatar at a time.
+void ContactPhotoCacheTest::theCacheDoesNotGrowPastItsBudget()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    ContactPhotoCache cache(dir.path());
+
+    // 96 MiB of photos into a 64 MiB budget, oldest first. mtime has
+    // one-second resolution on some filesystems, so the ordering is stamped
+    // explicitly rather than assumed from write order.
+    const QByteArray chunk(8 * 1024 * 1024, 'x');
+    QDateTime stamp = QDateTime::currentDateTimeUtc().addSecs(-3600);
+    for (int i = 0; i < 12; ++i) {
+        const QString path = cache.store(QStringLiteral("photo-ref-%1").arg(i), chunk);
+        QVERIFY(!path.isEmpty());
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::ReadWrite));
+        QVERIFY(file.setFileTime(stamp, QFileDevice::FileModificationTime));
+        file.close();
+        stamp = stamp.addSecs(60);
+    }
+
+    qint64 total = 0;
+    const QFileInfoList entries = QDir(dir.path()).entryInfoList(QDir::Files);
+    for (const QFileInfo& entry : entries)
+        total += entry.size();
+    QVERIFY2(total <= ContactPhotoCache::kMaxCacheBytes,
+             qPrintable(QStringLiteral("cache grew to %1 bytes").arg(total)));
+
+    // The most recent write is the one the caller was just handed a path to,
+    // so it is never the entry evicted to make room.
+    QVERIFY(!cache.cachedPathFor(QStringLiteral("photo-ref-11")).isEmpty());
+    QVERIFY2(cache.cachedPathFor(QStringLiteral("photo-ref-0")).isEmpty(),
+             "the oldest entry survived a cache that was over budget");
+}
+
+// Eviction used to protect "the last entry in the oldest-first list" and
+// call that the file store() had just written. That is only the same thing
+// while every mtime is distinct and monotonic. Here the existing entries
+// carry timestamps in the future -- a restored backup, a clock that stepped
+// back, an rsync preserving times -- so the brand-new file sorts FIRST, and
+// the positional rule deleted the very path store() was about to return.
+void ContactPhotoCacheTest::evictionKeepsTheEntryItJustHandedBackEvenWhenItSortsFirst()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    ContactPhotoCache cache(dir.path());
+
+    const QByteArray chunk(8 * 1024 * 1024, 'x');
+    const QDateTime future = QDateTime::currentDateTimeUtc().addSecs(3600);
+    for (int i = 0; i < 8; ++i) {
+        const QString path = cache.store(QStringLiteral("old-ref-%1").arg(i), chunk);
+        QVERIFY(!path.isEmpty());
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::ReadWrite));
+        QVERIFY(file.setFileTime(future.addSecs(i), QFileDevice::FileModificationTime));
+        file.close();
+    }
+
+    // 64 MiB is already at the budget; this ninth photo puts it over, so
+    // eviction has to run.
+    const QString fresh = cache.store(QStringLiteral("fresh-ref"), chunk);
+    QVERIFY(!fresh.isEmpty());
+
+    QVERIFY2(QFileInfo::exists(fresh), "eviction deleted the path store() had just returned");
+    QCOMPARE(cache.cachedPathFor(QStringLiteral("fresh-ref")), fresh);
+
+    qint64 total = 0;
+    const QFileInfoList entries = QDir(dir.path()).entryInfoList(QDir::Files);
+    for (const QFileInfo& entry : entries)
+        total += entry.size();
+    QVERIFY2(total <= ContactPhotoCache::kMaxCacheBytes,
+             qPrintable(QStringLiteral("cache grew to %1 bytes").arg(total)));
 }
 
 QTEST_GUILESS_MAIN(ContactPhotoCacheTest)

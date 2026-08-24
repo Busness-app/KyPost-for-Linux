@@ -1,5 +1,6 @@
 #include "stores/SettingsStore.h"
 
+#include <QDir>
 #include <QTemporaryDir>
 #include <QTest>
 
@@ -12,6 +13,7 @@ private slots:
     void themeIdRoundTrips();
     void pushDeliveryFieldsRoundTrip();
     void keywordVisibleDefaultsTrueUntilExplicitlyToggled();
+    void aHostileLocationFlagThatCannotReachTheDiskIsReportedAsFailed();
 
 private:
     QString tempFilePath(QTemporaryDir& dir, const QString& name) const;
@@ -75,6 +77,32 @@ void SettingsStoreTest::keywordVisibleDefaultsTrueUntilExplicitlyToggled()
 
     store.setKeywordVisible(QStringLiteral("Work"), true);
     QCOMPARE(store.keywordVisible(QStringLiteral("Work")), true);
+}
+
+// The flag decides, on the NEXT launch, whether the database opens ":memory:"
+// or the real file on disk -- and AppLockManager erases the profile and
+// relaunches on the strength of it. A write that never reached the disk has to
+// say so, or the replacement process comes up unprotected over mail the erase
+// already destroyed. Same rule, same mechanism as CursorStore::flush().
+void SettingsStoreTest::aHostileLocationFlagThatCannotReachTheDiskIsReportedAsFailed()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    // A directory where the .ini is meant to be: QSettings can neither read
+    // nor write it, and reports AccessError from sync().
+    const QString blocked = tempFilePath(dir, QStringLiteral("settings.ini"));
+    QVERIFY(QDir().mkpath(blocked));
+
+    SettingsStore store(blocked);
+    QVERIFY(!store.setHostileLocationProtectionEnabled(true));
+
+    // And nothing reached the disk, which is what the false was about.
+    // Checked against the filesystem rather than a second SettingsStore over
+    // the same path: QSettings shares one in-memory QConfFile per file name
+    // within a process, so a second store would answer from the same unwritten
+    // copy and prove nothing about the next launch.
+    QVERIFY2(QDir(blocked).isEmpty(), "something was written where the settings file could not go");
 }
 
 QTEST_GUILESS_MAIN(SettingsStoreTest)

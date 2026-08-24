@@ -14,8 +14,8 @@
 > particular, its description of mail sync (`since` handling) is wrong —
 > see AGENTS.md §4's 2026-08-22 correction.
 
-Fourth sibling after Android (`~/git/kypost-android`) and SwiftUI macOS/iOS
-(`~/git/kypost-for-Mac`). **This plan supersedes both `Kirigami_llama_mail.md` (2026-07-11 draft,
+Fourth sibling after Android (`~/busness.app/kypost-android`) and SwiftUI macOS/iOS
+(`~/busness.app/kypost-for-Mac`). **This plan supersedes both `Kirigami_llama_mail.md` (2026-07-11 draft,
 pre-rename filename) and the short-lived `KDE_Client_Plan.md`.** One Qt codebase, two packages,
 two UI roots:
 
@@ -25,7 +25,7 @@ two UI roots:
 | KDE Mobile (Plasma Mobile) | Kirigami (KF6) | same Flatpak | Qt 6 | Mobile |
 | Ubuntu Touch (Lomiri) | Kirigami (KF5, bundled in the click) | Clickable → OpenStore | Qt 5.15 | Mobile |
 
-New sibling repo: `~/git/kypost-Linux` (kypost-for-Mac is Xcode-centric; don't nest).
+New sibling repo: `~/busness.app/kypost-Linux` (kypost-for-Mac is Xcode-centric; don't nest).
 Suggested app IDs: `com.kysecurity.mail` (Flatpak/Flathub), `kypost.urlxl`
 (click/OpenStore).
 
@@ -60,8 +60,8 @@ fully-adaptive tree:
 ## What changed since the 2026-07-11 draft plan
 
 1. **UnifiedPush landed** (backend commits `cb96ae0`, `510eba6`, `21a20b8` in
-   `~/git/kypost-server`; Android commits `4782ce7`, `8ef0398` in
-   `~/git/kypost-android`; doc `kypost-server/UNIFIEDPUSH_IMPLEMENTATION.md`).
+   `~/busness.app/kypost-server`; Android commits `4782ce7`, `8ef0398` in
+   `~/busness.app/kypost-android`; doc `kypost-server/UNIFIEDPUSH_IMPLEMENTATION.md`).
    The old plan's "polling-only v1" is gone — push is in v1 where the platform
    allows it (see the push matrix below). The backend explicitly anticipated
    these clients: *"KDE Mobile / Ubuntu Touch clients call the same

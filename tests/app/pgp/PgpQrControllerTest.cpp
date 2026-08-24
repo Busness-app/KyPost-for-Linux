@@ -27,6 +27,7 @@ private slots:
     void refreshMyQrCodeNoPgpIdentitySetsFriendlyMessage();
     void myQrImageDataUrlIsEmptyBeforeRefreshAndPopulatedAfter();
     void scanQrPayloadRejectsNonPgpQrUrl();
+    void scanQrPayloadRejectsAPathThatMerelyContainsTheKeyRoute();
     void scanQrPayloadRejectsNonHttpScheme();
     void scanQrPayloadRejectsLinkLocalMetadataHost();
     void scanQrPayloadSuccessPopulatesScanResult();
@@ -246,6 +247,43 @@ void PgpQrControllerTest::scanQrPayloadRejectsNonPgpQrUrl()
 
     QCOMPARE(controller.lastError(), QStringLiteral("That QR code isn't a PGP key-exchange code"));
     QCOMPARE(controller.scannedFingerprint(), QString());
+}
+
+// The route check used contains(), so any path with "/api/pgp/qr/key"
+// somewhere inside it passed -- and the same predicate validates every
+// redirect hop, so a permitted host could 302 the QR's capability token onto
+// whatever path it liked. The token is the query parameter "t"; the path ENDS
+// at the route.
+void PgpQrControllerTest::scanQrPayloadRejectsAPathThatMerelyContainsTheKeyRoute()
+{
+    QTemporaryDir secureDir;
+    QVERIFY(secureDir.isValid());
+    SecureStoreFile secureStore(secureDir.path());
+    PairingStore pairingStore(secureStore);
+
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    PgpQrClient client(http);
+    PgpQrRepository repository(client, pairingStore);
+    NetworkExecutor executor(3000);
+    PgpQrController controller(repository, executor);
+
+    // No FakeRelayServer: each of these must be refused before any request is
+    // made, so a fetch reaching the network at all would hang rather than pass.
+    const QStringList nearMisses = {
+        QStringLiteral("https://example.com/api/pgp/qr/keyanything?t=tok-1"),
+        QStringLiteral("https://example.com/api/pgp/qr/key-backup?t=tok-1"),
+        QStringLiteral("https://example.com/api/pgp/qr/key/admin?t=tok-1"),
+        QStringLiteral("https://example.com/api/pgp/qr/key/../../internal/admin?t=tok-1"),
+    };
+
+    for (const QString& url : nearMisses) {
+        controller.scanQrPayload(url);
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.isBusy(), 5000);
+        QVERIFY2(controller.lastError() == QStringLiteral("That QR code isn't a PGP key-exchange code"),
+                 qPrintable(QStringLiteral("accepted %1").arg(url)));
+        QCOMPARE(controller.scannedFingerprint(), QString());
+    }
 }
 
 void PgpQrControllerTest::scanQrPayloadRejectsNonHttpScheme()

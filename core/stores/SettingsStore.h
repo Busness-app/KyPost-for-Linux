@@ -42,8 +42,13 @@ public:
     // Read by main.cpp BEFORE Database is constructed -- it decides whether
     // the database opens ":memory:" or the real file -- so changing it takes
     // effect only on the next launch, which is why toggling it relaunches.
+    //
+    // The setter returns false when the flag did not reach the disk. It has
+    // to: the caller's next two acts are to erase the profile and relaunch,
+    // and a flag that only ever existed in memory brings the replacement
+    // process up unprotected -- over mail the erase already destroyed.
     bool hostileLocationProtectionEnabled() const;
-    void setHostileLocationProtectionEnabled(bool enabled);
+    [[nodiscard]] bool setHostileLocationProtectionEnabled(bool enabled);
 
     // pushServerBaseUrl (the embedded ntfy subscriber's server, default
     // https://ntfy.sh) lived here until 2026-07-26. It went away with that

@@ -159,3 +159,64 @@ core/stores/ContactPhotoCache.cpp	    if (!PrivatePath::ensureFile(path)) {	    
 
 # --- a restore that did not happen is never reported as recovery ----------
 core/db/DatabaseEncryptionMigration.cpp	        if (!QFile::rename(m_supersededPath, m_databasePath)) {	        if (false) {	DatabaseEncryptionMigrationTest:aRestoreThatCannotHappenIsReportedRatherThanCalledRecovery
+
+# --- Hostile Location Protection ------------------------------------------
+#
+# The mode's whole promise is "nothing of yours is on this disk". Two ways it
+# was claimed without being true, both on the boundary between a store result
+# and the state transition that acted on it.
+
+# the flag that decides ":memory:" vs the real file, and whether it landed
+core/stores/SettingsStore.cpp	    return m_settings.status() == QSettings::NoError;	    return true;	SettingsStoreTest:aHostileLocationFlagThatCannotReachTheDiskIsReportedAsFailed
+
+# the erase and the relaunch happen only if that flag actually landed
+app/security/AppLockManager.cpp	    if (!m_settingsStore.setHostileLocationProtectionEnabled(enabled)) {	    if (m_settingsStore.setHostileLocationProtectionEnabled(enabled), false) {	AppLockManagerTest:hostileLocationErasesNothingWhenTheFlagCannotBePersisted
+
+# and the photo cache follows the SAME decision the database made, rather
+# than recreating, hundreds of lines later, the directory the erase deleted.
+#
+# NOT LISTED, deliberately: the constructor's `if (cacheDir.isEmpty()) return;`
+# is not load-bearing. PrivatePath::ensureDirectory("") refuses an empty path
+# too, so removing the early return leaves the cache just as disabled and
+# anEmptyCacheDirectoryDisablesTheCacheEntirely stays green -- this harness
+# said so. It is kept for the log line, not the outcome.
+core/stores/ContactPhotoCache.cpp	    return persistent ? dataDir + QStringLiteral("/contact-photos") : QString();	    return dataDir + QStringLiteral("/contact-photos");	ContactPhotoCacheTest:aProfileThatKeepsNothingOnDiskGetsNoCacheDirectoryAtAll
+
+# --- caches that grow without end ------------------------------------------
+#
+# Content-addressed keys remove staleness, not growth. Every distinct photoRef
+# the user ever views deposits another file, and a relay handing out a fresh
+# reference per request turns the user's disk into the limit.
+core/stores/ContactPhotoCache.cpp	    evictToBudget();		ContactPhotoCacheTest:theCacheDoesNotGrowPastItsBudget
+
+# an avatar is not eight megabytes
+core/net/ContactPhotoClient.cpp	                                                            auth.headerItems(), {}, kMaxPhotoBytes);	                                                            auth.headerItems());	ContactPhotoClientTest:aPhotoLargerThanAnAvatarIsRefusedWellBeforeTheGenericCeiling
+
+# --- a capability token goes to the route it was minted for -----------------
+#
+# The QR's "t" parameter is the sole credential. contains() let any path with
+# the route name inside it -- "/api/pgp/qr/key-backup", ".../key/admin" -- pass,
+# on the initial target AND on every redirect hop that reuses this predicate.
+app/pgp/PgpQrController.cpp	    return url.adjusted(QUrl::NormalizePathSegments).path().endsWith(QStringLiteral("/api/pgp/qr/key"));	    return url.adjusted(QUrl::NormalizePathSegments).path().contains(QStringLiteral("/api/pgp/qr/key"));	PgpQrControllerTest:scanQrPayloadRejectsAPathThatMerelyContainsTheKeyRoute
+
+# --- the contact uid is one path segment, not a path -------------------
+#
+# The uid arrives from contact sync or a vCard import. Concatenated raw it
+# could add path segments, and the device secret went to whatever endpoint
+# the resulting URL resolved to.
+core/net/ContactPhotoClient.cpp	    const QString segment = QString::fromLatin1(QUrl::toPercentEncoding(contactUid));	    const QString segment = contactUid;	ContactPhotoClientTest:aUidCarryingPathSyntaxCannotReachAnotherEndpoint
+# ...and the two values encoding cannot make safe, which is why the check
+# above is not the whole guard.
+core/net/ContactPhotoClient.cpp	    if (segment.isEmpty() || segment == QLatin1String(".") || segment == QLatin1String(".."))	    if (false)	ContactPhotoClientTest:aUidThatIsNothingButADotSegmentSendsNoRequestAtAll
+
+# --- a replaced PIN takes the old PIN's material with it ----------------
+#
+# The pre-2026-07-27 salt/hash pair is the OLD pin. verifyPin() prefers the
+# combined record, so leaving the pair behind is invisible to this build and
+# opens the app to anything that predates the record.
+core/security/AppLockStore.cpp	    replaced = m_secureStore.remove(kPinSalt) && replaced;		AppLockStoreTest:changingThePinDestroysTheOldBuildsCopyOfTheOldPin
+# ...and a removal that FAILS is reported rather than swallowed.
+core/security/AppLockStore.cpp	    replaced = m_secureStore.remove(kPinHash) && replaced;	    m_secureStore.remove(kPinHash);	AppLockStoreTest:aLegacyRemovalThatFailsIsReportedRatherThanSwallowed
+
+# --- cache eviction keeps the photo it just handed back -----------------
+core/stores/ContactPhotoCache.cpp	        if (candidate == keepPath)	        if (false)	ContactPhotoCacheTest:evictionKeepsTheEntryItJustHandedBackEvenWhenItSortsFirst

@@ -463,12 +463,18 @@ HttpClient::HttpResult HttpClient::waitForReply(QNetworkReply* reply, const Redi
 
 QUrl joinUrlPath(const QUrl& baseUrl, const QString& apiPath)
 {
+    // Encoded in, encoded out. setPath()'s default DecodedMode encodes '?'
+    // and '#' but NOT '/', which is a legal path character -- so a caller
+    // splicing a runtime value into apiPath could add path segments, and a
+    // value of "../../api/notifications/native/pull" rewrote the endpoint
+    // outright. Working in encoded space means a caller CAN encode a value
+    // to one segment and have that survive; see ContactPhotoClient.
     QUrl url = baseUrl;
-    QString path = url.path();
+    QString path = url.path(QUrl::FullyEncoded);
     if (!path.endsWith(QLatin1Char('/')))
         path += QLatin1Char('/');
     path += apiPath;
-    url.setPath(path);
+    url.setPath(path, QUrl::StrictMode);
     return url;
 }
 

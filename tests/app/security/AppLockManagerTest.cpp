@@ -9,6 +9,7 @@
 #include "stores/SettingsStore.h"
 
 #include <QSignalSpy>
+#include <QDir>
 #include <QTemporaryDir>
 #include <QTest>
 
@@ -184,6 +185,7 @@ private slots:
 
     // Review-finding regression.
     void hostileLocationIsRefusedWhenTheDiskCouldNotBeErased();
+    void hostileLocationErasesNothingWhenTheFlagCannotBePersisted();
 };
 
 // Hostile Location Protection promises that nothing is on this disk. When
@@ -245,6 +247,48 @@ void AppLockManagerTest::hostileLocationIsRefusedWhenTheDiskCouldNotBeErased()
     QVERIFY(!unwired.setHostileLocationEnabled(true, kGoodPin));
     QVERIFY(!settingsStore.hostileLocationProtectionEnabled());
     QCOMPARE(unwiredRelaunchSpy.count(), 0);
+}
+
+// The flag is written BEFORE the erase precisely so a crash between the two
+// comes back up protected. That ordering is only sound if the write is
+// CHECKED: when settings.ini cannot be written, an unchecked void setter
+// erased the user's mail, relaunched, and came up with the flag still off --
+// an ordinary on-disk session over a profile that had just been destroyed.
+// Nothing was protected and everything was lost.
+void AppLockManagerTest::hostileLocationErasesNothingWhenTheFlagCannotBePersisted()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    SecureStoreFile secureStore(dir.path());
+    AppLockStore store(secureStore);
+
+    // A directory standing where settings.ini belongs -- QSettings reports
+    // AccessError rather than writing anything.
+    const QString blocked = dir.filePath(QStringLiteral("settings.ini"));
+    QVERIFY(QDir().mkpath(blocked));
+    SettingsStore settingsStore(blocked);
+
+    NullCredentialSealer sealer;
+    QVERIFY(store.setPin(kGoodPin));
+
+    AppLockManager manager(store, settingsStore, sealer);
+    QSignalSpy relaunchSpy(&manager, &AppLockManager::relaunchRequired);
+
+    int eraseCalls = 0;
+    manager.setOnDiskDataWiper([&eraseCalls]() {
+        ++eraseCalls;
+        return true;
+    });
+
+    QVERIFY(!manager.setHostileLocationEnabled(true, kGoodPin));
+    QVERIFY2(eraseCalls == 0, "the profile was erased on the strength of a flag that never landed");
+    QCOMPARE(relaunchSpy.count(), 0);
+    QVERIFY(manager.wipeIncomplete());
+
+    // Nothing was recorded either, so the next launch comes up in the mode it
+    // was already in. Read off the filesystem, not a second SettingsStore:
+    // QSettings answers from one shared in-process copy per file name.
+    QVERIFY2(QDir(blocked).isEmpty(), "something was written where the settings file could not go");
 }
 
 void AppLockManagerTest::startsUnlockedWhenLockDisabled()

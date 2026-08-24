@@ -8,6 +8,11 @@
 #include <QFileInfo>
 #include <QSaveFile>
 
+QString ContactPhotoCache::directoryFor(const QString& dataDir, bool persistent)
+{
+    return persistent ? dataDir + QStringLiteral("/contact-photos") : QString();
+}
+
 // Contact photos are pictures of the people the user knows, so this cache
 // gets the same owner-only treatment as everything else under the data
 // directory -- and, unlike before, REFUSES TO RUN when it does not get it.
@@ -18,6 +23,9 @@
 ContactPhotoCache::ContactPhotoCache(const QString& cacheDir)
     : m_dir(cacheDir)
 {
+    if (cacheDir.isEmpty())
+        return; // deliberately disabled by the caller -- see the header
+
     switch (PrivatePath::ensureDirectory(cacheDir)) {
     case PrivatePath::Status::Ready:
         m_available = true;
@@ -74,5 +82,34 @@ QString ContactPhotoCache::store(const QString& photoRef, const QByteArray& byte
         return QString();
     }
 
+    evictToBudget(path);
     return path;
+}
+
+void ContactPhotoCache::evictToBudget(const QString& keepPath) const
+{
+    // QDir::Time is newest-first, so Reversed is oldest-first.
+    const QFileInfoList entries = m_dir.entryInfoList(QDir::Files, QDir::Time | QDir::Reversed);
+    qint64 total = 0;
+    for (const QFileInfo& entry : entries)
+        total += entry.size();
+
+    // keepPath is the file store() just wrote and is about to hand back, so
+    // it is skipped by NAME. This used to skip the last list entry instead,
+    // on the assumption that oldest-first sorting put the new file there --
+    // which holds only while every mtime is distinct. Filesystem timestamp
+    // granularity is coarse enough (and a cache fill fast enough) for several
+    // entries to share one mtime, at which point their relative order is
+    // whatever the sort happened to do, and a budget smaller than two photos
+    // could delete the path the caller was still being handed.
+    for (const QFileInfo& entry : entries) {
+        if (total <= kMaxCacheBytes)
+            break;
+        const QString candidate = entry.absoluteFilePath();
+        if (candidate == keepPath)
+            continue;
+        const qint64 size = entry.size();
+        if (QFile::remove(candidate))
+            total -= size;
+    }
 }
