@@ -134,6 +134,30 @@ private:
     bool m_isDesktopMode = true;
 };
 
+class FakePgpEnrollment : public QObject
+{
+    Q_OBJECT
+    Q_PROPERTY(int state MEMBER m_state NOTIFY changed)
+    Q_PROPERTY(QString status MEMBER m_status NOTIFY changed)
+    Q_PROPERTY(QString verificationCode MEMBER m_code NOTIFY changed)
+    Q_PROPERTY(bool busy MEMBER m_busy NOTIFY changed)
+
+public:
+    using QObject::QObject;
+    Q_INVOKABLE void start() { m_state = 2; m_busy = true; m_code = QStringLiteral("5R9K6FWA18A8YP"); emit changed(); }
+    Q_INVOKABLE void checkAgain() { m_state = 2; m_busy = true; emit changed(); }
+    Q_INVOKABLE void cancel() { m_state = 0; m_busy = false; m_code.clear(); emit changed(); }
+
+signals:
+    void changed();
+
+private:
+    int m_state = 0;
+    QString m_status;
+    QString m_code;
+    bool m_busy = false;
+};
+
 inline void registerFakeSingletons(QQmlEngine*)
 {
     qmlRegisterSingletonType<FakeAppLock>(
@@ -148,4 +172,7 @@ inline void registerFakeSingletons(QQmlEngine*)
     qmlRegisterSingletonType<FakeGeneral>(
         "com.kysecurity.mail", 1, 0, "General",
         [](QQmlEngine*, QJSEngine*) -> QObject* { return new FakeGeneral; });
+    qmlRegisterSingletonType<FakePgpEnrollment>(
+        "com.kysecurity.mail", 1, 0, "PgpEnrollment",
+        [](QQmlEngine*, QJSEngine*) -> QObject* { return new FakePgpEnrollment; });
 }

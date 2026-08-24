@@ -121,6 +121,8 @@ target_sources(kypost PRIVATE
   pgp/PgpQrScanner.h
   pgp/PgpQrTargetValidator.cpp
   pgp/PgpQrTargetValidator.h
+  pgp/PgpEnrollmentController.cpp
+  pgp/PgpEnrollmentController.h
 )
 target_link_libraries(kypost PRIVATE ZXing::ZXing Qt6::Multimedia)
 

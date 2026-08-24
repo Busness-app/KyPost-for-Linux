@@ -70,8 +70,14 @@ Item {
         border.width: 1
         border.color: Theme.line
 
-        // Swallow taps so they don't fall through to the scrim behind.
-        TapHandler {}
+        // A pointer handler can share a gesture with items underneath. A
+        // MouseArea is an exclusive input barrier for the modal panel's
+        // otherwise-empty space; controls declared below remain clickable.
+        MouseArea {
+            anchors.fill: parent
+            acceptedButtons: Qt.AllButtons
+            onWheel: function (wheel) { wheel.accepted = true }
+        }
 
         ColumnLayout {
             anchors.fill: parent

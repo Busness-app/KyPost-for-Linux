@@ -370,6 +370,7 @@ modules:
 
   - name: kypost
     buildsystem: cmake-ninja
+    run-tests: true
     config-opts:
       - -DCMAKE_BUILD_TYPE=Release
       # Points at the sqlcipher module above, already installed into /app by
