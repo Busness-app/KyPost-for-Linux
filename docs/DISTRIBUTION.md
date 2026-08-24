@@ -114,6 +114,14 @@ runs.
 Users do not choose an arch. `flatpak install` resolves it from the one repo, which
 carries both.
 
+Note that **`ci.yml` is x86_64-only**, and deliberately so: it builds natively against
+KDE neon's apt archive, which does not carry a complete KF6 set for arm64 (`kf6-ki18n`,
+`kf6-knotifications`, `kf6-kcmutils` and `kf6-extra-cmake-modules` among others are
+absent, so apt cannot resolve the dependency closure even though the leaf package names
+all exist). That costs nothing in coverage: this workflow builds arm64 against
+`org.kde.Sdk` from Flathub instead, and the manifest sets `run-tests: true`, so the
+whole ctest suite plus the launch smoke test run on real arm64 hardware here.
+
 ### How two build jobs become one published repo
 
 Two matrix jobs cannot both force-push `gh-pages` — the workflow-level `concurrency`

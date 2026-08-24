@@ -168,6 +168,40 @@ jobs:
           appstreamcli validate --no-net packaging/flatpak/com.kysecurity.mail.metainfo.xml
           desktop-file-validate packaging/flatpak/com.kysecurity.mail.desktop
 
+      # Flathub is not reliable enough to be a single-shot dependency on.
+      # Observed twice on 2026-08-24: the aarch64 build died with
+      #   While pulling runtime/org.kde.Sdk/aarch64/6.11 from remote flathub:
+      #   [92] Stream error in the HTTP/2 framing layer
+      # and, locally, a summary fetch that hung until timeout while
+      # dl.flathub.org/repo/summary itself answered in under a second. Both
+      # are transient CDN faults, not missing refs -- all three of these are
+      # published for aarch64 and x86_64 alike (checked directly).
+      #
+      # Pulled here, retried, rather than left to flatpak-builder's
+      # --install-deps-from=flathub: that flag fails the whole build on the
+      # first fetch error, after the runner has already done the setup work,
+      # and reports it as a build failure rather than a download one.
+      # `flatpak install` is idempotent, so a retry resumes rather than
+      # restarts.
+      - name: Install runtime and SDK (retried -- Flathub is flaky)
+        run: |
+          set -euo pipefail
+          for ref in org.kde.Platform//6.11 org.kde.Sdk//6.11 io.qt.qtwebengine.BaseApp//6.11; do
+            ok=""
+            for attempt in 1 2 3 4; do
+              if flatpak install --user -y --noninteractive flathub "$ref"; then
+                ok=yes
+                break
+              fi
+              echo "::warning::Flathub pull of $ref failed (attempt $attempt/4); retrying"
+              sleep $(( attempt * 20 ))
+            done
+            if [ -z "$ok" ]; then
+              echo "::error::Could not pull $ref from Flathub after 4 attempts" >&2
+              exit 1
+            fi
+          done
+
       # Without this, qtkeychain 0.17.0, zxing-cpp v3.1.0 and kunifiedpush
       # 26.04.3 rebuild from source on every single run.
 
@@ -192,7 +226,10 @@ jobs:
           set -euo pipefail
           mkdir -p "repo-${{ matrix.arch }}"
 
-          flatpak-builder --user --force-clean --install-deps-from=flathub \
+          # No --install-deps-from: the step above already pulled them, with
+          # retries. Leaving it on would re-introduce the single-shot Flathub
+          # fetch this is working around.
+          flatpak-builder --user --force-clean \
             --repo="repo-${{ matrix.arch }}" \
             build-flatpak "$MANIFEST"
 
