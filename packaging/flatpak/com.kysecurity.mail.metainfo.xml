@@ -8,7 +8,7 @@
 <component type="desktop-application">
   <id>com.kysecurity.mail</id>
   <metadata_license>CC0-1.0</metadata_license>
-  <project_license>GPL-3.0-only</project_license>
+  <project_license>MIT</project_license>
 
   <name>KyPost</name>
   <summary>Relay-based email client for KDE Plasma and Plasma Mobile</summary>
@@ -53,6 +53,7 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="0.2.0" date="2026-08-24"/>
     <release version="0.1.0" date="2026-07-14"/>
   </releases>
 

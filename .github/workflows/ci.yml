@@ -123,9 +123,26 @@ on:
 
 jobs:
   build-and-test:
-    runs-on: ubuntu-24.04
+    # Both shipped architectures. Plasma Mobile is a target, so an arm64
+    # compile break is a release break, and finding it here costs one free
+    # runner instead of a failed Flatpak publish. ubuntu-24.04-arm is native
+    # and free for public repos -- no qemu, so the tests below are real.
+    #
+    # Verified rather than assumed: neon's noble archive does publish a
+    # binary-arm64 index, and every package this job installs exists in it
+    # (16589 packages there vs 20036 for amd64, so presence per-package was
+    # checked, not inferred from the index existing).
+    strategy:
+      fail-fast: false
+      matrix:
+        runs_on: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runs_on }}
     steps:
       - uses: actions/checkout@v4
+
+      # Cheap, and it fails before ~20 minutes of dependency building.
+      - name: Verify version consistency
+        run: ./scripts/verify-version.sh
 
       # Layer KDE neon's "user" apt archive on top of the stock noble repos
       # -- see the file-level comment above for why this is necessary (no
