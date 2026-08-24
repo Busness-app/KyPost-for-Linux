@@ -22,7 +22,91 @@ private slots:
     void clearCacheHandlesNestedDirectories();
     void wipeAllTablesEmptiesRowsAndKeepsSchema();
     void wipeAllTablesLeavesNoRecoverableContent();
+
+    // Review-finding regressions: the aggregated erase behind Hostile
+    // Location Protection's startup path.
+    void eraseOnDiskProfileRemovesEveryPartOfTheProfile();
+    void eraseOnDiskProfileReportsWhatItCouldNotRemove();
 };
+
+namespace {
+
+void writeFile(const QString& path, const QByteArray& contents)
+{
+    QFile f(path);
+    QVERIFY(f.open(QIODevice::WriteOnly));
+    f.write(contents);
+}
+
+} // namespace
+
+void SecurityWipeTest::eraseOnDiskProfileRemovesEveryPartOfTheProfile()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString dbPath = dir.filePath(QStringLiteral("kypost.db"));
+    const QString legacyPath = dir.filePath(QStringLiteral("llamamail.db"));
+    const QString cacheDir = dir.filePath(QStringLiteral("contact-photos"));
+    QVERIFY(QDir().mkpath(cacheDir));
+    writeFile(dbPath, "mail");
+    writeFile(dbPath + QStringLiteral("-wal"), "mail");
+    writeFile(legacyPath, "older mail");
+    writeFile(cacheDir + QStringLiteral("/face.png"), "image");
+
+    QVERIFY(SecurityWipe::eraseOnDiskProfile(dbPath, { legacyPath }, cacheDir));
+
+    QVERIFY(!QFile::exists(dbPath));
+    QVERIFY(!QFile::exists(dbPath + QStringLiteral("-wal")));
+    QVERIFY(!QFile::exists(legacyPath));
+    QCOMPARE(QDir(cacheDir).entryList(QDir::AllEntries | QDir::NoDotAndDotDot).size(), 0);
+}
+
+// The failure this exists for. Hostile Location Protection's startup path
+// called removeDatabaseFiles() and clearCacheDirectory() and threw away
+// every result, so a file it could not delete -- wrong permissions, an
+// immutable bit, a read-only filesystem -- left the app opening ":memory:"
+// and presenting itself as protected on top of surviving mail.
+//
+// It must also erase everything it CAN. Failing on the first file and
+// returning would leave the rest of the profile behind.
+void SecurityWipeTest::eraseOnDiskProfileReportsWhatItCouldNotRemove()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString readOnlyDir = dir.filePath(QStringLiteral("read-only"));
+    QVERIFY(QDir().mkpath(readOnlyDir));
+    const QString dbPath = readOnlyDir + QStringLiteral("/kypost.db");
+    writeFile(dbPath, "mail that will not go away");
+
+    const QString legacyPath = dir.filePath(QStringLiteral("llamamail.db"));
+    const QString cacheDir = dir.filePath(QStringLiteral("contact-photos"));
+    QVERIFY(QDir().mkpath(cacheDir));
+    writeFile(legacyPath, "older mail");
+    writeFile(cacheDir + QStringLiteral("/face.png"), "image");
+
+    // Unlinking needs write permission on the DIRECTORY, not the file.
+    QVERIFY(QFile::setPermissions(readOnlyDir, QFileDevice::ReadOwner | QFileDevice::ExeOwner));
+    if (QFile::exists(dbPath) && QFile::remove(dbPath)) {
+        QFile::setPermissions(readOnlyDir, QFileDevice::ReadOwner | QFileDevice::WriteOwner
+                                   | QFileDevice::ExeOwner);
+        QSKIP("this account deletes regardless of directory permissions (running as root?) -- "
+               "the incomplete-erase path is NOT covered here");
+    }
+
+    const bool erased = SecurityWipe::eraseOnDiskProfile(dbPath, { legacyPath }, cacheDir);
+    const bool survived = QFile::exists(dbPath);
+    // Restored before the assertions, so a failure here does not leave an
+    // undeletable temporary directory behind.
+    QVERIFY(QFile::setPermissions(readOnlyDir, QFileDevice::ReadOwner | QFileDevice::WriteOwner
+                                        | QFileDevice::ExeOwner));
+
+    QVERIFY2(!erased, "an unremovable database was reported as erased");
+    QVERIFY(survived);
+    // Everything else still went, rather than being abandoned at the first
+    // failure.
+    QVERIFY(!QFile::exists(legacyPath));
+    QCOMPARE(QDir(cacheDir).entryList(QDir::AllEntries | QDir::NoDotAndDotDot).size(), 0);
+}
 
 void SecurityWipeTest::removesDatabaseAndEverySidecar()
 {

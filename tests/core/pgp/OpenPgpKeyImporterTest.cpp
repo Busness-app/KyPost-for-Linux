@@ -27,6 +27,11 @@ private slots:
     void aNewerCopyOfAKeyMergesRatherThanReplaces();
     void withNoExpectedFingerprintTheKeyStillReportsItsOwn();
 
+    // Review-finding regressions: a bundle must never enter the keyring.
+    void aBundleCarryingASecondPublicKeyIsRefused();
+    void aBundleWhoseFirstKeyMatchesIsStillRefused();
+    void aBundleCarryingASecondPrivateKeyIsRefused();
+
 private:
     // The "sender" keyring: where the recipient's key comes FROM, standing in
     // for whatever the relay's discovery ladder found.
@@ -39,6 +44,13 @@ void OpenPgpKeyImporterTest::initTestCase()
         QSKIP("no usable gpg on this system -- key import is NOT covered");
     if (!m_donor.build())
         QSKIP("could not build a throwaway GnuPG keyring -- key import is NOT covered");
+    // The key an attacker would try to carry in beside the one that was
+    // asked for. Generated once, here, so the bundle tests do not depend on
+    // each other's side effects -- a second --quick-generate-key for a uid
+    // this home already has makes a SECOND key with the same uid, which
+    // would export three keys where the test means two.
+    if (!m_donor.generateKey(QStringLiteral("Smuggled <smuggled@example.com>")))
+        QSKIP("could not generate the second throwaway key -- bundle smuggling is NOT covered");
 }
 
 void OpenPgpKeyImporterTest::cleanupTestCase()
@@ -215,6 +227,89 @@ void OpenPgpKeyImporterTest::withNoExpectedFingerprintTheKeyStillReportsItsOwn()
     QCOMPARE(result.fingerprint, fingerprint);
 
     GnupgFixture::killAgent(home);
+}
+
+// The smuggling case, and the reason importInto() walks the whole import
+// status list: gpgme_op_import() imports EVERY key in the blob, so a check
+// that reads only result->imports (the head of a linked list) accepts a
+// bundle and hands the rest of it to the user's keyring.
+void OpenPgpKeyImporterTest::aBundleCarryingASecondPublicKeyIsRefused()
+{
+    const QByteArray bundle = m_donor.exportPublicKeys(
+        { QStringLiteral("test@example.com"), QStringLiteral("smuggled@example.com") });
+    QVERIFY(!bundle.isEmpty());
+    const QString wanted = m_donor.fingerprintOf(QStringLiteral("test@example.com"));
+    const QString smuggled = m_donor.fingerprintOf(QStringLiteral("smuggled@example.com"));
+    QVERIFY(!wanted.isEmpty() && wanted != smuggled);
+
+    QTemporaryDir target;
+    QVERIFY(target.isValid());
+    const QString home = GnupgFixture::emptyHome(target);
+
+    const PgpImportResult result = importPublicKey(bundle, wanted, home);
+
+    QCOMPARE(result.status, PgpImportStatus::Rejected);
+    QVERIFY2(GnupgFixture::fingerprintsIn(home).isEmpty(),
+             "a multi-key bundle reached the user's keyring");
+
+    GnupgFixture::killAgent(home);
+}
+
+// The same bundle with no fingerprint claimed to check against. The
+// single-key rule is not a consequence of the comparison -- it holds on its
+// own, or the enrollment paths that pass an empty expected fingerprint would
+// still take a bundle.
+void OpenPgpKeyImporterTest::aBundleWhoseFirstKeyMatchesIsStillRefused()
+{
+    const QByteArray bundle = m_donor.exportPublicKeys(
+        { QStringLiteral("test@example.com"), QStringLiteral("smuggled@example.com") });
+    QVERIFY(!bundle.isEmpty());
+
+    QTemporaryDir target;
+    QVERIFY(target.isValid());
+    const QString home = GnupgFixture::emptyHome(target);
+
+    QCOMPARE(importPublicKey(bundle, QString(), home).status, PgpImportStatus::Rejected);
+    QVERIFY(GnupgFixture::fingerprintsIn(home).isEmpty());
+
+    GnupgFixture::killAgent(home);
+}
+
+// And the private-key enrollment path, which had the identical defect. Note
+// that a SINGLE secret key legitimately reports its fingerprint twice (once
+// public, once secret), which is why the check compares fingerprints rather
+// than counting status entries -- the single-key private import in
+// PgpEnrollmentControllerTest would fail if it counted.
+void OpenPgpKeyImporterTest::aBundleCarryingASecondPrivateKeyIsRefused()
+{
+    const QString wanted = m_donor.fingerprintOf(QStringLiteral("test@example.com"));
+    QVERIFY(!wanted.isEmpty());
+
+    QTemporaryDir target;
+    QVERIFY(target.isValid());
+    const QString home = GnupgFixture::emptyHome(target);
+
+    // One key first: the path this test is about must still work.
+    SecureBytes single(m_donor.exportSecretKeys({ QStringLiteral("test@example.com") }));
+    QVERIFY(!single.isEmpty());
+    QCOMPARE(importPrivateKey(single, wanted, home).status, PgpImportStatus::Imported);
+    QCOMPARE(GnupgFixture::fingerprintsIn(home).size(), 1);
+
+    // Now the bundle, into a keyring of its own so "nothing arrived" is
+    // measurable rather than masked by the key above.
+    QTemporaryDir second;
+    QVERIFY(second.isValid());
+    const QString untouched = GnupgFixture::emptyHome(second);
+    SecureBytes bundle(m_donor.exportSecretKeys(
+        { QStringLiteral("test@example.com"), QStringLiteral("smuggled@example.com") }));
+    QVERIFY(!bundle.isEmpty());
+
+    QCOMPARE(importPrivateKey(bundle, wanted, untouched).status, PgpImportStatus::Rejected);
+    QVERIFY2(GnupgFixture::fingerprintsIn(untouched).isEmpty(),
+             "a multi-key private bundle reached the user's keyring");
+
+    GnupgFixture::killAgent(home);
+    GnupgFixture::killAgent(untouched);
 }
 
 QTEST_GUILESS_MAIN(OpenPgpKeyImporterTest)

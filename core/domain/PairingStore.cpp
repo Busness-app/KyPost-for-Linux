@@ -19,9 +19,17 @@ constexpr auto kDeviceSecretKey = "pairing.deviceSecret";
 constexpr auto kSealedDeviceSecretKey = "pairing.deviceSecretSealed";
 constexpr auto kCertificatePinKey = "pairing.certificateSpkiSha256";
 
-QString valueOrEmpty(const std::optional<QString>& value)
+// Reads a field, distinguishing "the store answered, there is nothing there"
+// (empty) from "the store could not be consulted" (`failed` set, and the
+// whole load is abandoned).
+QString readField(const SecureStore& store, const char* key, bool* failed)
 {
-    return value.value_or(QString());
+    const SecureStore::ReadResult result = store.read(QLatin1String(key));
+    if (result.failed()) {
+        *failed = true;
+        return {};
+    }
+    return result.value;
 }
 
 }
@@ -82,11 +90,22 @@ PairingStore::LoadResult PairingStore::loadChecked() const
     if (m_cache.has_value())
         return { LoadStatus::Loaded, m_cache };
 
-    // read(), not get(): "sub" is the key that decides paired-vs-not, so it
-    // is the one place the absent/unreadable distinction has to survive. The
-    // seven fields below stay on get() deliberately -- they are only reached
-    // once "sub" has answered Found, and an individually missing one has
-    // always been treated as empty rather than as a failure.
+    // read(), not get(), for EVERY field -- not just "sub".
+    //
+    // "sub" alone used to carry the distinction, on the reasoning that it is
+    // the key deciding paired-vs-not and the rest may legitimately be absent.
+    // That reasoning does not survive a PARTIAL outage, which is what a
+    // Secret Service that is re-locking, timing out or being restarted
+    // actually produces: "sub" answers, the certificate pin read fails, and
+    // get() turns that failure into an empty string. The pairing was then
+    // cached as successfully loaded with no pin, HttpClient was configured
+    // without TOFU enforcement, and -- because the cache is only invalidated
+    // by mutations -- the keychain was never consulted again for the rest of
+    // the session. Authenticated requests kept flowing, unpinned.
+    //
+    // So: absent stays empty, unreadable fails the whole load, and nothing
+    // is cached. The caller retries, which is the point.
+    bool failed = false;
     const SecureStore::ReadResult subscriberId = m_secureStore.read(QLatin1String(kSubscriberIdKey));
     if (subscriberId.failed())
         return { LoadStatus::Unreadable, std::nullopt };
@@ -95,19 +114,21 @@ PairingStore::LoadResult PairingStore::loadChecked() const
 
     DevicePairing pairing;
     pairing.subscriberId = subscriberId.value;
-    pairing.serverBaseUrl = valueOrEmpty(m_secureStore.get(QLatin1String(kServerBaseUrlKey)));
-    pairing.registrationUrl = valueOrEmpty(m_secureStore.get(QLatin1String(kRegistrationUrlKey)));
-    pairing.pairingToken = valueOrEmpty(m_secureStore.get(QLatin1String(kPairingTokenKey)));
-    pairing.deviceId = valueOrEmpty(m_secureStore.get(QLatin1String(kDeviceIdKey)));
-    pairing.deviceName = valueOrEmpty(m_secureStore.get(QLatin1String(kDeviceNameKey)));
-    pairing.deviceSecret = valueOrEmpty(m_secureStore.get(QLatin1String(kDeviceSecretKey)));
+    pairing.serverBaseUrl = readField(m_secureStore, kServerBaseUrlKey, &failed);
+    pairing.registrationUrl = readField(m_secureStore, kRegistrationUrlKey, &failed);
+    pairing.pairingToken = readField(m_secureStore, kPairingTokenKey, &failed);
+    pairing.deviceId = readField(m_secureStore, kDeviceIdKey, &failed);
+    pairing.deviceName = readField(m_secureStore, kDeviceNameKey, &failed);
+    pairing.deviceSecret = readField(m_secureStore, kDeviceSecretKey, &failed);
     // When the credential gate is on, the stored value is empty and the real
     // secret only exists in memory after a successful unlock. Everything
     // downstream (RelayAuth, every client) then simply sends an empty secret
     // and gets 401s while locked, which is the intended behaviour.
     if (pairing.deviceSecret.isEmpty() && !m_unsealedDeviceSecret.isEmpty())
         pairing.deviceSecret = m_unsealedDeviceSecret;
-    pairing.certificateSpkiSha256 = valueOrEmpty(m_secureStore.get(QLatin1String(kCertificatePinKey)));
+    pairing.certificateSpkiSha256 = readField(m_secureStore, kCertificatePinKey, &failed);
+    if (failed)
+        return { LoadStatus::Unreadable, std::nullopt };
     m_cache = pairing;
     return { LoadStatus::Loaded, pairing };
 }

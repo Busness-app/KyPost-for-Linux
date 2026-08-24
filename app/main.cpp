@@ -587,14 +587,24 @@ int main(int argc, char* argv[])
     // Which of the four ways the database ended up open. Reported to the UI
     // further down; FailedToOpen never reaches it, since that path is fatal.
     ProfileDatabaseMode profileDatabaseMode = ProfileDatabaseMode::PlaintextOnDisk;
+    // True when this launch could NOT erase everything Hostile Location
+    // Protection promises is not on the disk. Surfaced through
+    // AppLockManager below, on the same banner an unfinished wipe uses:
+    // every result here used to be discarded, so a file that would not
+    // delete left the app opening ":memory:" and reporting itself protected
+    // on top of surviving mail.
+    bool hostileLocationResidue = false;
     if (hostileLocation) {
-        // Defensive: if a previous run crashed between "write the flag" and
-        // "delete the file", there could still be a database on disk holding
-        // exactly what this mode exists to prevent.
-        SecurityWipe::removeDatabaseFiles(newDbPath);
-        for (const QString& legacyDbPath : legacyDbPaths)
-            SecurityWipe::removeDatabaseFiles(legacyDbPath);
-        SecurityWipe::clearCacheDirectory(dataDir + QStringLiteral("/contact-photos"));
+        // Defensive, and the retry for a failed transition: if a previous run
+        // crashed between "write the flag" and "delete the file", or the
+        // erase at toggle time did not finish, there could still be a
+        // database on disk holding exactly what this mode exists to prevent.
+        hostileLocationResidue = !SecurityWipe::eraseOnDiskProfile(
+            newDbPath, legacyDbPaths, dataDir + QStringLiteral("/contact-photos"));
+        if (hostileLocationResidue) {
+            qCritical("main: Hostile Location Protection is on, but this device's on-disk data could "
+                       "NOT be erased -- cached mail or contacts may still be readable on this disk");
+        }
         if (!database.open(QStringLiteral(":memory:")))
             qFatal("main: Database::open failed for in-memory database");
     } else if (!dataDirPrivate) {
@@ -866,7 +876,8 @@ int main(int argc, char* argv[])
     // was started, never reported completing, and could not be finished on
     // this launch either -- the one state in which the user has been told
     // their data is gone while it is still here.
-    appLockManager.setWipeIncomplete(wipeRecovery.wasInterrupted && !wipeRecovery.nowErased);
+    appLockManager.setWipeIncomplete((wipeRecovery.wasInterrupted && !wipeRecovery.nowErased)
+                                      || hostileLocationResidue);
     appLockManager.setDatabaseMode(profileDatabaseMode);
     qmlRegisterSingletonInstance<AppLockManager>(
         "com.kysecurity.mail", 1, 0, "AppLock", &appLockManager);
@@ -940,28 +951,31 @@ int main(int argc, char* argv[])
     // discarded the bool their PairingStore call returned, which is exactly
     // how the gate flag and the real state of the secret could disagree.
 
-    // Hostile Location Protection was toggled. The setting is already
-    // persisted; this erases on-disk data when switching the mode ON, then
-    // relaunches so the next process picks the right database.
+    // The erase behind Hostile Location Protection.
+    //
+    // Shares LocalDataWipe with the ten-failure path, which is the point:
+    // when these were two hand-written blocks they disagreed about what
+    // "everything" meant, and the pre-rename database was missing from both.
+    // Unlike that path this one also unlinks the live database file -- the
+    // next launch opens ":memory:", so nothing may remain on disk.
+    //
+    // The bool matters: AppLockManager refuses the mode when this comes back
+    // false, instead of relaunching into an app that looks protected while
+    // the mail it was told to destroy is still on the disk.
+    appLockManager.setOnDiskDataWiper([&localDataWipe]() {
+        const LocalDataWipeResult wiped = localDataWipe.wipeOnDiskDataOnly();
+        if (!wiped.complete()) {
+            qCritical("Hostile Location Protection: could not erase all on-disk data; the mode has "
+                       "NOT been enabled and this device still holds cached mail");
+        }
+        return wiped.complete();
+    });
+
+    // A setting that only takes effect at startup was accepted, and anything
+    // it had to erase is already gone. Restart so the next process picks the
+    // right database.
     QObject::connect(&appLockManager, &AppLockManager::relaunchRequired, &appLockManager,
-                      [&localDataWipe](bool wipeDisk) {
-                          if (wipeDisk) {
-                              // Shares LocalDataWipe with the ten-failure
-                              // path, which is the point: when these were
-                              // two hand-written blocks they disagreed about
-                              // what "everything" meant, and the pre-rename
-                              // database was missing from both. Unlike that
-                              // path this one also unlinks the live database
-                              // file -- the next launch opens ":memory:", so
-                              // nothing may remain on disk.
-                              const LocalDataWipeResult wiped = localDataWipe.wipeOnDiskDataOnly();
-                              if (!wiped.complete()) {
-                                  qCritical("Hostile Location Protection: could not erase all on-disk data; "
-                                            "this device may still hold cached mail after the relaunch");
-                              }
-                          }
-                          AppRelauncher::requestRelaunch();
-                      });
+                      []() { AppRelauncher::requestRelaunch(); });
 
     // Task 42: notification tap-through. NotificationDispatcher (Task 40,
     // already constructed above as part of the Task 41 push graph) emits

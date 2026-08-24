@@ -54,4 +54,16 @@ bool clearCacheDirectory(const QString& cacheDir)
     return ok;
 }
 
+bool eraseOnDiskProfile(const QString& databasePath, const QStringList& legacyDatabasePaths,
+                        const QString& cacheDir)
+{
+    // Every call made, then aggregated -- deliberately not short-circuited.
+    // Stopping at the first failure would leave the rest of the profile on
+    // disk because one file could not be removed.
+    bool erased = removeDatabaseFiles(databasePath);
+    for (const QString& legacyPath : legacyDatabasePaths)
+        erased = removeDatabaseFiles(legacyPath) && erased;
+    return clearCacheDirectory(cacheDir) && erased;
+}
+
 } // namespace SecurityWipe

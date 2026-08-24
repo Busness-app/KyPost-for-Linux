@@ -27,11 +27,22 @@ set(CMAKE_AUTORCC ON)
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   add_compile_options(-Wall -Wextra -Wshadow -Wnon-virtual-dtor -Woverloaded-virtual)
   # Hardening. _FORTIFY_SOURCE needs optimization to do anything and warns
-  # noisily at -O0, hence the non-Debug guard; _GLIBCXX_ASSERTIONS is
-  # cheap enough to leave on everywhere and turns container UB into an
-  # abort with a message.
+  # noisily at -O0, so it is defined only for the configurations that carry
+  # a -O flag; _GLIBCXX_ASSERTIONS is cheap enough to leave on everywhere and
+  # turns container UB into an abort with a message.
+  #
+  # Named configurations, NOT "anything that is not Debug". An empty
+  # CMAKE_BUILD_TYPE -- which is what `cmake -B build -S .` produces, i.e.
+  # the documented build -- is not Debug, so the old guard defined
+  # _FORTIFY_SOURCE=3 while compiling at -O0: fortification did nothing, and
+  # every translation unit repeated glibc's "_FORTIFY_SOURCE requires
+  # compiling with optimization (-O)" warning. The build commands in
+  # README.md and AGENTS.md now name RelWithDebInfo so the default
+  # verification build is the hardened one.
   add_compile_options(-fstack-protector-strong -fno-common)
-  add_compile_definitions(_GLIBCXX_ASSERTIONS $<$<NOT:$<CONFIG:Debug>>:_FORTIFY_SOURCE=3>)
+  add_compile_definitions(
+    _GLIBCXX_ASSERTIONS
+    $<$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>,$<CONFIG:MinSizeRel>>:_FORTIFY_SOURCE=3>)
   add_link_options(-Wl,-z,relro -Wl,-z,now -Wl,-z,noexecstack)
 endif()
 

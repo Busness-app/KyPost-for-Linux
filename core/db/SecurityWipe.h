@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QString>
+#include <QStringList>
 
 // Erases the on-disk database and any cached content alongside it.
 //
@@ -28,5 +29,18 @@ bool removeDatabaseFiles(const QString& dbPath);
 // cache puts there) without removing the directory itself, so the app can
 // keep writing to it. Missing directory is not an error.
 bool clearCacheDirectory(const QString& cacheDir);
+
+// Everything a profile leaves on disk: the database and its sidecars, every
+// pre-rename database, and the cache directory beside them. False when
+// anything that exists could not be removed.
+//
+// Hostile Location Protection's startup path used to call the two functions
+// above itself and drop every result on the floor. A file it could not
+// remove -- wrong permissions, an immutable bit, a read-only or full
+// filesystem -- left the app opening ":memory:" and presenting itself as
+// protected while the old mail was still sitting there. One aggregated
+// answer, so the caller has something it can check and surface.
+bool eraseOnDiskProfile(const QString& databasePath, const QStringList& legacyDatabasePaths,
+                        const QString& cacheDir);
 
 } // namespace SecurityWipe

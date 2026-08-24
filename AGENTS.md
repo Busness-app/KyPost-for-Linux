@@ -38,12 +38,17 @@ docs/       — local tooling/setup notes (see docs/SETUP.md); docs/PARITY.md is
 A single out-of-tree build directory, Qt6-only:
 
 ```sh
-cmake -B build -S .
+cmake -B build -S . -DCMAKE_BUILD_TYPE=RelWithDebInfo
 cmake --build build
 ctest --test-dir build
 ```
 
 A change is not verified until this builds cleanly and `ctest` is green.
+
+`RelWithDebInfo` is part of the command, not decoration: the hardening flags
+in `CMakeLists.txt` include `_FORTIFY_SOURCE=3`, which does nothing without
+`-O`. A build with no configuration verifies unfortified code. Use
+`-DCMAKE_BUILD_TYPE=Debug -DKYPOST_SANITIZE=ON` for the sanitizer build.
 
 `ctest` covers both the C++ tests and the QML suite (`QmlTests`, Qt Quick
 Test, added 2026-07-26 — see `tests/qml/`). The QML tests run against fake
