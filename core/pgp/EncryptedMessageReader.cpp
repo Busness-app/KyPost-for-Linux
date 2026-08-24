@@ -123,20 +123,39 @@ PgpReadResult EncryptedMessageReader::read(const QUrl& serverBaseUrl, const Rela
     // send path). Only keys the relay ALREADY bound to this message's sender
     // are imported, so an unsolicited MESSAGE cannot add arbitrary keys to
     // somebody's keyring: it can at most add the one its own address is
-    // already associated with. That bound is on the sender, not on the relay
-    // -- the relay is the party asserting the association, so a hostile one
-    // can still put a key of its choosing here. Public, merged, and never
-    // reachable as an encryption target (those come from the resolve
-    // response by fingerprint), so the cost is clutter rather than exposure.
+    // already associated with.
+    //
+    // EVERY IMPORT IS FINGERPRINT-CHECKED, exactly as the send path's is.
+    // Until 2026-08-24 this passed an empty expectedFingerprint, which
+    // switches that check off inside importPublicKey() -- so the read path
+    // wrote relay-chosen public keys into the user's durable GnuPG keyring
+    // with nothing verified about them, while the send path a few files away
+    // refused to do the same thing without a match. The asymmetry was the
+    // bug; a comment calling the result "clutter" was wishful, because the
+    // keyring is security state the user owns and this is an unsolicited
+    // message causing a permanent write to it.
+    //
+    // What the check buys, stated honestly: it catches a relay whose key and
+    // whose claim about that key disagree. It does NOT stop a relay that lies
+    // consistently -- see OpenPgpKeyImporter.h's WHAT THIS DOES NOT DO -- and
+    // no check on this side of the wire can, because the relay is the party
+    // asserting the binding in the first place.
+    //
+    // A key with no claimed fingerprint is skipped entirely rather than
+    // imported unchecked. It costs a badge (the verdict falls to CannotCheck,
+    // which is what "the question was not answerable" is for) and it keeps
+    // the keyring clean. Fail-closed is the right direction for a downgrade
+    // nobody can be misled by.
     //
     // A conflicting key is skipped rather than tried. The relay saw more than
     // one claiming this address and cannot say which is right; importing them
     // all would let whichever one verified decide the answer.
     QStringList boundFingerprints;
     for (const PgpSignerKey& key : payload.signerKeys) {
-        if (key.conflict)
+        if (key.conflict || key.fingerprint.isEmpty())
             continue;
-        const PgpImportResult imported = importPublicKey(key.publicKey.toUtf8(), QString(), gnupgHome);
+        const PgpImportResult imported =
+            importPublicKey(key.publicKey.toUtf8(), key.fingerprint, gnupgHome);
         if (imported.status == PgpImportStatus::Imported
             || imported.status == PgpImportStatus::Unchanged) {
             boundFingerprints.append(imported.fingerprint);

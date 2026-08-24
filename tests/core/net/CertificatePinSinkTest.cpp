@@ -14,8 +14,8 @@
 // Pin state lives inside HttpClient, and there is more than one HttpClient
 // in the process while Relay HTTP moves onto a worker thread. Every mutation
 // used to name one of them directly, so converting the first controller
-// silently shipped an UNPINNED path: MfaController started using the
-// executor's client, which nobody had ever given a pin or a mismatch
+// silently shipped an UNPINNED path: the converted controller started using
+// the executor's client, which nobody had ever given a pin or a mismatch
 // handler. The device secret went out under whatever certificate the CA
 // chain accepted, and the impersonation banner could not fire because there
 // was nothing to compare against.

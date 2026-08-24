@@ -37,12 +37,12 @@ class QNetworkAccessManager;
 // receiver's own thread, via the normal event queue. So a converted
 // controller method looks like:
 //
-//     void MfaController::respond(...)
+//     void SomeController::doThing(...)
 //     {
-//         setRespondState("sending");
+//         setState("sending");
 //         m_executor.run(this,
 //             [=](HttpClient& http) { return doTheBlockingCall(http); },
-//             [this](MfaResponseResult r) { applyResult(r); });
+//             [this](Result r) { applyResult(r); });
 //     }
 //
 // -- no return value, no blocking, and the state machine the UI binds to is

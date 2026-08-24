@@ -1,9 +1,51 @@
 #include "platform/SecureStoreKeychain.h"
 
 #include <QEventLoop>
+#include <QMutex>
+#include <QMutexLocker>
+#include <QThread>
 #include <QTimer>
 #include <QtLogging>
 #include <qt6keychain/keychain.h>
+
+namespace {
+
+// ONE worker thread for every SecureStoreKeychain in the process, and it is
+// deliberately never joined or deleted.
+//
+// One per store was tried first and is worse than it looks. Each thread gets
+// its own QDBusConnection, so on a machine whose Secret Service does not
+// answer, every store pays Qt's full ~25 s D-Bus timeout independently instead
+// of the first one paying it and the rest returning immediately -- measured at
+// 83 s across one test run against 25 s shared. Startup builds several stores,
+// so that is the case that matters.
+//
+// Never joined, because a job that timed out is still inside a blocked D-Bus
+// call and will not come back until that timeout expires. Waiting for it would
+// move the stall from startup to shutdown, which is not an improvement; and
+// ~QThread on a running thread aborts, so the object has to outlive the
+// process rather than be destroyed at exit. The cost is one thread in a
+// session whose keyring is already broken.
+QObject& keychainWorkerContext()
+{
+    static QObject* context = []() {
+        auto* thread = new QThread; // never deleted, see above
+        thread->setObjectName(QStringLiteral("kypost-keychain"));
+        thread->start();
+        // The receiver has to be an object that LIVES on that thread. A
+        // QThread does NOT -- it belongs to whichever thread constructed it --
+        // so dispatching through the QThread silently ran every job back on
+        // the caller, which is the exact bug this indirection exists to fix.
+        // It looked completely correct;
+        // theCallingThreadIsReleasedByTheTimeoutNotByDBus is what caught it.
+        auto* object = new QObject;
+        object->moveToThread(thread);
+        return object;
+    }();
+    return *context;
+}
+
+} // namespace
 
 SecureStoreKeychain::SecureStoreKeychain(const QString& service, int timeoutMs,
                                          const QString& legacyService)
@@ -14,43 +56,92 @@ SecureStoreKeychain::SecureStoreKeychain(const QString& service, int timeoutMs,
 {
 }
 
-SecureStoreKeychain::JobOutcome SecureStoreKeychain::runBlocking(QKeychain::Job* job) const
+SecureStoreKeychain::JobOutcome SecureStoreKeychain::runBlocking(const JobFactory& makeJob) const
 {
-    JobOutcome outcome;
+    // Shared with the worker thread and outliving this frame on purpose. On
+    // the timeout path we return while the job is still running, so anything
+    // the worker may still write to cannot be a local -- and the mutex is not
+    // ceremony either: "the caller gave up" and "the job finished" can happen
+    // in the same instant on two threads.
+    struct Payload
+    {
+        QMutex mutex;
+        bool completed = false;
+        int error = 0;
+        QString textData;
+    };
+    const auto payload = std::make_shared<Payload>();
+
     QEventLoop loop;
 
-    // `&loop` as the context object is load-bearing, not style. Both
-    // connections are scoped to this stack frame, so that on the timeout path
-    // -- where we return while the job is still running -- neither the lambda
-    // below (which captures `outcome` and `loop` by reference) nor the timer
-    // can fire into a dead frame afterwards.
-    QObject::connect(job, &QKeychain::Job::finished, &loop, [&outcome, &loop](QKeychain::Job* finished) {
-        outcome.completed = true;
-        outcome.error = static_cast<int>(finished->error());
-        // Read here, while the job is guaranteed alive: autoDelete is left on,
-        // so the job reaps itself once this handler returns.
-        if (auto* read = qobject_cast<QKeychain::ReadPasswordJob*>(finished))
-            outcome.textData = read->textData();
-        loop.quit();
+    // THE WORKER TOUCHES NOTHING THIS FRAME OWNS. That is the rule here, and
+    // it is why completion is polled rather than signalled.
+    //
+    // The obvious version -- connect the job's `finished` to `&loop` so it
+    // quits directly -- was written first and crashes. The job does not exist
+    // until the worker picks up the call below, so that connect() runs over
+    // there, at a moment when this frame may already have timed out and
+    // destroyed `loop`; with timeoutMs=0 it does so every single time. Qt can
+    // sever a connection to a dead receiver but not one being made to it.
+    //
+    // Polling costs an extra wake-up every few milliseconds during a wait that
+    // is normally milliseconds long and abnormally 25 seconds long. That is a
+    // better trade than a lifetime rule which has to hold across two threads
+    // and one event-loop teardown.
+    QTimer poll;
+    poll.setInterval(5);
+    QObject::connect(&poll, &QTimer::timeout, &loop, [payload, &loop]() {
+        const QMutexLocker locker(&payload->mutex);
+        if (payload->completed)
+            loop.quit();
     });
+    poll.start();
+
     // The only exit that is guaranteed to happen. QKeychain does not emit
     // `finished` when its underlying D-Bus call gives up (measured -- see the
-    // header), so `finished` alone left this loop with no way out at all.
+    // header), so waiting on completion alone left this loop with no way out.
     //
-    // Note what this timer cannot do: the first ~25 s are spent inside a
-    // synchronous D-Bus call with the thread not processing events, so it
-    // will not be delivered until that returns regardless of m_timeoutMs.
-    // It bounds the wait; it does not shorten it.
+    // Unlike the version this replaced, the timer can actually be delivered:
+    // the blocking D-Bus call is on the worker thread now, so this thread is
+    // free to process its own events -- including this one, and including the
+    // repaints that keep the window alive -- while it waits.
     QTimer::singleShot(m_timeoutMs, &loop, &QEventLoop::quit);
 
-    job->start();
-    // A job that completed synchronously inside start() already quit a loop
-    // that was not running yet; entering it now would block until the timeout
-    // for no reason. The version this replaced had the same hazard and simply
-    // never hit it.
-    if (!outcome.completed)
-        loop.exec();
-    return outcome;
+    QMetaObject::invokeMethod(
+        &keychainWorkerContext(),
+        [makeJob, payload]() {
+            QKeychain::Job* job = makeJob();
+
+            // DIRECT, because the receiver is the job itself and it lives on
+            // this thread -- which is what makes it safe to dereference
+            // `finished` here, and it has to be read here.
+            //
+            // QtKeychain leaves autoDelete on, so the job deleteLater()s
+            // itself as soon as this signal has been delivered. Reading the
+            // outcome from the caller's thread -- which the version before
+            // this did -- meant reading it after the job was gone, and it
+            // crashed in QKeychain::Job::error(). The comment it replaced
+            // ("the job is guaranteed alive") had been true only while both
+            // ends shared a thread.
+            QObject::connect(job, &QKeychain::Job::finished, job,
+                              [payload](QKeychain::Job* finished) {
+                                  const QMutexLocker locker(&payload->mutex);
+                                  payload->error = static_cast<int>(finished->error());
+                                  if (auto* read = qobject_cast<QKeychain::ReadPasswordJob*>(finished))
+                                      payload->textData = read->textData();
+                                  // Written last: it is what the poll above
+                                  // reads to decide the rest is populated.
+                                  payload->completed = true;
+                              });
+
+            job->start();
+        },
+        Qt::QueuedConnection);
+
+    loop.exec();
+
+    const QMutexLocker locker(&payload->mutex);
+    return JobOutcome{ payload->completed, payload->error, payload->textData };
 }
 
 bool SecureStoreKeychain::set(const QString& key, const QString& value)
@@ -61,11 +152,12 @@ bool SecureStoreKeychain::set(const QString& key, const QString& value)
 bool SecureStoreKeychain::writeTo(const QString& service, const QString& key,
                                   const QString& value) const
 {
-    auto* job = new QKeychain::WritePasswordJob(service);
-    job->setKey(key);
-    job->setTextData(value);
-
-    const JobOutcome outcome = runBlocking(job);
+    const JobOutcome outcome = runBlocking([service, key, value]() -> QKeychain::Job* {
+        auto* job = new QKeychain::WritePasswordJob(service);
+        job->setKey(key);
+        job->setTextData(value);
+        return job;
+    });
     return outcome.completed && outcome.error == QKeychain::NoError;
 }
 
@@ -102,10 +194,11 @@ SecureStore::ReadResult SecureStoreKeychain::read(const QString& key) const
 
 SecureStore::ReadResult SecureStoreKeychain::readFrom(const QString& service, const QString& key) const
 {
-    auto* job = new QKeychain::ReadPasswordJob(service);
-    job->setKey(key);
-
-    const JobOutcome outcome = runBlocking(job);
+    const JobOutcome outcome = runBlocking([service, key]() -> QKeychain::Job* {
+        auto* job = new QKeychain::ReadPasswordJob(service);
+        job->setKey(key);
+        return job;
+    });
 
     // Timed out: the store could not be consulted. Reported as Failed, never
     // as Absent -- see the header. This is the branch that used to be an
@@ -156,10 +249,11 @@ bool SecureStoreKeychain::remove(const QString& key)
 
 bool SecureStoreKeychain::removeFrom(const QString& service, const QString& key)
 {
-    auto* job = new QKeychain::DeletePasswordJob(service);
-    job->setKey(key);
-
-    const JobOutcome outcome = runBlocking(job);
+    const JobOutcome outcome = runBlocking([service, key]() -> QKeychain::Job* {
+        auto* job = new QKeychain::DeletePasswordJob(service);
+        job->setKey(key);
+        return job;
+    });
     if (!outcome.completed)
         return false;
     return outcome.error == QKeychain::NoError || outcome.error == QKeychain::EntryNotFound;

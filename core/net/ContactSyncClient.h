@@ -75,8 +75,8 @@ struct ContactDedupeResult
 // contacts/sync, verified against internal/api/contacts_handlers.go's
 // handleContactsSync and internal/contacts/contacts.go's Contact/
 // ContactValue/ContactAddress structs (see Task 16 brief) — sub/hash are
-// query params on both verbs (unlike NativeRegistrationClient/
-// MfaResponseClient in this batch, which take no query-param auth), and
+// query params on both verbs (unlike NativeRegistrationClient, which takes
+// no query-param auth), and
 // every core/models/Contact.h field maps 1:1 onto a same-named JSON key.
 class ContactSyncClient
 {

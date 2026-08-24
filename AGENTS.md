@@ -182,9 +182,14 @@ Added 2026-07-25 (parity work with `kypost-android`):
   is end-to-end encryption of the push payload itself (RFC 8291 is what web
   push uses); that is a UnifiedPush-ecosystem change, not a KyPost one.
 
-  `MfaApproval.qml` was deleted for this reason. `MfaController` and
-  `MfaResponseClient` are still in the tree and are dead: nothing constructs
-  a challenge for them to answer. Do not wire them to QML.
+  `MfaApproval.qml` was deleted for this reason on 2026-07-25, and
+  `MfaController`, `MfaResponseClient` and `MfaChallenge` followed on
+  2026-08-24. They were dead -- nothing constructs a challenge for them to
+  answer -- but dead-and-compiled reads as finished machinery awaiting a
+  reconnect, which is the mistake this note exists to prevent. Do not
+  reintroduce them. If UnifiedPush ever gains RFC 8291 payload encryption and
+  the relay drops the filter, recover the implementation from git rather than
+  keeping a stub warm against a change nobody is waiting for.
 - **Biometric unlock and window-content protection are non-goals** — no
   portable Linux equivalent (no `FLAG_SECURE` analogue on Wayland).
 

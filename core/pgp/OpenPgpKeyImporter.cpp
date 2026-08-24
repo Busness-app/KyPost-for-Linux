@@ -1,5 +1,7 @@
 #include "pgp/OpenPgpKeyImporter.h"
 
+#include "pgp/GpgmeInit.h"
+
 #include <QFile>
 #include <QTemporaryDir>
 
@@ -29,15 +31,6 @@ struct DataHandle
     }
 };
 
-void initialiseGpgme()
-{
-    static const bool initialised = []() {
-        gpgme_check_version(nullptr);
-        return true;
-    }();
-    Q_UNUSED(initialised);
-}
-
 // Imports into `home` and reports what gpg made of it.
 //
 // Refuses anything carrying more than ONE key, and returns that key's
@@ -59,7 +52,7 @@ void initialiseGpgme()
 bool importInto(const QString& home, const QByteArray& armored, bool requireSecret,
                 QString* fingerprint, bool* changed, QString* detail)
 {
-    initialiseGpgme();
+    ensureGpgmeInitialised();
 
     ContextHandle context;
     if (gpgme_err_code(gpgme_new(&context.handle)) != GPG_ERR_NO_ERROR || context.handle == nullptr) {
@@ -150,7 +143,7 @@ PgpImportResult importPublicKey(const QByteArray& armoredPublicKey, const QStrin
         return out;
     }
 
-    initialiseGpgme();
+    ensureGpgmeInitialised();
     if (gpgme_err_code(gpgme_engine_check_version(GPGME_PROTOCOL_OpenPGP)) != GPG_ERR_NO_ERROR) {
         out.status = PgpImportStatus::EngineUnavailable;
         return out;
@@ -212,7 +205,7 @@ PgpImportResult importPrivateKey(const SecureBytes& armoredPrivateKey, const QSt
         out.detail = QStringLiteral("no key bytes");
         return out;
     }
-    initialiseGpgme();
+    ensureGpgmeInitialised();
     if (gpgme_err_code(gpgme_engine_check_version(GPGME_PROTOCOL_OpenPGP)) != GPG_ERR_NO_ERROR) {
         out.status = PgpImportStatus::EngineUnavailable;
         return out;

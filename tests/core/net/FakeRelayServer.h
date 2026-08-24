@@ -3,8 +3,8 @@
 // Shared real-QTcpServer test harness for core/net client tests. Originally
 // hand-copied into HttpClientTest.cpp, NativeRegistrationClientTest.cpp, and
 // PushNotificationClientTest.cpp (Tasks 13-14); lifted here verbatim as part
-// of Task 15 so MfaResponseClientTest and any future net/ client test can
-// share one copy instead of re-copying it again.
+// of Task 15 so every net/ client test could share one copy instead of
+// re-copying it again.
 
 #include <QByteArray>
 #include <QHostAddress>

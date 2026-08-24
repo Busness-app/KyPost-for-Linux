@@ -22,6 +22,8 @@
 #include "../../core/net/FakeRelayServer.h"
 #include "../ExecutorShutdownGuard.h"
 
+#include <QElapsedTimer>
+#include <QHash>
 #include <QHostAddress>
 #include <QNetworkAccessManager>
 #include <QSet>
@@ -149,6 +151,43 @@ private:
     bool m_groupsRequestReceived = false;
 };
 
+
+// Counts requests and always answers with the same body. Purpose-built for
+// the photo tests: the question they ask is "how many times did this reach
+// the relay", which no shared fixture here can answer.
+class CountingFakeRelayServer : public QObject
+{
+public:
+    explicit CountingFakeRelayServer(QByteArray response)
+        : m_response(std::move(response))
+    {
+        m_server.listen(QHostAddress::LocalHost, 0);
+        QObject::connect(&m_server, &QTcpServer::newConnection, this, [this]() {
+            QTcpSocket* socket = m_server.nextPendingConnection();
+            QObject::connect(socket, &QTcpSocket::readyRead, socket, [this, socket]() {
+                m_buffers[socket].append(socket->readAll());
+                if (!m_buffers[socket].contains("\r\n\r\n"))
+                    return; // headers not complete yet
+                ++m_requestCount;
+                socket->write(m_response);
+                socket->flush();
+                socket->disconnectFromHost();
+                m_buffers.remove(socket);
+            });
+            QObject::connect(socket, &QTcpSocket::disconnected, socket, &QObject::deleteLater);
+        });
+    }
+
+    quint16 port() const { return m_server.serverPort(); }
+    int requestCount() const { return m_requestCount; }
+
+private:
+    QTcpServer m_server;
+    QByteArray m_response;
+    QHash<QTcpSocket*, QByteArray> m_buffers;
+    int m_requestCount = 0;
+};
+
 } // namespace
 
 class ContactsControllerTest : public QObject
@@ -175,6 +214,9 @@ private slots:
     void searchContactsRespectsLimit();
     void searchContactsEmptyQueryReturnsEverythingUpToLimit();
     void searchContactsZeroOrNegativeLimitIsUnbounded();
+
+    void photoPathForOnACacheMissReturnsImmediatelyAndFetchesOnce();
+    void photoPathForDoesNotRetryAPhotoTheRelayRefused();
 
 private:
     static void savePairing(PairingStore& pairingStore, quint16 port);
@@ -1359,6 +1401,162 @@ void ContactsControllerTest::aContactThatCouldNotBeSavedIsReportedAsNotSaved()
 
     QVERIFY2(controller.createContact(fields).isEmpty(), "a contact that was not saved came back with a uid");
     QVERIFY2(!controller.lastError().isEmpty(), "the save failed silently");
+}
+
+// A 1x1 PNG, so the bytes that come back are a real image rather than a
+// string that happens to be non-empty.
+static QByteArray onePixelPng()
+{
+    return QByteArray::fromBase64("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==");
+}
+
+// The critical fix (2026-08-24). photoPathFor() is bound to from Avatar.qml,
+// so it must answer without touching the network -- and the miss it answers
+// with must not become a fresh request every time the binding re-evaluates.
+void ContactsControllerTest::photoPathForOnACacheMissReturnsImmediatelyAndFetchesOnce()
+{
+    QByteArray body = onePixelPng();
+    QByteArray response = "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: "
+        + QByteArray::number(body.size()) + "\r\n\r\n" + body;
+    CountingFakeRelayServer relay(response);
+
+    Database db;
+    QVERIFY(db.open(QStringLiteral(":memory:")));
+    ContactDao contactDao(db.handle());
+    GroupDao groupDao(db.handle());
+    PendingContactChangeDao pendingDao(db.handle());
+
+    QTemporaryDir cursorDir;
+    QVERIFY(cursorDir.isValid());
+    CursorStore cursorStore(cursorDir.filePath(QStringLiteral("cursors.ini")));
+
+    QTemporaryDir secureDir;
+    QVERIFY(secureDir.isValid());
+    SecureStoreFile secureStore(secureDir.path());
+    PairingStore pairingStore(secureStore);
+
+    DevicePairing pairing;
+    pairing.subscriberId = QStringLiteral("sub-1");
+    pairing.deviceSecret = QStringLiteral("secret-1");
+    pairing.serverBaseUrl = QStringLiteral("http://127.0.0.1:%1").arg(relay.port());
+    pairing.registrationUrl =
+        QStringLiteral("http://127.0.0.1:%1/api/notifications/native/register").arg(relay.port());
+    pairing.pairingToken = QStringLiteral("pair-tok");
+    pairing.deviceId = QStringLiteral("device-1");
+    pairing.deviceName = QStringLiteral("My Linux Desktop");
+    QVERIFY(pairingStore.save(pairing));
+
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    ContactSyncClient client(http);
+    GroupsClient groupsClient(http);
+    GroupsRepository groupsRepository(groupsClient, groupDao, pairingStore);
+    ContactPhotoClient photoClient(http);
+    QTemporaryDir photoCacheDir;
+    QVERIFY(photoCacheDir.isValid());
+    ContactPhotoCache photoCache(photoCacheDir.path());
+    ContactPhotoRepository photoRepository(photoClient, photoCache, pairingStore);
+    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore, db.handle());
+
+    Contact seed;
+    seed.uid = QStringLiteral("contact-1");
+    seed.rev = 1;
+    seed.fn = QStringLiteral("Has Photo");
+    seed.photoRef = QStringLiteral("photo-ref-1");
+    QVERIFY(contactDao.insertOrReplace(seed));
+
+    NetworkExecutor executor(3000);
+    ContactsController controller(repository, groupsRepository, photoRepository, executor);
+    ExecutorShutdownGuard shutdownGuard{ executor };
+
+    QSignalSpy revisions(&controller, &ContactsController::photoRevisionChanged);
+
+    // The binding re-evaluating several times, which is what a scrolling
+    // ListView does. Each call must return NOW: if any of them blocked on the
+    // relay this loop could not complete in a few milliseconds.
+    QElapsedTimer timer;
+    timer.start();
+    for (int i = 0; i < 5; ++i)
+        QVERIFY(controller.photoPathFor(QStringLiteral("contact-1")).isEmpty());
+    QVERIFY2(timer.elapsed() < 1000,
+             "photoPathFor() blocked -- it is bound to from QML and must never reach the network");
+
+    QVERIFY(revisions.wait(5000));
+
+    // Five binding evaluations, ONE request.
+    QCOMPARE(relay.requestCount(), 1);
+
+    // And now it answers from the cache.
+    const QString path = controller.photoPathFor(QStringLiteral("contact-1"));
+    QVERIFY(path.startsWith(QStringLiteral("file://")));
+    QCOMPARE(relay.requestCount(), 1);
+}
+
+// The other half of the same defect: the synchronous version recorded nothing
+// about an attempt, so a photo the relay would not serve was re-requested on
+// every single re-evaluation of the binding, for the life of the process.
+void ContactsControllerTest::photoPathForDoesNotRetryAPhotoTheRelayRefused()
+{
+    CountingFakeRelayServer relay(QByteArray("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n"));
+
+    Database db;
+    QVERIFY(db.open(QStringLiteral(":memory:")));
+    ContactDao contactDao(db.handle());
+    GroupDao groupDao(db.handle());
+    PendingContactChangeDao pendingDao(db.handle());
+
+    QTemporaryDir cursorDir;
+    QVERIFY(cursorDir.isValid());
+    CursorStore cursorStore(cursorDir.filePath(QStringLiteral("cursors.ini")));
+
+    QTemporaryDir secureDir;
+    QVERIFY(secureDir.isValid());
+    SecureStoreFile secureStore(secureDir.path());
+    PairingStore pairingStore(secureStore);
+
+    DevicePairing pairing;
+    pairing.subscriberId = QStringLiteral("sub-1");
+    pairing.deviceSecret = QStringLiteral("secret-1");
+    pairing.serverBaseUrl = QStringLiteral("http://127.0.0.1:%1").arg(relay.port());
+    pairing.registrationUrl =
+        QStringLiteral("http://127.0.0.1:%1/api/notifications/native/register").arg(relay.port());
+    pairing.pairingToken = QStringLiteral("pair-tok");
+    pairing.deviceId = QStringLiteral("device-1");
+    pairing.deviceName = QStringLiteral("My Linux Desktop");
+    QVERIFY(pairingStore.save(pairing));
+
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    ContactSyncClient client(http);
+    GroupsClient groupsClient(http);
+    GroupsRepository groupsRepository(groupsClient, groupDao, pairingStore);
+    ContactPhotoClient photoClient(http);
+    QTemporaryDir photoCacheDir;
+    QVERIFY(photoCacheDir.isValid());
+    ContactPhotoCache photoCache(photoCacheDir.path());
+    ContactPhotoRepository photoRepository(photoClient, photoCache, pairingStore);
+    ContactSyncRepository repository(client, contactDao, pendingDao, cursorStore, pairingStore, db.handle());
+
+    Contact seed;
+    seed.uid = QStringLiteral("contact-1");
+    seed.rev = 1;
+    seed.fn = QStringLiteral("No Photo Served");
+    seed.photoRef = QStringLiteral("photo-ref-1");
+    QVERIFY(contactDao.insertOrReplace(seed));
+
+    NetworkExecutor executor(3000);
+    ContactsController controller(repository, groupsRepository, photoRepository, executor);
+    ExecutorShutdownGuard shutdownGuard{ executor };
+
+    QVERIFY(controller.photoPathFor(QStringLiteral("contact-1")).isEmpty());
+    QTRY_COMPARE_WITH_TIMEOUT(relay.requestCount(), 1, 5000);
+
+    for (int i = 0; i < 10; ++i)
+        QVERIFY(controller.photoPathFor(QStringLiteral("contact-1")).isEmpty());
+
+    // Still one. A failure is remembered, not re-attempted per binding pass.
+    QTest::qWait(200);
+    QCOMPARE(relay.requestCount(), 1);
 }
 
 QTEST_GUILESS_MAIN(ContactsControllerTest)

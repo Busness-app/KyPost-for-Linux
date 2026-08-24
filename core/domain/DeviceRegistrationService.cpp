@@ -229,7 +229,7 @@ NativeRegistrationResult DeviceRegistrationService::pair(const PairingParams& pa
     return finishPair(std::move(attempt), params, result);
 }
 
-std::optional<NativeRegistrationResult> DeviceRegistrationService::reregisterIfPaired(const QString& deviceToken)
+std::optional<PairingParams> DeviceRegistrationService::reregistrationParams() const
 {
     const std::optional<DevicePairing> pairing = m_pairingStore.load();
     if (!pairing.has_value())
@@ -241,6 +241,14 @@ std::optional<NativeRegistrationResult> DeviceRegistrationService::reregisterIfP
     params.registrationUrl = pairing->registrationUrl;
     params.pairingToken = pairing->pairingToken;
     params.deviceName = pairing->deviceName;
+    return params;
+}
 
-    return pair(params, deviceToken);
+std::optional<NativeRegistrationResult> DeviceRegistrationService::reregisterIfPaired(const QString& deviceToken)
+{
+    const std::optional<PairingParams> params = reregistrationParams();
+    if (!params.has_value())
+        return std::nullopt;
+
+    return pair(*params, deviceToken);
 }

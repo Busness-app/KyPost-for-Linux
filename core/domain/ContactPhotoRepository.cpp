@@ -2,7 +2,6 @@
 
 #include "domain/DevicePairing.h"
 #include "domain/PairingStore.h"
-#include "net/ContactPhotoClient.h"
 #include "net/RelayAuth.h"
 #include "stores/ContactPhotoCache.h"
 
@@ -16,35 +15,60 @@ ContactPhotoRepository::ContactPhotoRepository(ContactPhotoClient& client, Conta
 {
 }
 
+QString ContactPhotoRepository::cachedPathFor(const QString& photoRef) const
+{
+    if (photoRef.isEmpty())
+        return QString();
+    return m_cache.cachedPathFor(photoRef);
+}
+
+std::optional<RelayRequestPlan> ContactPhotoRepository::planFetch() const
+{
+    const std::optional<DevicePairing> pairing = m_pairingStore.load();
+    if (!pairing.has_value())
+        return std::nullopt;
+    return RelayRequestPlan{ RelayEndpoint{ QUrl(pairing->serverBaseUrl),
+                                             RelayAuth{ pairing->deviceId, pairing->deviceSecret } },
+                              identityOf(*pairing) };
+}
+
+ContactPhotoFetchResult ContactPhotoRepository::fetchWith(HttpClient& httpClient,
+                                                           const RelayEndpoint& endpoint,
+                                                           const QString& contactUid)
+{
+    ContactPhotoClient client(httpClient);
+    return client.fetch(endpoint.serverBaseUrl, contactUid, endpoint.auth);
+}
+
+QString ContactPhotoRepository::applyFetch(const RelayRequestPlan& plan, const QString& photoRef,
+                                            const ContactPhotoFetchResult& result) const
+{
+    if (result.error.has_value() || result.photoBytes.isEmpty())
+        return QString(); // degrade gracefully
+
+    if (!m_pairingStore.stillCurrent(plan.identity))
+        return QString();
+
+    return m_cache.store(photoRef, result.photoBytes);
+}
+
 QString ContactPhotoRepository::photoPathFor(const QString& contactUid, const QString& photoRef) const
 {
     if (photoRef.isEmpty())
         return QString();
 
-    const QString cached = m_cache.cachedPathFor(photoRef);
+    const QString cached = cachedPathFor(photoRef);
     if (!cached.isEmpty())
         return cached;
 
-    const std::optional<DevicePairing> pairing = m_pairingStore.load();
-    if (!pairing.has_value())
+    const std::optional<RelayRequestPlan> plan = planFetch();
+    if (!plan.has_value())
         return QString(); // not paired -- degrade gracefully, no crash
 
-    const RelayAuth auth{ pairing->deviceId, pairing->deviceSecret };
-    const QUrl serverUrl(pairing->serverBaseUrl);
-    // Captured before the fetch, which blocks this thread on a nested event
-    // loop -- so a re-pair can be delivered during it.
-    const PairingIdentity requestedBy = identityOf(*pairing);
-
-    const ContactPhotoFetchResult result = m_client.fetch(serverUrl, contactUid, auth);
-    if (result.error.has_value() || result.photoBytes.isEmpty())
-        return QString(); // degrade gracefully -- next call simply retries
-
-    // A face is about as identifying as cached data gets, and the photo cache
-    // directory is one of the things pairing a replacement account erases.
-    // Writing this now would put it back, keyed by a photoRef the new
-    // account's contacts can resolve.
-    if (!m_pairingStore.stillCurrent(requestedBy))
-        return QString();
-
-    return m_cache.store(photoRef, result.photoBytes);
+    // The identity is captured in the plan BEFORE the fetch, which blocks this
+    // thread on a nested event loop -- so a re-pair can be delivered during it
+    // and applyFetch() can tell.
+    const ContactPhotoFetchResult result =
+        m_client.fetch(plan->endpoint.serverBaseUrl, contactUid, plan->endpoint.auth);
+    return applyFetch(*plan, photoRef, result);
 }

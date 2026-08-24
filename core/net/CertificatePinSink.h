@@ -17,8 +17,8 @@ class NetworkExecutor;
 // executor's, used by converted controllers, and the GUI-thread one still
 // serving the rest (see docs/THREADING.md). Every pin mutation used to name
 // an HttpClient directly, which meant the first conversion silently shipped
-// an UNPINNED code path -- MfaController's requests went to the executor's
-// client, which nobody had ever given a pin or a mismatch handler. The
+// an UNPINNED code path -- the converted controller's requests went to the
+// executor's client, which nobody had ever given a pin or a mismatch handler. The
 // device secret went out over whatever certificate the CA chain accepted,
 // and the "your mail server is being impersonated" banner could not fire
 // because there was nothing to compare against.

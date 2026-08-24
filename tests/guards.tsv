@@ -50,7 +50,15 @@ app/pgp/PgpQrController.cpp	    return myQrStillOurs() ? m_myQrUrl : QString();	
 core/pgp/EncryptedMessageReader.cpp	    return PgpSignatureVerdict::ValidFromUnknownKey;	    return PgpSignatureVerdict::ValidFromSender;	EncryptedMessageReaderTest:aValidSignatureFromAKeyNobodyBindsToTheSenderIsNotCreditedToThem
 
 # --- a key the relay flags as conflicting is not used to verify ----------
-core/pgp/EncryptedMessageReader.cpp	        if (key.conflict)	        if (false)	EncryptedMessageReaderTest:aConflictingKeyIsNotUsedToVerify
+core/pgp/EncryptedMessageReader.cpp	        if (key.conflict || key.fingerprint.isEmpty())	        if (false)	EncryptedMessageReaderTest:aConflictingKeyIsNotUsedToVerify
+
+# --- and the READ path checks the claimed fingerprint, like the send path -
+#
+# Passing an empty expectedFingerprint switches the check off inside
+# importPublicKey(). That is what this line used to do, so opening any signed
+# message wrote relay-chosen public keys into the user's durable GnuPG keyring
+# with nothing verified about them.
+core/pgp/EncryptedMessageReader.cpp	            importPublicKey(key.publicKey.toUtf8(), key.fingerprint, gnupgHome);	            importPublicKey(key.publicKey.toUtf8(), QString(), gnupgHome);	EncryptedMessageReaderTest:aSignerKeyWhoseClaimedFingerprintIsWrongNeverReachesTheKeyring
 
 # --- the relay's claimed fingerprint is checked before the real keyring ---
 core/pgp/OpenPgpKeyImporter.cpp	        && observed.compare(expectedFingerprint, Qt::CaseInsensitive) != 0) {	        && false) {	OpenPgpKeyImporterTest:aFingerprintThatDoesNotMatchIsRefusedBeforeTheKeyringIsTouched

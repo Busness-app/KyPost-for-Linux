@@ -36,13 +36,20 @@ QByteArray payloadResponse(const QByteArray& armored)
 // The same, plus the keys the relay's address book binds to this message's
 // sender. The relay has already narrowed these to that sender; the client must
 // not re-derive the binding.
+//
+// `claimedFingerprint` is what the relay says the key's fingerprint is, and is
+// a separate parameter from the key itself precisely so a test can make the
+// two disagree -- which is the case the read path now has to refuse. Passing
+// an empty one reproduces the pre-2026-08-24 wire, where the field did not
+// exist at all.
 QByteArray signedPayloadResponse(const QByteArray& armored, const QByteArray& signerPublicKey,
-                                  bool conflict = false,
+                                  const QString& claimedFingerprint, bool conflict = false,
                                   const QString& resolvedSender = QStringLiteral("sender@example.com"))
 {
     QJsonArray keys;
     if (!signerPublicKey.isEmpty()) {
         keys.append(QJsonObject{ { QStringLiteral("publicKey"), QString::fromUtf8(signerPublicKey) },
+                                  { QStringLiteral("fingerprint"), claimedFingerprint },
                                   { QStringLiteral("addresses"), QJsonArray{ resolvedSender } },
                                   { QStringLiteral("conflict"), conflict } });
     }
@@ -85,6 +92,9 @@ private slots:
     void aConflictingKeyIsNotUsedToVerify();
     void anUnsignedMessageIsNotReportedAsAnythingElse();
     void theVerdictIsAboutTheResolvedSenderNotTheDisplayName();
+
+    void aSignerKeyWithNoClaimedFingerprintNeverReachesTheKeyring();
+    void aSignerKeyWhoseClaimedFingerprintIsWrongNeverReachesTheKeyring();
 
 private:
     PgpReadResult readAgainst(FakeRelayServer& fake, const OpenPgpDecryptor& decryptor,
@@ -296,7 +306,8 @@ void EncryptedMessageReaderTest::aSignatureFromTheSendersOwnKeyIsCreditedToThem(
     QVERIFY(!armored.isEmpty());
 
     FakeRelayServer fake(signedPayloadResponse(
-        armored, m_signer.exportPublicKey(QStringLiteral("sender@example.com"))));
+        armored, m_signer.exportPublicKey(QStringLiteral("sender@example.com")),
+        m_signer.fingerprintOf(QStringLiteral("sender@example.com"))));
     const PgpReadResult result = readAgainst(fake, OpenPgpDecryptor(), m_fixture.path());
 
     QCOMPARE(result.status, PgpReadStatus::Decrypted);
@@ -333,7 +344,8 @@ void EncryptedMessageReaderTest::aValidSignatureFromAKeyNobodyBindsToTheSenderIs
     // The relay offers the key it binds to sender@example.com -- the real one
     // -- while the message was signed by Eve's.
     FakeRelayServer fake(signedPayloadResponse(
-        armored, m_signer.exportPublicKey(QStringLiteral("sender@example.com"))));
+        armored, m_signer.exportPublicKey(QStringLiteral("sender@example.com")),
+        m_signer.fingerprintOf(QStringLiteral("sender@example.com"))));
     const PgpReadResult result = readAgainst(fake, OpenPgpDecryptor(), m_fixture.path());
 
     QCOMPARE(result.status, PgpReadStatus::Decrypted);
@@ -355,7 +367,8 @@ void EncryptedMessageReaderTest::aSignatureFromAnAbsentKeyIsUnanswerableNotInval
     QVERIFY(!armored.isEmpty());
 
     FakeRelayServer fake(signedPayloadResponse(
-        armored, m_signer.exportPublicKey(QStringLiteral("sender@example.com"))));
+        armored, m_signer.exportPublicKey(QStringLiteral("sender@example.com")),
+        m_signer.fingerprintOf(QStringLiteral("sender@example.com"))));
     const PgpReadResult result = readAgainst(fake, OpenPgpDecryptor(), m_freshReader.path());
 
     QCOMPARE(result.status, PgpReadStatus::Decrypted);
@@ -379,7 +392,7 @@ void EncryptedMessageReaderTest::withNoKeyBoundToTheSenderNothingIsCredited()
         signedAndEncryptedTo(m_signer, QStringLiteral("sender@example.com"), "signed\n");
     QVERIFY(!armored.isEmpty());
 
-    FakeRelayServer fake(signedPayloadResponse(armored, {}));
+    FakeRelayServer fake(signedPayloadResponse(armored, {}, {}));
     const PgpReadResult result = readAgainst(fake, OpenPgpDecryptor(), m_fixture.path());
 
     QCOMPARE(result.status, PgpReadStatus::Decrypted);
@@ -397,7 +410,8 @@ void EncryptedMessageReaderTest::aConflictingKeyIsNotUsedToVerify()
     QVERIFY(!armored.isEmpty());
 
     FakeRelayServer fake(signedPayloadResponse(
-        armored, m_signer.exportPublicKey(QStringLiteral("sender@example.com")), /*conflict=*/true));
+        armored, m_signer.exportPublicKey(QStringLiteral("sender@example.com")),
+        m_signer.fingerprintOf(QStringLiteral("sender@example.com")), /*conflict=*/true));
     const PgpReadResult result = readAgainst(fake, OpenPgpDecryptor(), m_fixture.path());
 
     QCOMPARE(result.status, PgpReadStatus::Decrypted);
@@ -413,7 +427,8 @@ void EncryptedMessageReaderTest::anUnsignedMessageIsNotReportedAsAnythingElse()
     QVERIFY(!armored.isEmpty());
 
     FakeRelayServer fake(signedPayloadResponse(
-        armored, m_signer.exportPublicKey(QStringLiteral("sender@example.com"))));
+        armored, m_signer.exportPublicKey(QStringLiteral("sender@example.com")),
+        m_signer.fingerprintOf(QStringLiteral("sender@example.com"))));
     const PgpReadResult result = readAgainst(fake, OpenPgpDecryptor(), m_fixture.path());
 
     QCOMPARE(result.status, PgpReadStatus::Decrypted);
@@ -430,12 +445,75 @@ void EncryptedMessageReaderTest::theVerdictIsAboutTheResolvedSenderNotTheDisplay
     QVERIFY(!armored.isEmpty());
 
     FakeRelayServer fake(signedPayloadResponse(
-        armored, m_signer.exportPublicKey(QStringLiteral("sender@example.com"))));
+        armored, m_signer.exportPublicKey(QStringLiteral("sender@example.com")),
+        m_signer.fingerprintOf(QStringLiteral("sender@example.com"))));
     const PgpReadResult result = readAgainst(fake, OpenPgpDecryptor(), m_fixture.path());
 
     QCOMPARE(result.signedBy, QStringLiteral("sender@example.com"));
     QVERIFY2(!result.signedBy.contains(QStringLiteral("evil.example")),
              "the display form of the From header reached the verdict");
+}
+
+// The read path used to pass an empty expectedFingerprint to
+// importPublicKey(), which switches its check off -- so opening any signed
+// message wrote whatever public keys the relay offered into the user's
+// DURABLE GnuPG keyring, unverified. These two pin the fix from the only
+// angle that matters: what is in the keyring afterwards.
+//
+// A fresh keyring per test, because the assertion is "this key is NOT here"
+// and the shared fixtures have had the signer's key imported by tests above.
+void EncryptedMessageReaderTest::aSignerKeyWithNoClaimedFingerprintNeverReachesTheKeyring()
+{
+    GnupgFixture reader;
+    QVERIFY(reader.build(QStringLiteral("Nofp <nofp@example.com>")));
+
+    const QByteArray armored =
+        signedAndEncryptedTo(m_signer, QStringLiteral("sender@example.com"), "signed\n", &reader,
+                              QStringLiteral("nofp@example.com"));
+    QVERIFY(!armored.isEmpty());
+
+    const QString signerFingerprint = m_signer.fingerprintOf(QStringLiteral("sender@example.com"));
+    QVERIFY(!signerFingerprint.isEmpty());
+    QVERIFY2(!GnupgFixture::fingerprintsIn(reader.path()).contains(signerFingerprint),
+             "the fixture already held the signer's key, so this proves nothing");
+
+    // The pre-2026-08-24 wire: a key, and no fingerprint to check it against.
+    FakeRelayServer fake(signedPayloadResponse(
+        armored, m_signer.exportPublicKey(QStringLiteral("sender@example.com")), QString()));
+    const PgpReadResult result = readAgainst(fake, OpenPgpDecryptor(), reader.path());
+
+    // The message still opens. Only the badge is withheld.
+    QCOMPARE(result.status, PgpReadStatus::Decrypted);
+    QCOMPARE(result.signature, PgpSignatureVerdict::CannotCheck);
+    QVERIFY2(!GnupgFixture::fingerprintsIn(reader.path()).contains(signerFingerprint),
+             "an unchecked relay-supplied key was written to the user's keyring");
+}
+
+void EncryptedMessageReaderTest::aSignerKeyWhoseClaimedFingerprintIsWrongNeverReachesTheKeyring()
+{
+    GnupgFixture reader;
+    QVERIFY(reader.build(QStringLiteral("Badfp <badfp@example.com>")));
+
+    const QByteArray armored =
+        signedAndEncryptedTo(m_signer, QStringLiteral("sender@example.com"), "signed\n", &reader,
+                              QStringLiteral("badfp@example.com"));
+    QVERIFY(!armored.isEmpty());
+
+    const QString signerFingerprint = m_signer.fingerprintOf(QStringLiteral("sender@example.com"));
+    const QString strangerFingerprint = m_stranger.fingerprintOf(QStringLiteral("eve@evil.example"));
+    QVERIFY(!signerFingerprint.isEmpty() && !strangerFingerprint.isEmpty());
+    QVERIFY(signerFingerprint != strangerFingerprint);
+
+    // A relay whose key and whose claim about that key disagree -- the case
+    // the send path has always refused and the read path did not.
+    FakeRelayServer fake(signedPayloadResponse(
+        armored, m_signer.exportPublicKey(QStringLiteral("sender@example.com")), strangerFingerprint));
+    const PgpReadResult result = readAgainst(fake, OpenPgpDecryptor(), reader.path());
+
+    QCOMPARE(result.status, PgpReadStatus::Decrypted);
+    QCOMPARE(result.signature, PgpSignatureVerdict::CannotCheck);
+    QVERIFY2(!GnupgFixture::fingerprintsIn(reader.path()).contains(signerFingerprint),
+             "a key the relay mis-fingerprinted was written to the user's keyring anyway");
 }
 
 QTEST_GUILESS_MAIN(EncryptedMessageReaderTest)

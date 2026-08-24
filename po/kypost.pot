@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: kypost\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-07-26 10:57-0400\n"
+"POT-Creation-Date: 2026-08-24 13:13-0400\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -16,149 +16,299 @@ msgstr ""
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=INTEGER; plural=EXPRESSION;\n"
 
-#: app/contacts/ContactsController.cpp:231
-#, kde-format
-msgid "Synced -- %1 pushed, %2 applied"
-msgstr ""
-
-#: app/contacts/ContactsController.cpp:243
-#: app/contacts/ContactsController.cpp:286 app/mail/MailController.cpp:159
-#: app/pairing/MfaController.cpp:41 app/pgp/PgpQrController.cpp:94
+#: app/contacts/ContactsController.cpp:261
+#: app/contacts/ContactsController.cpp:306
+#: app/contacts/ContactsController.cpp:351
+#: app/contacts/ContactsController.cpp:421 app/mail/MailController.cpp:190
+#: app/mail/MailController.cpp:261 app/mail/MailController.cpp:549
+#: app/mail/MailController.cpp:1638 app/mail/MailController.cpp:1773
+#: app/pgp/PgpQrController.cpp:103 app/pgp/PgpQrController.cpp:137
 #, kde-format
 msgid "Not paired"
 msgstr ""
 
-#: app/contacts/ContactsController.cpp:247
-#: app/contacts/ContactsController.cpp:290
+#: app/contacts/ContactsController.cpp:289
+#, kde-format
+msgid "Synced -- %1 pushed, %2 applied"
+msgstr ""
+
+#: app/contacts/ContactsController.cpp:310
+#: app/contacts/ContactsController.cpp:425
 #, kde-format
 msgid "Unauthorized -- please re-pair this device"
 msgstr ""
 
-#: app/contacts/ContactsController.cpp:251
-#: app/contacts/ContactsController.cpp:294
+#: app/contacts/ContactsController.cpp:314
+#: app/contacts/ContactsController.cpp:429
 #, kde-format
 msgid "Service unavailable"
 msgstr ""
 
-#: app/contacts/ContactsController.cpp:255
+#: app/contacts/ContactsController.cpp:318
 #, kde-format
 msgid "Sync failed, try again"
 msgstr ""
 
-#: app/contacts/ContactsController.cpp:277
+#: app/contacts/ContactsController.cpp:326
+#, kde-format
+msgid "Could not save synced contacts to this device"
+msgstr ""
+
+#: app/contacts/ContactsController.cpp:411
 #, kde-format
 msgid "Merged %1 duplicate(s) -- %2"
 msgstr ""
 
-#: app/contacts/ContactsController.cpp:280
+#: app/contacts/ContactsController.cpp:415
 #, kde-format
 msgid "No duplicates found"
 msgstr ""
 
-#: app/contacts/ContactsController.cpp:298
+#: app/contacts/ContactsController.cpp:433
 #, kde-format
 msgid "Dedupe failed, try again"
 msgstr ""
 
-#: app/contacts/ContactsController.cpp:401
-#: app/contacts/ContactsController.cpp:419
+#: app/contacts/ContactsController.cpp:544
+#: app/contacts/ContactsController.cpp:572
 #, kde-format
 msgid "Name is required"
 msgstr ""
 
-#: app/contacts/ContactsController.cpp:425
+#: app/contacts/ContactsController.cpp:557
+#: app/contacts/ContactsController.cpp:587
+#, kde-format
+msgid "Could not save this contact to the local database"
+msgstr ""
+
+#: app/contacts/ContactsController.cpp:578
 #, kde-format
 msgid "Contact not found"
 msgstr ""
 
-#: app/mail/MailController.cpp:199
+#: app/contacts/ContactsController.cpp:601
+#, kde-format
+msgid "Could not delete this contact from the local database"
+msgstr ""
+
+#: app/mail/MailController.cpp:287
+#, kde-format
+msgid ""
+"Downloaded mail could not be saved to this device. Check free disk space; "
+"the next refresh will try again."
+msgstr ""
+
+#: app/mail/MailController.cpp:297
 #, kde-format
 msgid "Refresh failed"
 msgstr ""
 
-#: app/mail/MailController.cpp:222
+#: app/mail/MailController.cpp:332
+#, kde-format
+msgid ""
+"That message could not be found. It may have been moved or deleted, or it "
+"may be in a folder KyPost has not synced."
+msgstr ""
+
+#: app/mail/MailController.cpp:378
 #, kde-format
 msgid "Action failed"
 msgstr ""
 
-#: app/mail/MailController.cpp:294
+#: app/mail/MailController.cpp:456
 #, kde-format
 msgid "Could not open attachment: %1"
 msgstr ""
 
-#: app/mail/MailController.cpp:300
+#: app/mail/MailController.cpp:462
 #, kde-format
 msgid "Attachments exceed the 25 MB limit"
 msgstr ""
 
-#: app/mail/MailController.cpp:370
+#: app/mail/MailController.cpp:587
 #, kde-format
 msgid "Could not create folder"
 msgstr ""
 
-#: app/mail/MailController.cpp:385
+#: app/mail/MailController.cpp:597
 #, kde-format
 msgid "Could not rename folder"
 msgstr ""
 
-#: app/mail/MailController.cpp:405
+#: app/mail/MailController.cpp:616
 #, kde-format
 msgid "Could not delete folder"
 msgstr ""
 
-#: app/mail/MailController.cpp:433
+#: app/mail/MailController.cpp:663
 #, kde-format
 msgid "Could not save draft"
 msgstr ""
 
-#: app/mail/MailController.cpp:500
+#: app/mail/MailController.cpp:669
+#, kde-format
+msgid "Saved to Drafts, but KyPost could not open your browser."
+msgstr ""
+
+#: app/mail/MailController.cpp:748
 #, kde-format
 msgid ""
 "This account's PGP key is held only in your browser, so this app cannot "
 "encrypt on its behalf. Continue in webmail to send it."
 msgstr ""
 
-#: app/mail/MailController.cpp:508 app/mail/MailController.cpp:554
+#: app/mail/MailController.cpp:765 app/mail/MailController.cpp:822
 #, kde-format
 msgid "Could not send message"
 msgstr ""
 
-#: app/mail/MailController.cpp:688
+#: app/mail/MailController.cpp:1006
 #, kde-format
 msgid ""
 "This device is paired over an insecure connection, so KyPost cannot open "
 "webmail for you. Open your mail in a browser to send this message."
 msgstr ""
 
-#: app/mail/MailController.cpp:695
-#, kde-format
-msgid "Saved to Drafts, but KyPost could not open your browser."
-msgstr ""
-
-#: app/mail/MailController.cpp:713
+#: app/mail/MailController.cpp:1035
 #, kde-format
 msgid "Could not list attachments"
 msgstr ""
 
-#: app/mail/MailController.cpp:762
+#: app/mail/MailController.cpp:1157
 #, kde-format
 msgid "Download failed"
 msgstr ""
 
-#: app/mail/MailController.cpp:790
+#: app/mail/MailController.cpp:1193
+#, kde-format
+msgid "Could not create the download folder %1"
+msgstr ""
+
+#: app/mail/MailController.cpp:1200
 #, kde-format
 msgid "Could not write attachment to %1"
 msgstr ""
 
-#: app/mail/MailController.cpp:820
+#: app/mail/MailController.cpp:1204 app/mail/MailController.cpp:1316
 #, kde-format
-msgid "Could not create a temporary location for the attachment"
+msgid "The attachment could not be written in full (is the disk full?)."
 msgstr ""
 
-#: app/mail/MailController.cpp:828
+#: app/mail/MailController.cpp:1259
+#, kde-format
+msgid "unknown"
+msgstr ""
+
+#: app/mail/MailController.cpp:1257
+#, kde-format
+msgid ""
+"KyPost will not open attachments of this type (%1). Turn off Hostile "
+"Location Protection to save it and open it yourself."
+msgstr ""
+
+#: app/mail/MailController.cpp:1277
+#, kde-format
+msgid ""
+"KyPost will not write this attachment: the temporary location (%1) is a link "
+"to somewhere else."
+msgstr ""
+
+#: app/mail/MailController.cpp:1283
+#, kde-format
+msgid ""
+"KyPost will not write this attachment: the temporary location (%1) cannot be "
+"made private to you."
+msgstr ""
+
+#: app/mail/MailController.cpp:1300
 #, kde-format
 msgid "Could not open the attachment"
+msgstr ""
+
+#: app/mail/MailController.cpp:1311
+#, kde-format
+msgid ""
+"KyPost will not write this attachment: it cannot be kept unreadable to other "
+"users of this machine."
+msgstr ""
+
+#: app/mail/MailController.cpp:1324
+#, kde-format
+msgid "KyPost could not open the attachment with any installed application."
+msgstr ""
+
+#: app/mail/MailController.cpp:1688
+#, kde-format
+msgid "The message could not be sent. Try again."
+msgstr ""
+
+#: app/mail/MailController.cpp:1691
+#, kde-format
+msgid ""
+"This account has no mail configuration, so there is no address to send from."
+msgstr ""
+
+#: app/mail/MailController.cpp:1699
+#, kde-format
+msgid "A recipient has no usable encryption key, so this message was not sent."
+msgstr ""
+
+#: app/mail/MailController.cpp:1701
+#, kde-format
+msgid "No usable encryption key for %1, so this message was not sent."
+msgstr ""
+
+#: app/mail/MailController.cpp:1705
+#, kde-format
+msgid ""
+"Your own OpenPGP key is not available, so this message could not be signed. "
+"It was not sent unsigned."
+msgstr ""
+
+#: app/mail/MailController.cpp:1709
+#, kde-format
+msgid "Unlocking your key was cancelled, so the message was not sent."
+msgstr ""
+
+#: app/mail/MailController.cpp:1712
+#, kde-format
+msgid ""
+"A recipient's key did not match what the server said about it, so this "
+"message was not sent."
+msgstr ""
+
+#: app/mail/MailController.cpp:1716
+#, kde-format
+msgid "The message could not be encrypted, so it was not sent."
+msgstr ""
+
+#: app/mail/MailController.cpp:1719
+#, kde-format
+msgid ""
+"GnuPG is not available on this computer, so this message cannot be encrypted "
+"here."
+msgstr ""
+
+#: app/mail/MailController.cpp:1728
+#, kde-format
+msgid ""
+"This message is too large to send encrypted. Each blind-copied recipient "
+"receives their own encrypted copy, so removing an attachment or some "
+"recipients will bring it under the limit."
+msgstr ""
+
+#: app/mail/MailController.cpp:1733
+#, kde-format
+msgid ""
+"This account's key is held by the server, which encrypts on its own. Send it "
+"the usual way."
+msgstr ""
+
+#: app/mail/MailController.cpp:1843
+#, kde-format
+msgid "This message decrypted, but contains no readable text."
 msgstr ""
 
 #: app/mail/PgpMessagePresentation.cpp:27
@@ -171,22 +321,100 @@ msgstr ""
 msgid "Encrypted, could not be decrypted"
 msgstr ""
 
-#: app/mail/PgpMessagePresentation.cpp:41
+#: app/mail/PgpMessagePresentation.cpp:43
+#, kde-format
+msgid "Signed, and the signature checks out."
+msgstr ""
+
+#: app/mail/PgpMessagePresentation.cpp:44
+#, kde-format
+msgid "Signed by %1."
+msgstr ""
+
+#: app/mail/PgpMessagePresentation.cpp:50
+#, kde-format
+msgid "This message is signed, but not by a key known for its sender."
+msgstr ""
+
+#: app/mail/PgpMessagePresentation.cpp:51
+#, kde-format
+msgid "This message is signed, but not by any key known for %1."
+msgstr ""
+
+#: app/mail/PgpMessagePresentation.cpp:53
+#, kde-format
+msgid "The signature on this message is not valid. It may have been altered."
+msgstr ""
+
+#: app/mail/PgpMessagePresentation.cpp:57
+#, kde-format
+msgid ""
+"This message is signed, but there is no key available to check the signature "
+"against."
+msgstr ""
+
+#: app/mail/PgpMessagePresentation.cpp:75
+#, kde-format
+msgid "This message carries no encrypted content to open."
+msgstr ""
+
+#: app/mail/PgpMessagePresentation.cpp:77
+#, kde-format
+msgid ""
+"This account's key is still held by the server. Finish moving it to this "
+"device in webmail, and encrypted mail will open here."
+msgstr ""
+
+#: app/mail/PgpMessagePresentation.cpp:80
+#, kde-format
+msgid "This message is too large to open here. Read it in webmail."
+msgstr ""
+
+#: app/mail/PgpMessagePresentation.cpp:82
+#, kde-format
+msgid "Could not reach the server to fetch this message. Try again."
+msgstr ""
+
+#: app/mail/PgpMessagePresentation.cpp:84
+#, kde-format
+msgid ""
+"This message was encrypted to a key this computer does not have. Open it "
+"where you keep that key."
+msgstr ""
+
+#: app/mail/PgpMessagePresentation.cpp:87
+#, kde-format
+msgid "Unlocking your key was cancelled, or the passphrase was wrong."
+msgstr ""
+
+#: app/mail/PgpMessagePresentation.cpp:89
+#, kde-format
+msgid "This message is not readable OpenPGP data."
+msgstr ""
+
+#: app/mail/PgpMessagePresentation.cpp:91
+#, kde-format
+msgid ""
+"GnuPG is not available on this computer, so encrypted mail cannot be opened "
+"here."
+msgstr ""
+
+#: app/mail/PgpMessagePresentation.cpp:106
 #, kde-format
 msgid "This message is end-to-end encrypted"
 msgstr ""
 
-#: app/mail/PgpMessagePresentation.cpp:43
+#: app/mail/PgpMessagePresentation.cpp:108
 #, kde-format
 msgid "This message could not be decrypted"
 msgstr ""
 
-#: app/mail/PgpMessagePresentation.cpp:45
+#: app/mail/PgpMessagePresentation.cpp:110
 #, kde-format
 msgid "Decrypted by the server"
 msgstr ""
 
-#: app/mail/PgpMessagePresentation.cpp:59
+#: app/mail/PgpMessagePresentation.cpp:124
 #, kde-format
 msgid ""
 "Your account's PGP key is held only by you, so neither the server nor this "
@@ -194,162 +422,329 @@ msgid ""
 "unlocked, to read it."
 msgstr ""
 
-#: app/mail/PgpMessagePresentation.cpp:64
+#: app/mail/PgpMessagePresentation.cpp:129
 #, kde-format
 msgid "The server tried to decrypt this message and failed."
 msgstr ""
 
-#: app/mail/PgpMessagePresentation.cpp:65
+#: app/mail/PgpMessagePresentation.cpp:130
 #, kde-format
 msgid "The server tried to decrypt this message and failed: %1"
 msgstr ""
 
-#: app/mail/PgpMessagePresentation.cpp:67
+#: app/mail/PgpMessagePresentation.cpp:132
 #, kde-format
 msgid ""
 "This message arrived encrypted. The server decrypted it to show it here, "
 "which means the server could read its contents."
 msgstr ""
 
-#: app/pairing/MfaController.cpp:52
+#: app/main.cpp:430
 #, kde-format
-msgid "Approved"
+msgid "Opening the system secret store..."
 msgstr ""
 
-#: app/pairing/MfaController.cpp:52
+#: app/pairing/PairingController.cpp:297 app/pairing/PairingController.cpp:346
 #, kde-format
-msgid "Denied"
+msgid "Unlock KyPost first, then open the pairing link again."
 msgstr ""
 
-#: app/pairing/MfaController.cpp:64
-#, kde-format
-msgid "This request was already resolved (%1)."
-msgstr ""
-
-#: app/pairing/MfaController.cpp:67
-#, kde-format
-msgid "This request was already handled or denied."
-msgstr ""
-
-#: app/pairing/MfaController.cpp:74
-#, kde-format
-msgid "Failed to send response, please try again."
-msgstr ""
-
-#: app/pairing/PairingController.cpp:203
+#: app/pairing/PairingController.cpp:304
 #, kde-format
 msgid "This pairing link is invalid or incomplete."
 msgstr ""
 
-#: app/pairing/PairingController.cpp:234
+#: app/pairing/PairingController.cpp:351
 #, kde-format
 msgid "There is no pending pairing request to confirm."
 msgstr ""
 
-#: app/pairing/PairingController.cpp:305
+#: app/pairing/PairingController.cpp:416
+#, kde-format
+msgid ""
+"Unpaired, but some credentials could not be removed from this system's "
+"secret store. Check that your keyring is unlocked."
+msgstr ""
+
+#: app/pairing/PairingController.cpp:569
+#, kde-format
+msgid "This device is not paired, so there is nothing to reconnect."
+msgstr ""
+
+#: app/pairing/PairingController.cpp:599 app/pairing/PairingController.cpp:686
+#, kde-format
+msgid ""
+"Could not read this system's secret store, so KyPost cannot tell whether "
+"pairing would replace an existing account. Check that a keyring service "
+"(gnome-keyring or kwallet) is running and unlocked, then pair again."
+msgstr ""
+
+#: app/pairing/PairingController.cpp:755
 #, kde-format
 msgid "This pairing link was rejected. Check the link and try again."
 msgstr ""
 
-#: app/pairing/PairingController.cpp:308
+#: app/pairing/PairingController.cpp:758
 #, kde-format
 msgid "The server is not configured for pairing yet."
 msgstr ""
 
-#: app/pairing/PairingController.cpp:312
+#: app/pairing/PairingController.cpp:761
+#, kde-format
+msgid "Unlock KyPost first, then try again."
+msgstr ""
+
+#: app/pairing/PairingController.cpp:765
 #, kde-format
 msgid "Pairing failed, please try again."
 msgstr ""
 
-#: app/pgp/PgpQrController.cpp:97
+#: app/pgp/PgpEnrollmentController.cpp:53
+#, kde-format
+msgid "Pair and unlock KyPost before enrolling this device."
+msgstr ""
+
+#: app/pgp/PgpEnrollmentController.cpp:57
+#, kde-format
+msgid "Could not create this device's enrollment key."
+msgstr ""
+
+#: app/pgp/PgpEnrollmentController.cpp:64
+#, kde-format
+msgid "Publishing this device's enrollment key…"
+msgstr ""
+
+#: app/pgp/PgpEnrollmentController.cpp:89
+#, kde-format
+msgid "This account does not use a client-protected OpenPGP key."
+msgstr ""
+
+#: app/pgp/PgpEnrollmentController.cpp:90
+#, kde-format
+msgid "The enrollment key could not be published."
+msgstr ""
+
+#: app/pgp/PgpEnrollmentController.cpp:98
+#, kde-format
+msgid ""
+"In webmail, open Security → Devices, choose this device, and enter the code "
+"shown here."
+msgstr ""
+
+#: app/pgp/PgpEnrollmentController.cpp:122
+#, kde-format
+msgid "No envelope arrived yet. Finish the webmail step, then check again."
+msgstr ""
+
+#: app/pgp/PgpEnrollmentController.cpp:142
+#, kde-format
+msgid "This device is no longer authorised to fetch its envelope."
+msgstr ""
+
+#: app/pgp/PgpEnrollmentController.cpp:151
+#, kde-format
+msgid "The envelope was not sealed for this device or this OpenPGP identity."
+msgstr ""
+
+#: app/pgp/PgpEnrollmentController.cpp:154
+#, kde-format
+msgid "Importing the private key into GnuPG…"
+msgstr ""
+
+#: app/pgp/PgpEnrollmentController.cpp:178
+#, kde-format
+msgid "This device can now decrypt and sign with your OpenPGP key."
+msgstr ""
+
+#: app/pgp/PgpEnrollmentController.cpp:179
+#, kde-format
+msgid ""
+"The key was imported, but KyPost could not update the device status on the "
+"server."
+msgstr ""
+
+#: app/pgp/PgpEnrollmentController.cpp:183
+#, kde-format
+msgid "GnuPG is not available on this computer."
+msgstr ""
+
+#: app/pgp/PgpEnrollmentController.cpp:184
+#, kde-format
+msgid "GnuPG rejected the private key or its fingerprint did not match."
+msgstr ""
+
+#: app/pgp/PgpEnrollmentController.cpp:197
+#, kde-format
+msgid "Checking for the envelope sealed by webmail…"
+msgstr ""
+
+#: app/pgp/PgpQrController.cpp:140
 #, kde-format
 msgid "You haven't set up PGP encryption yet"
 msgstr ""
 
-#: app/pgp/PgpQrController.cpp:100
+#: app/pgp/PgpQrController.cpp:143
 #, kde-format
 msgid "Session expired -- please re-pair this device"
 msgstr ""
 
-#: app/pgp/PgpQrController.cpp:103 app/pgp/PgpQrController.cpp:179
+#: app/pgp/PgpQrController.cpp:146 app/pgp/PgpQrController.cpp:275
 #, kde-format
 msgid "PGP QR exchange is unavailable right now"
 msgstr ""
 
-#: app/pgp/PgpQrController.cpp:106
+#: app/pgp/PgpQrController.cpp:149
 #, kde-format
 msgid "Failed to load QR code, try again"
 msgstr ""
 
-#: app/pgp/PgpQrController.cpp:146
+#: app/pgp/PgpQrController.cpp:222
 #, kde-format
 msgid "That QR code isn't a PGP key-exchange code"
 msgstr ""
 
-#: app/pgp/PgpQrController.cpp:172
+#: app/pgp/PgpQrController.cpp:268
 #, kde-format
 msgid "This person hasn't set up PGP encryption yet"
 msgstr ""
 
-#: app/pgp/PgpQrController.cpp:177
+#: app/pgp/PgpQrController.cpp:273
 #, kde-format
 msgid "That code has expired -- ask them to refresh and scan again"
 msgstr ""
 
-#: app/pgp/PgpQrController.cpp:181
+#: app/pgp/PgpQrController.cpp:277
 #, kde-format
 msgid "Failed to fetch key, try again"
 msgstr ""
 
-#: app/push/NotificationDispatcher.cpp:68
+#: app/push/NotificationDispatcher.cpp:69
+#, kde-format
+msgid "KyPost"
+msgstr ""
+
+#: app/push/NotificationDispatcher.cpp:76
+#, kde-format
+msgid "New mail — unlock to read"
+msgstr ""
+
+#: app/push/NotificationDispatcher.cpp:115
 #, kde-format
 msgid "View"
 msgstr ""
 
-#: app/qml/components/AddressBookPickerDialog.qml:86
-#: app/qml/pages/Compose.qml:309
+#: app/security/AppLockManager.cpp:93
+#, kde-format
+msgid "Use at least %1 digit."
+msgid_plural "Use at least %1 digits."
+msgstr[0] ""
+msgstr[1] ""
+
+#: app/security/AppLockManager.cpp:95
+#, kde-format
+msgid "That PIN is too long (limit %1 characters)."
+msgstr ""
+
+#: app/security/AppLockManager.cpp:97
+#, kde-format
+msgid "Do not use the same digit repeated."
+msgstr ""
+
+#: app/security/AppLockManager.cpp:99
+#, kde-format
+msgid "Avoid a run of consecutive digits."
+msgstr ""
+
+#: app/qml/components/AddressBookPickerDialog.qml:92
+#: app/qml/pages/Compose.qml:336
 msgid "Address Book"
 msgstr ""
 
-#: app/qml/components/AddressBookPickerDialog.qml:93
+#: app/qml/components/AddressBookPickerDialog.qml:99
 #: app/qml/pages/PgpMyQrCode.qml:77 app/qml/pages/PgpScanContactKey.qml:65
 msgid "Close"
 msgstr ""
 
-#: app/qml/components/AddressBookPickerDialog.qml:101
+#: app/qml/components/AddressBookPickerDialog.qml:107
 msgid "Search contacts…"
 msgstr ""
 
-#: app/qml/components/AddressBookPickerDialog.qml:113
+#: app/qml/components/AddressBookPickerDialog.qml:119
 #: app/qml/components/AutocompleteDropdown.qml:140
 msgid "No contacts found"
 msgstr ""
 
-#: app/qml/components/AddressBookPickerDialog.qml:172
+#: app/qml/components/AddressBookPickerDialog.qml:181
 msgid "✓ To"
 msgstr ""
 
-#: app/qml/components/AddressBookPickerDialog.qml:172
-#: app/qml/pages/Compose.qml:303
+#: app/qml/components/AddressBookPickerDialog.qml:181
+#: app/qml/pages/Compose.qml:330
 msgid "To"
 msgstr ""
 
-#: app/qml/components/AddressBookPickerDialog.qml:176
+#: app/qml/components/AddressBookPickerDialog.qml:185
 msgid "✓ Cc"
 msgstr ""
 
-#: app/qml/components/AddressBookPickerDialog.qml:176
-#: app/qml/pages/Compose.qml:316
+#: app/qml/components/AddressBookPickerDialog.qml:185
+#: app/qml/pages/Compose.qml:343
 msgid "Cc"
 msgstr ""
 
-#: app/qml/components/AddressBookPickerDialog.qml:180
+#: app/qml/components/AddressBookPickerDialog.qml:189
 msgid "✓ Bcc"
 msgstr ""
 
-#: app/qml/components/AddressBookPickerDialog.qml:180
-#: app/qml/pages/Compose.qml:324
+#: app/qml/components/AddressBookPickerDialog.qml:189
+#: app/qml/pages/Compose.qml:351
 msgid "Bcc"
+msgstr ""
+
+#: app/qml/components/CertificateChangeDialog.qml:115
+msgid "A different authority is vouching for this server"
+msgstr ""
+
+#: app/qml/components/CertificateChangeDialog.qml:125
+msgid ""
+"KyPost pinned the certificate authority that vouched for this server when "
+"this device was paired, and a different one is vouching for it now. Routine "
+"certificate renewals do not change this; being sent to a different server, "
+"or through something intercepting the connection, does. Every request is "
+"being refused until you decide."
+msgstr ""
+
+#: app/qml/components/CertificateChangeDialog.qml:133
+msgid "Authority pinned when paired"
+msgstr ""
+
+#: app/qml/components/CertificateChangeDialog.qml:148
+msgid "Authority presented now"
+msgstr ""
+
+#: app/qml/components/CertificateChangeDialog.qml:153
+msgid "The authority for this server's certificate could not be read at all."
+msgstr ""
+
+#: app/qml/components/CertificateChangeDialog.qml:165
+msgid ""
+"Only continue if you know why it changed — ask whoever runs this server to "
+"confirm the fingerprint above. Reconnecting sends this device's credentials "
+"to whoever holds that key."
+msgstr ""
+
+#: app/qml/components/CertificateChangeDialog.qml:178
+#: app/qml/components/HyperlinkDialog.qml:134
+#: app/qml/components/NotificationFolderDialog.qml:139
+#: app/qml/components/PickupFallbackDialog.qml:152 app/qml/DesktopRoot.qml:407
+#: app/qml/DesktopRoot.qml:490 app/qml/DesktopRoot.qml:593
+#: app/qml/pages/ContactDetail.qml:746 app/qml/pages/Pairing.qml:173
+#: app/qml/pages/Settings.qml:860 app/qml/pages/Settings.qml:1071
+msgid "Cancel"
+msgstr ""
+
+#: app/qml/components/CertificateChangeDialog.qml:182
+msgid "Trust and reconnect"
 msgstr ""
 
 #: app/qml/components/HyperlinkDialog.qml:42
@@ -360,44 +755,46 @@ msgstr ""
 msgid "Link must start with http://, https://, or mailto:"
 msgstr ""
 
-#: app/qml/components/HyperlinkDialog.qml:83
+#: app/qml/components/HyperlinkDialog.qml:87
 #: app/qml/components/RichBodyEditor.qml:145
 msgid "Insert Link"
 msgstr ""
 
-#: app/qml/components/HyperlinkDialog.qml:91
-#: app/qml/pages/ContactDetail.qml:584 app/qml/pages/ContactDetail.qml:593
-#: app/qml/pages/ContactDetail.qml:602 app/qml/pages/ContactDetail.qml:616
-#: app/qml/pages/ContactDetail.qml:625 app/qml/pages/ContactDetail.qml:652
+#: app/qml/components/HyperlinkDialog.qml:95
+#: app/qml/pages/ContactDetail.qml:594 app/qml/pages/ContactDetail.qml:603
+#: app/qml/pages/ContactDetail.qml:612 app/qml/pages/ContactDetail.qml:626
+#: app/qml/pages/ContactDetail.qml:635 app/qml/pages/ContactDetail.qml:662
 msgid "Label"
 msgstr ""
 
-#: app/qml/components/HyperlinkDialog.qml:97
-#: app/qml/pages/ContactDetail.qml:626
+#: app/qml/components/HyperlinkDialog.qml:101
+#: app/qml/pages/ContactDetail.qml:636
 msgid "URL"
 msgstr ""
 
-#: app/qml/components/HyperlinkDialog.qml:104
+#: app/qml/components/HyperlinkDialog.qml:108
 msgid "Style as button"
 msgstr ""
 
-#: app/qml/components/HyperlinkDialog.qml:130
-#: app/qml/components/PickupFallbackDialog.qml:148 app/qml/DesktopRoot.qml:356
-#: app/qml/DesktopRoot.qml:430 app/qml/DesktopRoot.qml:513
-#: app/qml/pages/ContactDetail.qml:724 app/qml/pages/Pairing.qml:160
-#: app/qml/pages/Settings.qml:811
-msgid "Cancel"
-msgstr ""
-
-#: app/qml/components/HyperlinkDialog.qml:134
+#: app/qml/components/HyperlinkDialog.qml:138
 msgid "Insert"
 msgstr ""
 
-#: app/qml/components/PickupFallbackDialog.qml:117
+#: app/qml/components/NotificationFolderDialog.qml:103
+msgid "Which copy do you want?"
+msgstr ""
+
+#: app/qml/components/NotificationFolderDialog.qml:117
+msgid ""
+"This message is in more than one mailbox, and the notification didn't say "
+"which one it came from."
+msgstr ""
+
+#: app/qml/components/PickupFallbackDialog.qml:121
 msgid "Send an unencrypted link?"
 msgstr ""
 
-#: app/qml/components/PickupFallbackDialog.qml:125
+#: app/qml/components/PickupFallbackDialog.qml:129
 msgid ""
 "We don't have a PGP key for %2. They'll get an email with a one-time link "
 "instead."
@@ -407,14 +804,14 @@ msgid_plural ""
 msgstr[0] ""
 msgstr[1] ""
 
-#: app/qml/components/PickupFallbackDialog.qml:137
+#: app/qml/components/PickupFallbackDialog.qml:141
 msgid ""
 "To make that work, this message's contents are stored on your KyPost server "
 "— unencrypted — for up to 7 days or until the link is opened. Everyone else "
 "on this message still gets it encrypted."
 msgstr ""
 
-#: app/qml/components/PickupFallbackDialog.qml:152
+#: app/qml/components/PickupFallbackDialog.qml:156
 msgid "Send link anyway"
 msgstr ""
 
@@ -434,244 +831,339 @@ msgstr ""
 msgid "Underline"
 msgstr ""
 
-#: app/qml/DesktopRoot.qml:118
-msgid "New folder in %1"
+#: app/qml/components/StatusBanner.qml:58
+msgid ""
+"KyPost stopped trusting this server: a different authority is vouching for "
+"its certificate than when this device was paired, so no requests are being "
+"sent. Review the change before deciding — if you did not expect it, do not "
+"reconnect until you know why."
+msgstr ""
+
+#: app/qml/components/StatusBanner.qml:63
+msgid "Review certificate change…"
+msgstr ""
+
+#: app/qml/components/StatusBanner.qml:74
+msgid ""
+"This device's pairing token is no longer accepted by the server, so new-mail "
+"notifications have stopped. Cached mail is unaffected and stays readable. To "
+"restore notifications you need a new pairing link: sign in to KyPost on the "
+"web, open the pairing screen there, then pair this device again in Settings."
+msgstr ""
+
+#: app/qml/components/StatusBanner.qml:96
+msgid ""
+"KyPost tried to erase this device's data and could not finish. Some cached "
+"mail, contacts or sign-in credentials may still be stored here even though "
+"they were reported as erased. Check that your system keyring is running and "
+"that this device has free disk space, then restart KyPost to try again."
+msgstr ""
+
+#: app/qml/components/StatusBanner.qml:110
+msgid ""
+"KyPost cannot reach a keyring, so it has nowhere to store the key that "
+"encrypts your mail on this computer. Nothing is being saved to this device: "
+"your mail is loaded fresh each time and disappears when KyPost closes. Start "
+"a keyring service (gnome-keyring or kwallet) and restart KyPost to keep an "
+"encrypted copy here."
+msgstr ""
+
+#: app/qml/components/StatusBanner.qml:122
+msgid ""
+"The folder KyPost keeps your mail and contacts in can be read by other "
+"accounts on this computer, and KyPost could not lock it down. Nothing is "
+"being saved to this device this session. Make that folder private to you "
+"(chmod 700) and restart KyPost to keep a copy here."
+msgstr ""
+
+#: app/qml/components/StatusBanner.qml:133
+msgid ""
+"The mail and contacts KyPost has stored on this computer are not encrypted: "
+"anyone who can read your files can read them. KyPost will try again to "
+"encrypt them the next time it starts."
+msgstr ""
+
+#: app/qml/components/StatusBanner.qml:140
+msgid ""
+"KyPost could not decrypt this device's stored credentials, so the server "
+"will reject its requests. Check that your system keyring is unlocked, then "
+"lock and unlock KyPost again."
+msgstr ""
+
+#: app/qml/components/StatusBanner.qml:161
+msgid "%1 warning"
+msgid_plural "%1 warnings"
+msgstr[0] ""
+msgstr[1] ""
+
+#: app/qml/components/StatusBanner.qml:224
+msgid "Show"
+msgstr ""
+
+#: app/qml/components/StatusBanner.qml:224
+msgid "Hide"
 msgstr ""
 
 #: app/qml/DesktopRoot.qml:126
+msgid "New folder in %1"
+msgstr ""
+
+#: app/qml/DesktopRoot.qml:134
 msgid "Rename folder"
 msgstr ""
 
-#: app/qml/DesktopRoot.qml:340
+#: app/qml/DesktopRoot.qml:391
 msgid "Folder name"
 msgstr ""
 
-#: app/qml/DesktopRoot.qml:360
+#: app/qml/DesktopRoot.qml:411
 msgid "Create"
 msgstr ""
 
-#: app/qml/DesktopRoot.qml:360
+#: app/qml/DesktopRoot.qml:411
 msgid "Rename"
 msgstr ""
 
-#: app/qml/DesktopRoot.qml:408
+#: app/qml/DesktopRoot.qml:468
 msgid "Delete “%1”?"
 msgstr ""
 
-#: app/qml/DesktopRoot.qml:418
+#: app/qml/DesktopRoot.qml:478
 msgid ""
 "The folder and any messages in it are removed from the server. This cannot "
 "be undone."
 msgstr ""
 
-#: app/qml/DesktopRoot.qml:434 app/qml/DesktopRoot.qml:1285
-#: app/qml/MobileRoot.qml:724 app/qml/pages/ContactDetail.qml:443
-#: app/qml/pages/EmailDetail.qml:359
+#: app/qml/DesktopRoot.qml:494 app/qml/DesktopRoot.qml:1409
+#: app/qml/MobileRoot.qml:760 app/qml/pages/ContactDetail.qml:449
+#: app/qml/pages/EmailDetail.qml:465
 msgid "Delete"
 msgstr ""
 
-#: app/qml/DesktopRoot.qml:477
+#: app/qml/DesktopRoot.qml:545
 msgid "Pair this device?"
 msgstr ""
 
-#: app/qml/DesktopRoot.qml:485 app/qml/pages/Pairing.qml:130
+#: app/qml/DesktopRoot.qml:553 app/qml/pages/Pairing.qml:130
 msgid "A pairing request wants to connect this device to:"
 msgstr ""
 
-#: app/qml/DesktopRoot.qml:502 app/qml/pages/Pairing.qml:149
+#: app/qml/DesktopRoot.qml:574 app/qml/pages/Pairing.qml:153
+msgid "This connection is not encrypted (http)."
+msgstr ""
+
+#: app/qml/DesktopRoot.qml:582 app/qml/pages/Pairing.qml:162
 msgid ""
 "Only confirm this if you expected it. Once paired, this server can deliver "
 "mail notifications to this device."
 msgstr ""
 
-#: app/qml/DesktopRoot.qml:517 app/qml/pages/Pairing.qml:93
-#: app/qml/pages/Pairing.qml:164
+#: app/qml/DesktopRoot.qml:597 app/qml/pages/Pairing.qml:93
+#: app/qml/pages/Pairing.qml:177
 msgid "Pair"
 msgstr ""
 
-#: app/qml/DesktopRoot.qml:663
+#: app/qml/DesktopRoot.qml:763 app/qml/DesktopRoot.qml:764
 msgid "Email"
 msgstr ""
 
-#: app/qml/DesktopRoot.qml:698 app/qml/DesktopRoot.qml:845
-#: app/qml/MobileRoot.qml:253 app/qml/MobileRoot.qml:446
+#: app/qml/DesktopRoot.qml:804 app/qml/DesktopRoot.qml:963
+#: app/qml/MobileRoot.qml:272 app/qml/MobileRoot.qml:465
 msgid "Compose"
 msgstr ""
 
-#: app/qml/DesktopRoot.qml:742 app/qml/MobileRoot.qml:295
+#: app/qml/DesktopRoot.qml:854 app/qml/DesktopRoot.qml:855
+#: app/qml/MobileRoot.qml:314
 msgid "Contact"
 msgstr ""
 
-#: app/qml/DesktopRoot.qml:841
+#: app/qml/DesktopRoot.qml:959
 msgid "Show Detail"
 msgstr ""
 
-#: app/qml/DesktopRoot.qml:841
+#: app/qml/DesktopRoot.qml:959
 msgid "Hide Detail"
 msgstr ""
 
-#: app/qml/DesktopRoot.qml:849 app/qml/MobileRoot.qml:389
-#: app/qml/MobileRoot.qml:408 app/qml/pages/Settings.qml:84
+#: app/qml/DesktopRoot.qml:967 app/qml/MobileRoot.qml:408
+#: app/qml/MobileRoot.qml:427 app/qml/pages/Settings.qml:109
 msgid "Settings"
 msgstr ""
 
-#: app/qml/DesktopRoot.qml:894
+#: app/qml/DesktopRoot.qml:1012
 msgid "Mail"
 msgstr ""
 
-#: app/qml/DesktopRoot.qml:963
+#: app/qml/DesktopRoot.qml:1082
 msgid "New Subfolder…"
 msgstr ""
 
-#: app/qml/DesktopRoot.qml:971
+#: app/qml/DesktopRoot.qml:1090
 msgid "Rename…"
 msgstr ""
 
-#: app/qml/DesktopRoot.qml:976
+#: app/qml/DesktopRoot.qml:1095
 msgid "Delete Folder…"
 msgstr ""
 
-#: app/qml/DesktopRoot.qml:986
+#: app/qml/DesktopRoot.qml:1105
 msgid "People"
 msgstr ""
 
-#: app/qml/DesktopRoot.qml:1015 app/qml/MobileRoot.qml:273
-#: app/qml/MobileRoot.qml:452 app/qml/pages/ContactsList.qml:57
+#: app/qml/DesktopRoot.qml:1134 app/qml/MobileRoot.qml:292
+#: app/qml/MobileRoot.qml:471 app/qml/pages/ContactsList.qml:57
 #: app/qml/pages/Settings.qml:57
 msgid "Contacts"
 msgstr ""
 
-#: app/qml/DesktopRoot.qml:1090 app/qml/MobileRoot.qml:526
-#: app/qml/pages/PgpMyQrCode.qml:127
+#: app/qml/DesktopRoot.qml:1209 app/qml/MobileRoot.qml:545
+#: app/qml/pages/PgpMyQrCode.qml:128
 msgid "Refresh"
 msgstr ""
 
-#: app/qml/DesktopRoot.qml:1125 app/qml/MobileRoot.qml:568
+#: app/qml/DesktopRoot.qml:1244 app/qml/MobileRoot.qml:588
 msgid "All"
 msgstr ""
 
-#: app/qml/DesktopRoot.qml:1132 app/qml/MobileRoot.qml:579
-#: app/qml/pages/EmailDetail.qml:610
+#: app/qml/DesktopRoot.qml:1251 app/qml/MobileRoot.qml:599
+#: app/qml/pages/EmailDetail.qml:892
 msgid "%1 (%2)"
 msgstr ""
 
-#: app/qml/DesktopRoot.qml:1154 app/qml/MobileRoot.qml:602
+#: app/qml/DesktopRoot.qml:1274 app/qml/MobileRoot.qml:622
 msgid "No emails yet — tap Refresh."
 msgstr ""
 
-#: app/qml/DesktopRoot.qml:1340
+#: app/qml/DesktopRoot.qml:1469
 msgid "Select an email"
 msgstr ""
 
-#: app/qml/DesktopRoot.qml:1340
+#: app/qml/DesktopRoot.qml:1469
 msgid "Select a contact"
 msgstr ""
 
-#: app/qml/MobileRoot.qml:225
+#: app/qml/MobileRoot.qml:244
 msgctxt "page title for viewing a single email message"
 msgid "Email"
 msgstr ""
 
-#: app/qml/MobileRoot.qml:319 app/qml/pages/PgpMyQrCode.qml:70
-#: app/qml/pages/Settings.qml:385
+#: app/qml/MobileRoot.qml:338 app/qml/pages/PgpMyQrCode.qml:70
+#: app/qml/pages/Settings.qml:417
 msgid "My PGP QR Code"
 msgstr ""
 
-#: app/qml/MobileRoot.qml:333
+#: app/qml/MobileRoot.qml:352
 msgid "Scan Contact Key"
 msgstr ""
 
-#: app/qml/MobileRoot.qml:370 app/qml/MobileRoot.qml:404
+#: app/qml/MobileRoot.qml:389 app/qml/MobileRoot.qml:423
 #: app/qml/pages/Pairing.qml:63
 msgid "Pair Device"
 msgstr ""
 
-#: app/qml/MobileRoot.qml:440 app/qml/MobileRoot.qml:463
+#: app/qml/MobileRoot.qml:459 app/qml/MobileRoot.qml:482
 msgid "Inbox"
 msgstr ""
 
-#: app/qml/MobileRoot.qml:515
+#: app/qml/MobileRoot.qml:534
 msgid "Folder: %1"
 msgstr ""
 
-#: app/qml/MobileRoot.qml:768 app/qml/pages/EmailDetail.qml:341
+#: app/qml/MobileRoot.qml:801 app/qml/pages/EmailDetail.qml:453
 msgid "Archive"
 msgstr ""
 
-#: app/qml/pages/Compose.qml:170
-msgid "Saved to Drafts — continue in your browser"
-msgstr ""
-
-#: app/qml/pages/Compose.qml:186
+#: app/qml/pages/Compose.qml:207
 msgid "Please fill in all fields"
 msgstr ""
 
-#: app/qml/pages/Compose.qml:223
-msgid "Draft saved"
-msgstr ""
-
-#: app/qml/pages/Compose.qml:287 app/qml/pages/ContactDetail.qml:353
-#: app/qml/pages/EmailDetail.qml:381
+#: app/qml/pages/Compose.qml:314 app/qml/pages/ContactDetail.qml:353
+#: app/qml/pages/EmailDetail.qml:484
 msgid "Open in New Window"
 msgstr ""
 
-#: app/qml/pages/Compose.qml:306 app/qml/pages/Compose.qml:319
-#: app/qml/pages/Compose.qml:327
+#: app/qml/pages/Compose.qml:333 app/qml/pages/Compose.qml:346
+#: app/qml/pages/Compose.qml:354
 msgid "%1 is already added"
 msgstr ""
 
-#: app/qml/pages/Compose.qml:332
+#: app/qml/pages/Compose.qml:359
 msgid "Subject"
 msgstr ""
 
-#: app/qml/pages/Compose.qml:348 app/qml/pages/Compose.qml:533
+#: app/qml/pages/Compose.qml:375 app/qml/pages/Compose.qml:597
 msgid "Attach files"
 msgstr ""
 
-#: app/qml/pages/Compose.qml:412
+#: app/qml/pages/Compose.qml:439
 msgid "Encrypt"
 msgstr ""
 
-#: app/qml/pages/Compose.qml:436
+#: app/qml/pages/Compose.qml:463
 msgid "Sign"
 msgstr ""
 
-#: app/qml/pages/Compose.qml:458
+#: app/qml/pages/Compose.qml:485
 msgid "We don't have a PGP key on file for %2."
 msgid_plural "We don't have PGP keys on file for %2."
 msgstr[0] ""
 msgstr[1] ""
 
-#: app/qml/pages/Compose.qml:478
+#: app/qml/pages/Compose.qml:508
 msgid ""
 "This account's PGP key is stored only in your browser, so this app can't "
 "encrypt on its behalf."
 msgstr ""
 
-#: app/qml/pages/Compose.qml:488
+#: app/qml/pages/Compose.qml:518
 msgid "Continue in webmail"
 msgstr ""
 
-#: app/qml/pages/Compose.qml:512
+#: app/qml/pages/Compose.qml:532
+msgid ""
+"This message and its attachments will be encrypted and signed on this "
+"computer with your own key."
+msgstr ""
+
+#: app/qml/pages/Compose.qml:533
+msgid ""
+"This message will be encrypted and signed on this computer with your own key."
+msgstr ""
+
+#: app/qml/pages/Compose.qml:548
+msgid ""
+"Sent. A copy could not be saved to your Sent folder, because it can only be "
+"stored encrypted to your own key."
+msgstr ""
+
+#: app/qml/pages/Compose.qml:576
 msgid "Sending…"
 msgstr ""
 
-#: app/qml/pages/Compose.qml:519
+#: app/qml/pages/Compose.qml:583
 msgid "Save Draft"
 msgstr ""
 
-#: app/qml/pages/Compose.qml:524
+#: app/qml/pages/Compose.qml:588
 msgid "Send"
 msgstr ""
 
-#: app/qml/pages/ContactDetail.qml:106 app/qml/pages/ContactDetail.qml:580
-#: app/qml/pages/ContactDetail.qml:585
+#: app/qml/pages/Compose.qml:713
+msgid "Saved to Drafts — continue in your browser"
+msgstr ""
+
+#: app/qml/pages/Compose.qml:714
+msgid "Draft saved"
+msgstr ""
+
+#: app/qml/pages/ContactDetail.qml:106 app/qml/pages/ContactDetail.qml:590
+#: app/qml/pages/ContactDetail.qml:595
 msgctxt "contact detail field label, the person's email address"
 msgid "Email"
 msgstr ""
 
-#: app/qml/pages/ContactDetail.qml:107 app/qml/pages/ContactDetail.qml:589
-#: app/qml/pages/ContactDetail.qml:594
+#: app/qml/pages/ContactDetail.qml:107 app/qml/pages/ContactDetail.qml:599
+#: app/qml/pages/ContactDetail.qml:604
 msgid "Phone"
 msgstr ""
 
@@ -679,7 +1171,7 @@ msgstr ""
 msgid "Address"
 msgstr ""
 
-#: app/qml/pages/ContactDetail.qml:109 app/qml/pages/ContactDetail.qml:470
+#: app/qml/pages/ContactDetail.qml:109 app/qml/pages/ContactDetail.qml:480
 msgid "Org"
 msgstr ""
 
@@ -687,143 +1179,143 @@ msgstr ""
 msgid "Notes"
 msgstr ""
 
-#: app/qml/pages/ContactDetail.qml:111 app/qml/pages/ContactDetail.qml:512
+#: app/qml/pages/ContactDetail.qml:111 app/qml/pages/ContactDetail.qml:522
 msgid "Department"
 msgstr ""
 
-#: app/qml/pages/ContactDetail.qml:112 app/qml/pages/ContactDetail.qml:517
+#: app/qml/pages/ContactDetail.qml:112 app/qml/pages/ContactDetail.qml:527
 msgid "Pronouns"
 msgstr ""
 
-#: app/qml/pages/ContactDetail.qml:113 app/qml/pages/ContactDetail.qml:559
+#: app/qml/pages/ContactDetail.qml:113 app/qml/pages/ContactDetail.qml:569
 msgid "PGP Key"
 msgstr ""
 
-#: app/qml/pages/ContactDetail.qml:114 app/qml/pages/ContactDetail.qml:664
+#: app/qml/pages/ContactDetail.qml:114 app/qml/pages/ContactDetail.qml:674
 msgid "Groups"
 msgstr ""
 
-#: app/qml/pages/ContactDetail.qml:387 app/qml/pages/ContactsList.qml:167
+#: app/qml/pages/ContactDetail.qml:391 app/qml/pages/ContactsList.qml:175
 msgid "Unnamed"
 msgstr ""
 
-#: app/qml/pages/ContactDetail.qml:396
+#: app/qml/pages/ContactDetail.qml:400
 msgid "Synced"
 msgstr ""
 
-#: app/qml/pages/ContactDetail.qml:396
+#: app/qml/pages/ContactDetail.qml:400
 msgid "Local"
 msgstr ""
 
-#: app/qml/pages/ContactDetail.qml:401
+#: app/qml/pages/ContactDetail.qml:405
 msgid "Your contact"
 msgstr ""
 
-#: app/qml/pages/ContactDetail.qml:439
+#: app/qml/pages/ContactDetail.qml:445
 msgid "Edit"
 msgstr ""
 
-#: app/qml/pages/ContactDetail.qml:459
+#: app/qml/pages/ContactDetail.qml:469
 msgid "Add contact"
 msgstr ""
 
-#: app/qml/pages/ContactDetail.qml:459
+#: app/qml/pages/ContactDetail.qml:469
 msgid "Edit contact"
 msgstr ""
 
-#: app/qml/pages/ContactDetail.qml:465 app/qml/pages/ContactDetail.qml:635
+#: app/qml/pages/ContactDetail.qml:475 app/qml/pages/ContactDetail.qml:645
 msgid "Name"
 msgstr ""
 
-#: app/qml/pages/ContactDetail.qml:502
+#: app/qml/pages/ContactDetail.qml:512
 msgid "Notes…"
 msgstr ""
 
-#: app/qml/pages/ContactDetail.qml:522
+#: app/qml/pages/ContactDetail.qml:532
 msgid "Phonetic given name"
 msgstr ""
 
-#: app/qml/pages/ContactDetail.qml:527
+#: app/qml/pages/ContactDetail.qml:537
 msgid "Phonetic family name"
 msgstr ""
 
-#: app/qml/pages/ContactDetail.qml:566
+#: app/qml/pages/ContactDetail.qml:576
 msgid "Scan to add key"
 msgstr ""
 
-#: app/qml/pages/ContactDetail.qml:598
+#: app/qml/pages/ContactDetail.qml:608
 msgid "Addresses"
 msgstr ""
 
-#: app/qml/pages/ContactDetail.qml:603
+#: app/qml/pages/ContactDetail.qml:613
 msgid "Street"
 msgstr ""
 
-#: app/qml/pages/ContactDetail.qml:604
+#: app/qml/pages/ContactDetail.qml:614
 msgid "City"
 msgstr ""
 
-#: app/qml/pages/ContactDetail.qml:605
+#: app/qml/pages/ContactDetail.qml:615
 msgid "Region"
 msgstr ""
 
-#: app/qml/pages/ContactDetail.qml:606
+#: app/qml/pages/ContactDetail.qml:616
 msgid "Postal code"
 msgstr ""
 
-#: app/qml/pages/ContactDetail.qml:607
+#: app/qml/pages/ContactDetail.qml:617
 msgid "Country"
 msgstr ""
 
-#: app/qml/pages/ContactDetail.qml:611
+#: app/qml/pages/ContactDetail.qml:621
 msgid "Instant messaging"
 msgstr ""
 
-#: app/qml/pages/ContactDetail.qml:615
+#: app/qml/pages/ContactDetail.qml:625
 msgid "Service"
 msgstr ""
 
-#: app/qml/pages/ContactDetail.qml:617
+#: app/qml/pages/ContactDetail.qml:627
 msgid "Handle"
 msgstr ""
 
-#: app/qml/pages/ContactDetail.qml:621
+#: app/qml/pages/ContactDetail.qml:631
 msgid "Websites"
 msgstr ""
 
-#: app/qml/pages/ContactDetail.qml:630
+#: app/qml/pages/ContactDetail.qml:640
 msgid "Relations"
 msgstr ""
 
-#: app/qml/pages/ContactDetail.qml:634
+#: app/qml/pages/ContactDetail.qml:644
 msgid "Relation"
 msgstr ""
 
-#: app/qml/pages/ContactDetail.qml:639
+#: app/qml/pages/ContactDetail.qml:649
 msgid "Events"
 msgstr ""
 
-#: app/qml/pages/ContactDetail.qml:643
+#: app/qml/pages/ContactDetail.qml:653
 msgid "Event"
 msgstr ""
 
-#: app/qml/pages/ContactDetail.qml:644
+#: app/qml/pages/ContactDetail.qml:654
 msgid "Date (YYYY-MM-DD)"
 msgstr ""
 
-#: app/qml/pages/ContactDetail.qml:648
+#: app/qml/pages/ContactDetail.qml:658
 msgid "Custom fields"
 msgstr ""
 
-#: app/qml/pages/ContactDetail.qml:653
+#: app/qml/pages/ContactDetail.qml:663
 msgid "Value"
 msgstr ""
 
-#: app/qml/pages/ContactDetail.qml:706
+#: app/qml/pages/ContactDetail.qml:727
 msgid "No groups available"
 msgstr ""
 
-#: app/qml/pages/ContactDetail.qml:729 app/qml/pages/PgpScanContactKey.qml:155
+#: app/qml/pages/ContactDetail.qml:751 app/qml/pages/PgpScanContactKey.qml:155
 msgid "Save"
 msgstr ""
 
@@ -843,80 +1335,108 @@ msgstr ""
 msgid "Scan PGP Key"
 msgstr ""
 
-#: app/qml/pages/ContactsList.qml:116
+#: app/qml/pages/ContactsList.qml:117
 msgid "No contacts yet — sync or add one."
 msgstr ""
 
-#: app/qml/pages/ContactsList.qml:168
+#: app/qml/pages/ContactsList.qml:176
 msgid "You"
 msgstr ""
 
-#: app/qml/pages/EmailDetail.qml:142
-msgid "%1 B"
-msgstr ""
-
-#: app/qml/pages/EmailDetail.qml:144
-msgid "%1 KB"
-msgstr ""
-
-#: app/qml/pages/EmailDetail.qml:145
-msgid "%1 MB"
-msgstr ""
-
-#: app/qml/pages/EmailDetail.qml:294
-msgid "Reply"
-msgstr ""
-
-#: app/qml/pages/EmailDetail.qml:300 app/qml/pages/EmailDetail.qml:322
-msgid "%1 wrote:"
-msgstr ""
-
-#: app/qml/pages/EmailDetail.qml:306
-msgid "Reply All"
-msgstr ""
-
-#: app/qml/pages/EmailDetail.qml:328
-msgid "Forward"
-msgstr ""
-
-#: app/qml/pages/EmailDetail.qml:332
-msgid "---------- Forwarded message ----------"
-msgstr ""
-
-#: app/qml/pages/EmailDetail.qml:333
-msgid "From: %1"
-msgstr ""
-
-#: app/qml/pages/EmailDetail.qml:334
-msgid "Subject: %1"
-msgstr ""
-
-#: app/qml/pages/EmailDetail.qml:350
-msgid "Junk"
-msgstr ""
-
-#: app/qml/pages/EmailDetail.qml:375
-msgid "Show images"
-msgstr ""
-
-#: app/qml/pages/EmailDetail.qml:390
-msgid "Images are hidden to protect your privacy."
-msgstr ""
-
-#: app/qml/pages/EmailDetail.qml:453
-msgid "Open in webmail"
-msgstr ""
-
-#: app/qml/pages/EmailDetail.qml:588
-msgid "Attachments"
-msgstr ""
-
-#: app/qml/pages/EmailDetail.qml:630
+#: app/qml/pages/EmailDetail.qml:143
 msgid "Opened temporarily — not saved"
 msgstr ""
 
-#: app/qml/pages/EmailDetail.qml:631
+#: app/qml/pages/EmailDetail.qml:144
 msgid "Saved to Downloads"
+msgstr ""
+
+#: app/qml/pages/EmailDetail.qml:242
+msgid "%1 B"
+msgstr ""
+
+#: app/qml/pages/EmailDetail.qml:244
+msgid "%1 KB"
+msgstr ""
+
+#: app/qml/pages/EmailDetail.qml:245
+msgid "%1 MB"
+msgstr ""
+
+#: app/qml/pages/EmailDetail.qml:406
+msgid "Reply"
+msgstr ""
+
+#: app/qml/pages/EmailDetail.qml:412 app/qml/pages/EmailDetail.qml:434
+msgid "%1 wrote:"
+msgstr ""
+
+#: app/qml/pages/EmailDetail.qml:418
+msgid "Reply All"
+msgstr ""
+
+#: app/qml/pages/EmailDetail.qml:440
+msgid "Forward"
+msgstr ""
+
+#: app/qml/pages/EmailDetail.qml:444
+msgid "---------- Forwarded message ----------"
+msgstr ""
+
+#: app/qml/pages/EmailDetail.qml:445
+msgid "From: %1"
+msgstr ""
+
+#: app/qml/pages/EmailDetail.qml:446
+msgid "Subject: %1"
+msgstr ""
+
+#: app/qml/pages/EmailDetail.qml:459
+msgid "Junk"
+msgstr ""
+
+#: app/qml/pages/EmailDetail.qml:478
+msgid "Show images"
+msgstr ""
+
+#: app/qml/pages/EmailDetail.qml:497
+msgid ""
+"That link uses an address type KyPost will not open (%1:). It was blocked."
+msgstr ""
+
+#: app/qml/pages/EmailDetail.qml:504
+msgid "Images are hidden to protect your privacy."
+msgstr ""
+
+#: app/qml/pages/EmailDetail.qml:550
+msgid "This message impersonates KyPost"
+msgstr ""
+
+#: app/qml/pages/EmailDetail.qml:559
+msgid ""
+"Links to KyPost app addresses have been blocked. KyPost will never ask you "
+"to confirm a pairing request by email — never approve one you did not start "
+"yourself, on this device."
+msgstr ""
+
+#: app/qml/pages/EmailDetail.qml:655
+msgid "Decrypt with your key"
+msgstr ""
+
+#: app/qml/pages/EmailDetail.qml:664
+msgid "Waiting for your key…"
+msgstr ""
+
+#: app/qml/pages/EmailDetail.qml:693
+msgid "Try again"
+msgstr ""
+
+#: app/qml/pages/EmailDetail.qml:705
+msgid "Open in webmail"
+msgstr ""
+
+#: app/qml/pages/EmailDetail.qml:869
+msgid "Attachments"
 msgstr ""
 
 #: app/qml/pages/Pairing.qml:72
@@ -927,35 +1447,35 @@ msgstr ""
 msgid "Pair with this server?"
 msgstr ""
 
-#: app/qml/pages/Pairing.qml:182
+#: app/qml/pages/Pairing.qml:195
 msgid "Pairing…"
 msgstr ""
 
-#: app/qml/pages/Pairing.qml:205
+#: app/qml/pages/Pairing.qml:218
 msgid "Device paired"
 msgstr ""
 
-#: app/qml/pages/Pairing.qml:219 app/qml/pages/Settings.qml:166
+#: app/qml/pages/Pairing.qml:232 app/qml/pages/Settings.qml:195
 msgid "Server"
 msgstr ""
 
-#: app/qml/pages/Pairing.qml:232 app/qml/pages/Settings.qml:179
+#: app/qml/pages/Pairing.qml:245 app/qml/pages/Settings.qml:208
 msgid "Device"
 msgstr ""
 
-#: app/qml/pages/Pairing.qml:245 app/qml/pages/Settings.qml:91
+#: app/qml/pages/Pairing.qml:258 app/qml/pages/Settings.qml:116
 msgid "Done"
 msgstr ""
 
-#: app/qml/pages/Pairing.qml:265
+#: app/qml/pages/Pairing.qml:278
 msgid "Pairing failed"
 msgstr ""
 
-#: app/qml/pages/Pairing.qml:289
+#: app/qml/pages/Pairing.qml:303
 msgid "Try Again"
 msgstr ""
 
-#: app/qml/pages/PgpMyQrCode.qml:114
+#: app/qml/pages/PgpMyQrCode.qml:115
 msgid "Expires %1"
 msgstr ""
 
@@ -1000,190 +1520,332 @@ msgstr ""
 msgid "Security"
 msgstr ""
 
-#: app/qml/pages/Settings.qml:153
+#: app/qml/pages/Settings.qml:182
 msgid "Paired"
 msgstr ""
 
-#: app/qml/pages/Settings.qml:201
+#: app/qml/pages/Settings.qml:230
 msgid "Pair This Device…"
 msgstr ""
 
-#: app/qml/pages/Settings.qml:206
+#: app/qml/pages/Settings.qml:235
 msgid "Remove Pairing"
 msgstr ""
 
-#: app/qml/pages/Settings.qml:290
+#: app/qml/pages/Settings.qml:320
 msgid "No keywords yet."
 msgstr ""
 
-#: app/qml/pages/Settings.qml:328
+#: app/qml/pages/Settings.qml:359
 msgid "Visible"
 msgstr ""
 
-#: app/qml/pages/Settings.qml:328
+#: app/qml/pages/Settings.qml:359
 msgid "Hidden"
 msgstr ""
 
-#: app/qml/pages/Settings.qml:368
+#: app/qml/pages/Settings.qml:400
 msgid "No sync yet."
 msgstr ""
 
-#: app/qml/pages/Settings.qml:380
+#: app/qml/pages/Settings.qml:412
 msgid "Sync Now"
 msgstr ""
 
-#: app/qml/pages/Settings.qml:415
+#: app/qml/pages/Settings.qml:447
 msgid "Not yet registered"
 msgstr ""
 
-#: app/qml/pages/Settings.qml:429
+#: app/qml/pages/Settings.qml:461
 msgid "Delivery Mode"
 msgstr ""
 
-#: app/qml/pages/Settings.qml:441
+#: app/qml/pages/Settings.qml:473
 msgid "Transport"
 msgstr ""
 
-#: app/qml/pages/Settings.qml:455
-msgid "Push Server"
-msgstr ""
-
-#: app/qml/pages/Settings.qml:485
-msgid "Interface Mode"
-msgstr ""
-
-#: app/qml/pages/Settings.qml:492
-msgid "Auto"
-msgstr ""
-
-#: app/qml/pages/Settings.qml:497
-msgid "Desktop"
-msgstr ""
-
-#: app/qml/pages/Settings.qml:502
-msgid "Mobile"
-msgstr ""
-
-#: app/qml/pages/Settings.qml:511
-msgid "Restart KyPost for interface mode changes to take effect."
+#: app/qml/pages/Settings.qml:496
+msgid ""
+"KyPost receives notifications through your system's UnifiedPush distributor. "
+"Sender names and subject lines pass through the push server that distributor "
+"is configured to use -- change it there, not here. With no distributor "
+"installed, KyPost instead checks the relay directly every 90 seconds and "
+"nothing passes through a third party."
 msgstr ""
 
 #: app/qml/pages/Settings.qml:523
-msgid "System Tray"
+msgid "Interface Mode"
 msgstr ""
 
 #: app/qml/pages/Settings.qml:530
-msgid "Enable Tray Icon"
+msgid "Auto"
 msgstr ""
 
-#: app/qml/pages/Settings.qml:536 app/qml/pages/Settings.qml:555
-#: app/qml/pages/Settings.qml:593 app/qml/pages/Settings.qml:634
-#: app/qml/pages/Settings.qml:668
-msgid "On"
+#: app/qml/pages/Settings.qml:535
+msgid "Desktop"
 msgstr ""
 
-#: app/qml/pages/Settings.qml:536 app/qml/pages/Settings.qml:555
-#: app/qml/pages/Settings.qml:593 app/qml/pages/Settings.qml:634
-#: app/qml/pages/Settings.qml:668
-msgid "Off"
+#: app/qml/pages/Settings.qml:540
+msgid "Mobile"
 msgstr ""
 
 #: app/qml/pages/Settings.qml:549
-msgid "Minimize to Tray on Close"
+msgid "Restart KyPost for interface mode changes to take effect."
 msgstr ""
 
-#: app/qml/pages/Settings.qml:580
-msgid "App Lock"
+#: app/qml/pages/Settings.qml:561
+msgid "System Tray"
+msgstr ""
+
+#: app/qml/pages/Settings.qml:568
+msgid "Enable Tray Icon"
+msgstr ""
+
+#: app/qml/pages/Settings.qml:574 app/qml/pages/Settings.qml:593
+#: app/qml/pages/Settings.qml:632 app/qml/pages/Settings.qml:687
+#: app/qml/pages/Settings.qml:890
+msgid "On"
+msgstr ""
+
+#: app/qml/pages/Settings.qml:574 app/qml/pages/Settings.qml:593
+#: app/qml/pages/Settings.qml:632 app/qml/pages/Settings.qml:687
+#: app/qml/pages/Settings.qml:890
+msgid "Off"
 msgstr ""
 
 #: app/qml/pages/Settings.qml:587
+msgid "Minimize to Tray on Close"
+msgstr ""
+
+#: app/qml/pages/Settings.qml:619
+msgid "App Lock"
+msgstr ""
+
+#: app/qml/pages/Settings.qml:626
 msgid "Require Unlock to Open"
 msgstr ""
 
-#: app/qml/pages/Settings.qml:597
+#: app/qml/pages/Settings.qml:636
 msgid "Enter your PIN to turn off the lock"
 msgstr ""
 
-#: app/qml/pages/Settings.qml:599
+#: app/qml/pages/Settings.qml:638
 msgid "Choose a PIN"
 msgstr ""
 
-#: app/qml/pages/Settings.qml:606
+#: app/qml/pages/Settings.qml:645
 msgid ""
 "A PIN is required every time KyPost starts, and whenever the window is "
 "hidden or minimised. After 10 failed attempts all local data is erased."
 msgstr ""
 
-#: app/qml/pages/Settings.qml:611
+#: app/qml/pages/Settings.qml:659
+msgid ""
+"The PIN protects this app while it is running. It does not encrypt the "
+"cached mail and contacts stored on this computer — for that, turn on Keep "
+"nothing on this device below."
+msgstr ""
+
+#: app/qml/pages/Settings.qml:664
 msgid "Change PIN…"
 msgstr ""
 
-#: app/qml/pages/Settings.qml:612
+#: app/qml/pages/Settings.qml:665
 msgid "Enter your current PIN, then a new one"
 msgstr ""
 
-#: app/qml/pages/Settings.qml:617
+#: app/qml/pages/Settings.qml:670
 msgid "Hostile Location Protection"
 msgstr ""
 
-#: app/qml/pages/Settings.qml:628
+#: app/qml/pages/Settings.qml:681
 msgid "Keep nothing on this device"
 msgstr ""
 
-#: app/qml/pages/Settings.qml:639
+#: app/qml/pages/Settings.qml:692
 msgid "Enter your PIN to turn this off. KyPost will restart."
 msgstr ""
 
-#: app/qml/pages/Settings.qml:640
+#: app/qml/pages/Settings.qml:693
 msgid "Enter your PIN. KyPost will erase its local data and restart."
 msgstr ""
 
-#: app/qml/pages/Settings.qml:646
+#: app/qml/pages/Settings.qml:699
 msgid ""
 "Mail, contacts and folders are held in memory only and are gone when KyPost "
 "closes. Turning this on erases what is already stored and restarts the app. "
 "Attachments open in a temporary location instead of being saved to Downloads."
 msgstr ""
 
-#: app/qml/pages/Settings.qml:651
+#: app/qml/pages/Settings.qml:704
+msgid "Lock when KyPost is not in front"
+msgstr ""
+
+#: app/qml/pages/Settings.qml:713
+msgid "Lock after"
+msgstr ""
+
+#: app/qml/pages/Settings.qml:728
+msgid "At once"
+msgstr ""
+
+#: app/qml/pages/Settings.qml:730
+msgid "%1 second"
+msgid_plural "%1 seconds"
+msgstr[0] ""
+msgstr[1] ""
+
+#: app/qml/pages/Settings.qml:731
+msgid "%1 minute"
+msgid_plural "%1 minutes"
+msgstr[0] ""
+msgstr[1] ""
+
+#: app/qml/pages/Settings.qml:740
+msgid "Enter your PIN to lock KyPost as soon as it leaves the front."
+msgstr ""
+
+#: app/qml/pages/Settings.qml:741
+msgid ""
+"Enter your PIN. KyPost will stay unlocked for this long after it leaves the "
+"front."
+msgstr ""
+
+#: app/qml/pages/Settings.qml:752
+msgid ""
+"KyPost locks the moment its window is minimised, hidden or sent to the "
+"background."
+msgstr ""
+
+#: app/qml/pages/Settings.qml:753
+msgid ""
+"KyPost stays unlocked for this long after its window goes away, so switching "
+"to another app briefly does not mean typing your PIN again. Anyone who "
+"reaches this computer within that time can read your mail. Lock now, from "
+"the menu, always locks straight away."
+msgstr ""
+
+#: app/qml/pages/Settings.qml:758
+msgid "Erase after failed attempts"
+msgstr ""
+
+#: app/qml/pages/Settings.qml:768
+msgid "Erase this device after"
+msgstr ""
+
+#: app/qml/pages/Settings.qml:783
+msgid "Never"
+msgstr ""
+
+#: app/qml/pages/Settings.qml:784
+msgid "%1 attempt"
+msgid_plural "%1 attempts"
+msgstr[0] ""
+msgstr[1] ""
+
+#: app/qml/pages/Settings.qml:793
+msgid ""
+"Enter your PIN to stop KyPost erasing this device after repeated failed "
+"attempts."
+msgstr ""
+
+#: app/qml/pages/Settings.qml:795
+msgid "Enter your PIN to erase this device after %1 failed attempt."
+msgid_plural "Enter your PIN to erase this device after %1 failed attempts."
+msgstr[0] ""
+msgstr[1] ""
+
+#: app/qml/pages/Settings.qml:811
+msgid ""
+"KyPost will not erase itself, however many attempts fail. Repeated failures "
+"are still slowed down and eventually refused until you restart the app. "
+"Anyone who takes this computer can keep guessing."
+msgstr ""
+
+#: app/qml/pages/Settings.qml:812
+msgid ""
+"Cached mail, contacts and this device's pairing are erased after this many "
+"consecutive failed attempts. Your mail on the server is not affected."
+msgstr ""
+
+#: app/qml/pages/Settings.qml:817
+msgid "OpenPGP private key"
+msgstr ""
+
+#: app/qml/pages/Settings.qml:821
+msgid ""
+"Enroll this computer from webmail. KyPost creates a temporary device key, "
+"webmail seals your OpenPGP private key to it, and the imported key remains "
+"under GnuPG's control."
+msgstr ""
+
+#: app/qml/pages/Settings.qml:851
+msgid "Check Again"
+msgstr ""
+
+#: app/qml/pages/Settings.qml:852
+msgid "Enroll Again"
+msgstr ""
+
+#: app/qml/pages/Settings.qml:853
+msgid "Enroll This Device"
+msgstr ""
+
+#: app/qml/pages/Settings.qml:873
 msgid "Push and MFA"
 msgstr ""
 
-#: app/qml/pages/Settings.qml:662
+#: app/qml/pages/Settings.qml:884
 msgid "Require unlock to receive push and MFA"
 msgstr ""
 
-#: app/qml/pages/Settings.qml:672
+#: app/qml/pages/Settings.qml:894
 msgid "Enter your PIN"
 msgstr ""
 
-#: app/qml/pages/Settings.qml:678
+#: app/qml/pages/Settings.qml:900
 msgid ""
 "When on, the pairing credential is encrypted with your PIN. Mail, push and "
 "MFA stop working until you unlock the app — that is the point, and it is a "
 "real tradeoff."
 msgstr ""
 
-#: app/qml/pages/Settings.qml:699
+#: app/qml/pages/Settings.qml:921
 msgid ""
 "Push notifications send the sender and subject through a relay server "
 "(UnifiedPush/ntfy), in the clear, even with the settings above enabled. For "
 "zero leakage, ask your server admin to switch this device to Pull mode."
 msgstr ""
 
-#: app/qml/pages/Settings.qml:778
+#: app/qml/pages/Settings.qml:1012
 msgid "Current PIN"
 msgstr ""
 
-#: app/qml/pages/Settings.qml:789
-msgid "New PIN"
+#: app/qml/pages/Settings.qml:1023
+msgid "New PIN (at least %1 digit)"
+msgid_plural "New PIN (at least %1 digits)"
+msgstr[0] ""
+msgstr[1] ""
+
+#: app/qml/pages/Settings.qml:1039
+msgid "Confirm new PIN"
 msgstr ""
 
-#: app/qml/pages/Settings.qml:815
+#: app/qml/pages/Settings.qml:1052
+msgid "The two PINs do not match."
+msgstr ""
+
+#: app/qml/pages/Settings.qml:1075
 msgid "Confirm"
 msgstr ""
 
-#: app/qml/pages/Settings.qml:848
+#: app/qml/pages/Settings.qml:1123
+msgid ""
+"Incorrect PIN, or the stored credentials could not be re-encrypted. If the "
+"PIN is right, check that your system keyring is unlocked and try again."
+msgstr ""
+
+#: app/qml/pages/Settings.qml:1125
 msgid "Incorrect PIN, or the change could not be saved."
 msgstr ""
 
@@ -1191,26 +1853,32 @@ msgstr ""
 msgid "KyPost is locked"
 msgstr ""
 
-#: app/qml/pages/Unlock.qml:78
+#: app/qml/pages/Unlock.qml:79
 msgid "Enter your PIN to continue."
 msgstr ""
 
-#: app/qml/pages/Unlock.qml:90
+#: app/qml/pages/Unlock.qml:95
+msgid ""
+"KyPost cannot reach your system keyring, so it cannot check your PIN. Start "
+"a keyring service (GNOME Keyring or KWallet), unlock it, then restart KyPost."
+msgstr ""
+
+#: app/qml/pages/Unlock.qml:109
 msgid "PIN"
 msgstr ""
 
-#: app/qml/pages/Unlock.qml:120
+#: app/qml/pages/Unlock.qml:139
 msgid "Too many attempts. Try again in %1 seconds."
 msgstr ""
 
-#: app/qml/pages/Unlock.qml:133
+#: app/qml/pages/Unlock.qml:152
 msgid "Warning: after 10 failed attempts, all local data is erased."
 msgstr ""
 
-#: app/qml/pages/Unlock.qml:143
+#: app/qml/pages/Unlock.qml:162
 msgid "Unlock"
 msgstr ""
 
-#: app/qml/pages/Unlock.qml:160
+#: app/qml/pages/Unlock.qml:179
 msgid "Incorrect PIN."
 msgstr ""

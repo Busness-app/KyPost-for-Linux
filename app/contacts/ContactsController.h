@@ -4,6 +4,7 @@
 #include "domain/ContactSyncRepository.h" // ContactSyncPlan/outcomes cross the thread hop by value
 
 #include <QObject>
+#include <QSet>
 #include <QString>
 #include <QVariantMap>
 #include <functional>
@@ -52,6 +53,20 @@ class ContactsController : public QObject
     Q_PROPERTY(bool isBusy READ isBusy NOTIFY isBusyChanged)
     Q_PROPERTY(QString lastError READ lastError NOTIFY lastErrorChanged)
     Q_PROPERTY(QString statusMessage READ statusMessage NOTIFY statusMessageChanged) // last sync outcome, human-readable, "" when none
+    // Bumped once each time a lazily-fetched contact photo lands in the cache.
+    //
+    // Exists ONLY to be a binding dependency. photoPathFor() below is a
+    // function call, so a QML binding over it has nothing to re-evaluate on
+    // when an asynchronous fetch completes later -- the avatar would stay on
+    // initials until something unrelated happened to dirty the binding. A
+    // delegate reads this property alongside the call; see Avatar.qml's two
+    // call sites in ContactsList.qml and ContactDetail.qml.
+    //
+    // One counter for all photos rather than a signal per uid: only
+    // instantiated delegates have live bindings, so the re-evaluation is
+    // bounded by what is on screen, and a per-uid signal would need a
+    // Connections object inside every delegate to receive it.
+    Q_PROPERTY(int photoRevision READ photoRevision NOTIFY photoRevisionChanged)
 
 public:
     // groupsRepository: Task 2's "refresh the groups name-cache once per
@@ -111,14 +126,23 @@ public slots:
     // card), not to any property, so it re-runs per row/detail-open the
     // same way contactAt() already does. Looks up uid's Contact via
     // repository.contacts(), and if it has a non-empty photoRef, delegates
-    // to photoRepository.photoPathFor() (cache hit or synchronous
-    // fetch-then-cache -- see that class's doc comment for the same
-    // synchronous-on-GUI-thread tradeoff sync() above already carries).
-    // Returns a file:// URL string ready for Image.source, or "" if there's
-    // no photoRef, no pairing, or the fetch failed -- Avatar.qml's fallback
-    // to initials handles every one of those "" cases identically, so this
-    // never needs to distinguish them for QML.
+    // to photoRepository.cachedPathFor().
+    //
+    // CACHE-ONLY, AND NEVER BLOCKS. Returns a file:// URL string ready for
+    // Image.source, or "" if there is no photoRef, nothing cached yet, no
+    // pairing, or an earlier fetch failed -- Avatar.qml's fallback to
+    // initials handles every one of those "" cases identically, so this never
+    // needs to distinguish them for QML.
+    //
+    // On a cache MISS it dispatches ONE fetch onto the NetworkExecutor and
+    // returns "" immediately; photoRevision above changes when that lands,
+    // which is what brings the delegate back to ask again. This used to fetch
+    // synchronously, from inside the binding -- see
+    // ContactPhotoRepository.h's header for what that did to the contact
+    // list.
     QString photoPathFor(const QString& uid);
+
+    int photoRevision() const { return m_photoRevision; }
 
     // Compose autocomplete: filters m_repository.contacts() in-memory
     // (case-insensitive substring against fn and every emails[].value) --
@@ -138,8 +162,12 @@ signals:
     void isBusyChanged();
     void lastErrorChanged();
     void statusMessageChanged();
+    void photoRevisionChanged();
 
 private:
+    // Dispatches one photo fetch, or does nothing if this photoRef already
+    // has one in flight or has already been tried and failed this session.
+    void fetchPhoto(const QString& uid, const QString& photoRef);
     void pushBusy();
     void popBusy();
     void setLastError(const QString& error);
@@ -163,6 +191,24 @@ private:
     // twice.
     bool m_syncInFlight = false;
     bool m_dedupeInFlight = false;
+
+    int m_photoRevision = 0;
+    // Keyed on photoRef, not uid: photoRef is what the cache is keyed on, so
+    // two contacts sharing a reference share one fetch.
+    //
+    // ATTEMPTED, not merely in-flight, and the difference is the bug this
+    // closes. A photoRef is inserted before the request goes out and removed
+    // again only when one SUCCEEDS -- so a fetch that failed is not retried
+    // for the rest of the session. The synchronous version recorded nothing,
+    // so a failing photo was re-requested on every single re-evaluation of the
+    // binding: once per delegate, per scroll, forever. A photoRef is
+    // content-hashed and immutable, so a retry can only recover a transient
+    // failure, and the next launch gets that anyway.
+    //
+    // Removing it on success is what keeps the bounded cache working: an entry
+    // evicted later (ContactPhotoCache::kMaxCacheBytes) is simply a cache miss
+    // again, not a photo this session has decided never to ask for.
+    QSet<QString> m_photoFetchesAttempted;
     // `onApplied` runs once the outcome has been applied; dedupe() uses it to
     // prefix its merge count onto the sync's status message, which it can no
     // longer do by reading statusMessage() after the call. See the .cpp.

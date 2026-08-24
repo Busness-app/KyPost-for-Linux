@@ -54,9 +54,9 @@ not whether.
 Measured, not assumed (`grep` for DAO/`QSqlQuery` use in each call chain):
 
 **Tier A — no SQL anywhere in the chain. Can move as-is.**
-`DeviceRegistrationService`, `PgpQrRepository`, `MfaResponseClient`,
-`PgpQrClient`, `NativeRegistrationClient`, `DeregisterClient`.
-→ `MfaController`, `PairingController`, `PgpQrController`.
+`DeviceRegistrationService`, `PgpQrRepository`, `PgpQrClient`,
+`NativeRegistrationClient`, `DeregisterClient`.
+→ `PairingController`, `PgpQrController`.
 
 **Tier B — the chain reads and writes the database.**
 `MailRepository` (9 DAO uses), `ContactSyncRepository` (25),
@@ -107,9 +107,6 @@ for the fan-out, and for the unpinned path that shipped before it existed.
   executor thread, delivers the result to `onDone` on the receiver's thread.
   12 tests, including one that asserts the calling thread is not re-entered
   while a request is in flight.
-- **`MfaController`** — the reference conversion. Chosen as the pilot
-  because it is SQL-free, has tests, and is not registered with QML, so
-  getting it wrong could not break a screen.
 - **`DeviceRegistrationService`** — split into `beginPair()` /
   `sendRegistration()` / `finishPair()`, with `pair()` kept as their
   composition. `PairAttempt` is move-only and restores the certificate pin
@@ -214,43 +211,84 @@ Three rules that make it work:
 
 ## Remaining order
 
-1. ~~`PairingController`~~, ~~`PgpQrController`~~, ~~`MfaController`~~ — Tier A.
+1. ~~`PairingController`~~, ~~`PgpQrController`~~ — Tier A.
 2. ~~`MailController`~~ — all 14 network methods.
 3. ~~`ContactsController`~~ — `sync`, `dedupe`, and the groups-cache refresh.
 4. ~~Delete `ReentrancyGuard`~~ — done, no users left.
 5. **Retire the GUI-thread `HttpClient`** — still not possible, and now for a
-   precise reason rather than a vague one. Every *controller* is off it, but
-   three things still use it:
-   - the **synchronous composition** each repository keeps (`refreshFolder`,
-     `FolderRepository::create/rename/remove`, `ContactSyncRepository::sync`,
-     `DeviceRegistrationService::pair`, `GroupsRepository::refresh`). These
-     exist so the async phases cannot drift from the behaviour their tests
-     pin, and they are what the tests call. They are not dead code.
-   - **`main()`'s `reregisterAndReport`**, which blocks on
-     `reregisterIfPaired()` at startup and on every transport-tier change.
-     This is the reason `main.cpp` still needs its `QTimer::singleShot(0)`
-     to escape a half-finished unlock.
-   - **`ContactsController::photoPathFor`**, below.
+   precise reason rather than a vague one. Every *controller* is off it, and
+   as of 2026-08-24 so is everything else that runs with a window up. What
+   still uses it is the **synchronous composition** each repository keeps
+   (`refreshFolder`, `FolderRepository::create/rename/remove`,
+   `ContactSyncRepository::sync`, `DeviceRegistrationService::pair`,
+   `GroupsRepository::refresh`, `ContactPhotoRepository::photoPathFor`).
+   These exist so the async phases cannot drift from the behaviour their
+   tests pin, and they are what the tests call. They are not dead code.
 
-## Still blocking the GUI thread
+## Nothing is left blocking the GUI thread
 
-Two, both outside the controllers, both known:
+Both of the entries that used to be here were closed on 2026-08-24, after a
+review pointed out that "known" had quietly become "architecture".
 
-- **`ContactPhotoRepository::photoPathFor`**, reached from
-  `ContactsController::photoPathFor`, which `Avatar.qml` binds
-  `photoSource` to. It is a *binding*, so it must return a value — there is
-  no signal for it to arrive on. Converting it means giving the controller a
-  uid→path cache plus a `photoReady(uid, path)` signal and having Avatar bind
-  to the cache, which is a UI change rather than a mechanical split. A cache
-  hit does not touch the network at all, so this only blocks the first time a
-  contact with a photo is drawn.
-- **`main()`'s `reregisterAndReport`**. Runs before `app.exec()` on the
-  startup path, where there is no UI to freeze yet — but also from
-  `TransportStateMachine`'s tier-changed handler, where there is.
+- ~~**`ContactPhotoRepository::photoPathFor`**~~ — was reached from
+  `ContactsController::photoPathFor`, which `Avatar.qml` binds `photoSource`
+  to, so a contact list of uncached photos put one blocking HTTP request per
+  visible delegate behind a QML binding, each in its own nested event loop,
+  retrying forever on failure because nothing recorded the attempt.
 
-Both are `DeviceRegistrationService`/`ContactPhotoRepository` calls with the
-three-phase split already available or trivial to add; neither was worth
-bundling into the controller conversions.
+  Now split like every other repository (`cachedPathFor` / `planFetch` /
+  `fetchWith` / `applyFetch`). The controller answers the binding from the
+  cache and dispatches the miss onto `NetworkExecutor`. The note here used to
+  say converting it "means a UI change rather than a mechanical split", and
+  the UI change turned out to be two lines: the binding also reads
+  `ContactsApp.photoRevision`, a counter bumped when a photo lands, purely so
+  it has something to re-evaluate on. In-flight *and failed* references are
+  both remembered, so one photoRef is fetched at most once per session.
+
+- ~~**`main()`'s `reregisterAndReport`**~~ — was a straight
+  `reregisterIfPaired()`, which blocks. Defensible on the startup path where
+  no window exists yet, but it is also reached from
+  `UnifiedPushConnector::endpointChanged` and `TransportStateMachine::
+  tierChanged`, both of which fire with the UI up.
+
+  Now uses the `beginPair` → `sendRegistration` → `finishPair` split that
+  already existed, via `DeviceRegistrationService::reregistrationParams()` for
+  the phase-1 store read. The `QTimer::singleShot(0)` on the unlock path is
+  still there, for a smaller reason: phase 1 reads `PairingStore` and suspends
+  the certificate pin, which is not worth doing inside a half-finished unlock.
+
+### Startup is a separate problem, and it is also fixed
+
+The GUI thread was never *blocked* by `HttpClient` during startup — there was
+no GUI. `main()` opens the platform secret store before the database (the
+database's key lives in it), and against a wedged Secret Service that cost
+~25 s with no window on screen at all.
+
+`SecureStoreKeychain` now runs its QtKeychain jobs on one process-wide worker
+thread and waits on an event loop that is free to turn, so the timeout can
+actually be delivered and the GUI thread keeps painting. `main()` puts
+`Startup.qml` up (after a 400 ms delay, so a healthy machine never sees it)
+before the first call. Two tests pin it:
+`theCallingThreadIsReleasedByTheTimeoutNotByDBus` and
+`theCallingThreadKeepsProcessingEventsWhileAJobRuns`.
+
+Two things that were tried first, both of which looked right and were not —
+worth knowing before touching this file:
+
+- Dispatching through the `QThread` object. A `QThread` lives on the thread
+  that *constructed* it, so a queued call aimed at it runs straight back on
+  the caller and the job never leaves the GUI thread. The timing test caught
+  it; nothing else would have.
+- Letting the caller read the outcome off the finished job. QtKeychain leaves
+  `autoDelete` on, so with the caller on another thread the job is often gone
+  by the time its queued handler runs. It crashes in `QKeychain::Job::error()`.
+  The outcome is read on the worker, under a mutex, into a shared payload.
+
+Completion is *polled* (every 5 ms) rather than signalled, deliberately: the
+job does not exist until the worker picks the call up, so connecting its
+`finished` to the caller's `QEventLoop` means connecting to an object the
+caller may already have destroyed on the timeout path — with `timeoutMs=0`,
+every time.
 
 ## ThreadSanitizer does not work here — use the affinity guard instead
 
@@ -308,10 +346,10 @@ repo's own code as real, and expect to filter by hand.
 
 Pin state lives inside `HttpClient`, and there is more than one of those
 while this is in progress. The first conversion shipped an **unpinned path**
-because of it: `MfaController` moved to the executor's client, which nobody
-had given a pin or a mismatch handler, so its requests went out under
-whatever certificate the CA chain accepted and the impersonation banner had
-nothing to compare against.
+because of it: the first converted controller moved to the executor's client,
+which nobody had given a pin or a mismatch handler, so its requests went out
+under whatever certificate the CA chain accepted and the impersonation banner
+had nothing to compare against.
 
 `core/net/CertificatePinSink` is the structural fix. Everything that mutates
 pin state takes a `CertificatePinSink&` rather than an `HttpClient&`, and

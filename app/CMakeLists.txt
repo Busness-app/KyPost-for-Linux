@@ -127,15 +127,12 @@ target_sources(kypost PRIVATE
 )
 target_link_libraries(kypost PRIVATE ZXing::ZXing Qt6::Multimedia)
 
-# PairingController/MfaController (Task 34) wrap core/domain's
-# DeviceRegistrationService/PairingStore and core/net's MfaResponseClient as
-# QML singletons ("Pairing"/"Mfa") -- QObject/QUrl parsing, so app/ per the
-# core/ boundary rule, same as MailController/ContactsController above. No
-# extra find_package needed: QUrlQuery is already part of Qt6::Core,
+# PairingController (Task 34) wraps core/domain's DeviceRegistrationService
+# and PairingStore as the "Pairing" QML singleton -- QObject/QUrl parsing, so
+# app/ per the core/ boundary rule, same as MailController/ContactsController
+# above. No extra find_package needed: QUrlQuery is already part of Qt6::Core,
 # transitively available via Qt6::Quick.
 target_sources(kypost PRIVATE
-  pairing/MfaController.cpp
-  pairing/MfaController.h
   pairing/PairingController.cpp
   pairing/PairingController.h
 )

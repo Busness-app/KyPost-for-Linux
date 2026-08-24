@@ -332,17 +332,24 @@ therefore never notified of a challenge, in push *or* pull mode — so the
 screen had no reachable entry point and could not acquire a `challengeId` to
 act on.
 
-`MfaController` and `MfaResponseClient` are deliberately kept. The server-side
-filter is explicitly temporary ("until encryption is added" — the RFC 8291
-UnifiedPush encryption plan is unimplemented server-side), and
-`POST /api/mfa/push/respond` remains a valid, device-authenticated endpoint.
+`MfaController`, `MfaResponseClient` and `MfaChallenge` were **deleted on
+2026-08-24**, along with their three test binaries.
+
+This paragraph used to say they were "deliberately kept" because the
+server-side filter was "explicitly temporary". That was wrong, and AGENTS.md
+section 4 had already retracted it: the filter is a privacy control, not an
+oversight. An MFA challenge carries sign-in metadata (IP address, user agent,
+the match digits themselves) and UnifiedPush delivers through an unencrypted
+public broker, so what would have to change is RFC 8291 payload encryption in
+the UnifiedPush ecosystem — not anything on either side of this repo.
 
 - [ ] **Do NOT expect MFA UI anywhere.** No push payload triggers it;
       `main.cpp`'s only `NotificationDispatcher::openRequested` connection
       targets `MailController::openEmailRequested`. A challenge must be
       answered from the web app.
-- [ ] **Before rebuilding any MFA screen**, confirm the backend filter is
-      gone. Wiring one while the filter stands produces dead code again.
+- [ ] **Do not rebuild any MFA screen or client.** Git holds the deleted
+      implementation. Recovering it requires the broker to carry encrypted
+      payloads first, which is not a KyPost change.
 
 ## App lock, credential gate, certificate pinning
 

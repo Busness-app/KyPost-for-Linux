@@ -1,5 +1,7 @@
 #include "pgp/OpenPgpEncryptor.h"
 
+#include "pgp/GpgmeInit.h"
+
 #include <QVector>
 
 #include <gpgme.h>
@@ -46,15 +48,6 @@ struct KeyList
     }
 };
 
-void initialiseGpgme()
-{
-    static const bool initialised = []() {
-        gpgme_check_version(nullptr);
-        return true;
-    }();
-    Q_UNUSED(initialised);
-}
-
 PgpEncryptStatus statusFromError(gpgme_error_t error)
 {
     switch (gpgme_err_code(error)) {
@@ -98,7 +91,7 @@ PgpEncryptResult signAndEncrypt(const QByteArray& plaintext, const QString& sign
         return out;
     }
 
-    initialiseGpgme();
+    ensureGpgmeInitialised();
     if (gpgme_err_code(gpgme_engine_check_version(GPGME_PROTOCOL_OpenPGP)) != GPG_ERR_NO_ERROR) {
         out.status = PgpEncryptStatus::EngineUnavailable;
         return out;
@@ -226,7 +219,7 @@ PgpEncryptResult signAndEncrypt(const QByteArray& plaintext, const QString& sign
 
 QString ownKeyFingerprint(const QString& address, const QString& homeDirectory)
 {
-    initialiseGpgme();
+    ensureGpgmeInitialised();
 
     ContextHandle context;
     if (gpgme_err_code(gpgme_new(&context.handle)) != GPG_ERR_NO_ERROR || context.handle == nullptr)

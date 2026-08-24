@@ -11,7 +11,7 @@ class SettingsStore;
 // specific) or any other existing controller, so they share this one
 // singleton rather than each getting their own near-empty class. Registered
 // as a QML singleton in main.cpp ("General"), same convention as Theme/
-// Pairing/Mfa.
+// Pairing.
 class GeneralController : public QObject
 {
     Q_OBJECT

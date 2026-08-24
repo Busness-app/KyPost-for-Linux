@@ -210,11 +210,16 @@ jobs:
         with:
           path: .flatpak-builder
           key: flatpak-builder-${{ matrix.arch }}-${{ hashFiles('packaging/flatpak/com.kysecurity.mail.yaml') }}-${{ github.run_id }}
+          # Must repeat the `arch` segment: it sits between the literal
+          # prefix and the manifest hash in every key written above, so a
+          # prefix that omits it matches nothing and the cache silently never
+          # restores.
+          #
           # No bare "flatpak-builder-" fallback: that key is writable by any
           # branch, so a pull request could seed the .flatpak-builder state
           # that a later publishing run builds from.
           restore-keys: |
-            flatpak-builder-${{ hashFiles('packaging/flatpak/com.kysecurity.mail.yaml') }}-
+            flatpak-builder-${{ matrix.arch }}-${{ hashFiles('packaging/flatpak/com.kysecurity.mail.yaml') }}-
 
       # Unsigned, into a per-arch repo this job hands to `publish`. The key
       # never reaches a matrix job; signing happens once, on the way into the
