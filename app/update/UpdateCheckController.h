@@ -42,6 +42,11 @@ public:
     Q_INVOKABLE void checkNow();
     void pairingMayHaveChanged();
 
+    // The pure state transition checkNow()'s network callback feeds into --
+    // public so a test can drive it directly without a real HTTP round trip.
+    // Not Q_INVOKABLE: this is a test seam, not something QML should call.
+    void applyResult(const ClientVersionResult& result);
+
 signals:
     void changed();
     // Raised on the transition into "an update is available", so a root can
@@ -49,8 +54,6 @@ signals:
     void updateBecameAvailable();
 
 private:
-    void applyResult(const ClientVersionResult& result);
-
     PairingStore& m_pairingStore;
     NetworkExecutor& m_executor;
     QTimer m_pollTimer;
