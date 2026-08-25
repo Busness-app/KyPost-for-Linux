@@ -119,6 +119,7 @@ kypost_add_test(NativeRegistrationClientTest core/net/NativeRegistrationClientTe
 kypost_add_test(PushNotificationClientTest core/net/PushNotificationClientTest.cpp)
 kypost_add_test(DeregisterClientTest core/net/DeregisterClientTest.cpp)
 kypost_add_test(ContactSyncClientTest core/net/ContactSyncClientTest.cpp)
+kypost_add_test(ClientVersionClientTest core/net/ClientVersionClientTest.cpp)
 kypost_add_test(FolderClientTest core/net/FolderClientTest.cpp)
 kypost_add_test(GroupsClientTest core/net/GroupsClientTest.cpp)
 kypost_add_test(ContactPhotoClientTest core/net/ContactPhotoClientTest.cpp)
