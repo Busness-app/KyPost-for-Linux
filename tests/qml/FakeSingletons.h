@@ -158,6 +158,31 @@ private:
     bool m_busy = false;
 };
 
+class FakeUpdateCheck : public QObject
+{
+    Q_OBJECT
+    Q_PROPERTY(QString installedVersion MEMBER m_installedVersion CONSTANT)
+    Q_PROPERTY(QString latestVersion MEMBER m_latestVersion NOTIFY changed)
+    Q_PROPERTY(bool updateAvailable MEMBER m_updateAvailable NOTIFY changed)
+    Q_PROPERTY(QString checkedAt MEMBER m_checkedAt NOTIFY changed)
+    Q_PROPERTY(QString releaseUrl MEMBER m_releaseUrl CONSTANT)
+
+public:
+    using QObject::QObject;
+
+signals:
+    void changed();
+    void updateBecameAvailable();
+
+private:
+    QString m_installedVersion = QStringLiteral("0.2.0");
+    QString m_latestVersion;
+    bool m_updateAvailable = false;
+    QString m_checkedAt;
+    QString m_releaseUrl =
+        QStringLiteral("https://github.com/Busness-app/KyPost-for-Linux/releases");
+};
+
 inline void registerFakeSingletons(QQmlEngine*)
 {
     qmlRegisterSingletonType<FakeAppLock>(
@@ -175,4 +200,7 @@ inline void registerFakeSingletons(QQmlEngine*)
     qmlRegisterSingletonType<FakePgpEnrollment>(
         "com.kysecurity.mail", 1, 0, "PgpEnrollment",
         [](QQmlEngine*, QJSEngine*) -> QObject* { return new FakePgpEnrollment; });
+    qmlRegisterSingletonType<FakeUpdateCheck>(
+        "com.kysecurity.mail", 1, 0, "UpdateCheck",
+        [](QQmlEngine*, QJSEngine*) -> QObject* { return new FakeUpdateCheck; });
 }

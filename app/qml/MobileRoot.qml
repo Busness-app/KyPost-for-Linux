@@ -927,6 +927,25 @@ Kirigami.ApplicationWindow {
         onReconnectRequested: Pairing.reconnectToServer()
     }
 
+    // Deliberately a Toast rather than a StatusBanner row. StatusBanner is
+    // danger-styled and cannot be dismissed, and is reserved for conditions
+    // that stop the app working. A routine "a new version exists" painted in
+    // the same red, unclearable strip would devalue the warnings that matter.
+    Toast {
+        id: updateToast
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.bottom: parent.bottom
+        anchors.bottomMargin: 24
+        z: 940
+    }
+
+    Connections {
+        target: UpdateCheck
+        function onUpdateBecameAvailable() {
+            updateToast.show(i18n("KyPost %1 is available.", UpdateCheck.latestVersion))
+        }
+    }
+
     // Same component the desktop root and its pop-out windows use, so there
     // is one definition of "what the lock screen covers" rather than two
     // hand-maintained copies. Mobile has no pop-out windows, so this single
