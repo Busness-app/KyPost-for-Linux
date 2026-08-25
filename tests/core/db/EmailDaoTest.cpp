@@ -42,6 +42,7 @@ void EmailDaoTest::roundTripsInsertUpdateDelete()
     email.subject = QStringLiteral("Subject");
     email.preview = QStringLiteral("Preview");
     email.body = QStringLiteral("Body text");
+    email.bodyMode = QStringLiteral("html");
     email.label = QStringLiteral("Label");
     email.keywords = QStringList{QStringLiteral("urgent"), QStringLiteral("work")};
     email.status = QStringLiteral("unread");
@@ -60,6 +61,9 @@ void EmailDaoTest::roundTripsInsertUpdateDelete()
     Email updated = email;
     updated.subject = QStringLiteral("Updated subject");
     updated.body = std::nullopt;
+    // Cleared alongside the body: the mode describes a body that is no longer
+    // there, and a stale "html" would outlive it.
+    updated.bodyMode = std::nullopt;
     updated.keywords = QStringList{QStringLiteral("later")};
     updated.hasAttachments = false;
     // Also exercises clearing the PGP columns, so a stale decrypt error
@@ -72,6 +76,7 @@ void EmailDaoTest::roundTripsInsertUpdateDelete()
     QVERIFY(refetched.has_value());
     QCOMPARE(*refetched, updated);
     QVERIFY(!refetched->body.has_value());
+    QVERIFY(!refetched->bodyMode.has_value());
 
     QVERIFY(dao.deleteById(email.folder, email.messageId));
     QVERIFY(!dao.findById(email.folder, email.messageId).has_value());

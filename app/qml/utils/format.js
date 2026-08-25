@@ -94,10 +94,43 @@ function emailContentSecurityPolicy(imagesLoaded) {
         + "connect-src 'none'; script-src 'none'; form-action 'none'; base-uri 'none'"
 }
 
+// Which form a message body is, when the server told us.
+//
+// `bodyMode` is the MIME Content-Type the server already parsed -- "html" or
+// "plain" -- carried on every /api/inbox row and returned by /api/mail/body.
+// Knowing beats guessing, and the guess is not merely imprecise: a plain-text
+// message containing an RFC 5322 address like <user@example.com> parses as an
+// unknown tag, so the address disappears from what the reader sees. That is
+// data loss, in the direction of a message that looks like it said less than
+// it did.
+//
+// Only an absent mode falls back to looksLikeHtmlDocument() -- an older relay,
+// or a row this client cached before it stored the mode. Absent means "the
+// server did not say", never "plain". Anything else that is not exactly
+// "html" is treated as text: an unrecognised value must not be what turns a
+// body into live HTML.
+function emailBodyIsHtml(bodyMode, body) {
+    var mode = String(bodyMode === undefined || bodyMode === null ? "" : bodyMode)
+    if (mode === "html")
+        return true
+    if (mode === "")
+        return looksLikeHtmlDocument(body)
+    return false
+}
+
 // The full document handed to WebEngineView.loadHtml(). `style` is the
 // caller's already-resolved theme CSS (colours come from a QML singleton
 // this module deliberately does not import).
-// forcePlainText skips the is-this-HTML sniff and always escapes.
+// forcePlainText is the caller's already-made decision about the body's form:
+// true escapes, false renders as HTML. Omit it entirely and only then does
+// this function guess, via looksLikeHtmlDocument().
+//
+// It used to only ever force *toward* escaping -- passing false still let the
+// sniff overrule it -- so a message the server had parsed as text/html but
+// which did not happen to open with a tag ("Hi.<br>...") was shown as source.
+// A sender controls the sniff's outcome just as completely as the header's
+// (open with "<div>" and it is HTML either way), so obeying the parse is not
+// a wider door; it is the same door, correctly labelled.
 //
 // For a client-decrypted OpenPGP message the MIME Content-Type says which
 // form the body is, and knowing beats guessing: a plain-text message that
@@ -105,7 +138,10 @@ function emailContentSecurityPolicy(imagesLoaded) {
 // heuristic, when the sender's own headers said it was text. Existing
 // callers pass three arguments and are unaffected.
 function renderedEmailHtml(body, imagesLoaded, style, forcePlainText) {
-    var inner = (!forcePlainText && looksLikeHtmlDocument(body))
+    var asHtml = (forcePlainText === undefined)
+        ? looksLikeHtmlDocument(body)
+        : !forcePlainText
+    var inner = asHtml
         ? String(body === undefined || body === null ? "" : body)
         : ("<pre>" + escapeHtml(body) + "</pre>")
     return "<html><head>"

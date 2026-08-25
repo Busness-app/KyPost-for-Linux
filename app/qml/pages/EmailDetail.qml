@@ -753,11 +753,17 @@ Item {
                 }
                 const source = (root.email && root.email.body) ? root.email.body
                                                                  : (root.email ? root.email.preview : "")
+                // Whether this is HTML comes from the server's own MIME parse
+                // (`bodyMode`, carried on every inbox row), not from sniffing
+                // the characters. The sniff is still the fallback for a row
+                // cached before this client stored the mode, and only then --
+                // see Format.emailBodyIsHtml for what the guess costs.
+                const isHtml = Format.emailBodyIsHtml(root.email ? root.email.bodyMode : "", source || "")
                 // Rearm the one-shot gate in onNavigationRequested below
                 // before triggering the loadHtml() call that it needs to
                 // let through.
                 item.awaitingInitialLoad = true
-                item.loadHtml(root.renderedHtml(source || ""))
+                item.loadHtml(root.renderedHtml(source || "", !isHtml))
             }
 
             Connections {

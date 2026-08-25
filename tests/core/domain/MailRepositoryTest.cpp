@@ -488,6 +488,7 @@ void MailRepositoryTest::refreshFolderUpdatedDeltaKeepsCachedBody()
     seed.subject = QStringLiteral("Old subject");
     seed.preview = QStringLiteral("Old preview");
     seed.body = QStringLiteral("<p>The real body</p>");
+    seed.bodyMode = QStringLiteral("html");
     seed.status = QStringLiteral("unread");
     seed.atUtc = QStringLiteral("2026-01-01T00:00:00Z");
     QVERIFY(emailDao.insertOrReplace(seed));
@@ -539,6 +540,11 @@ void MailRepositoryTest::refreshFolderUpdatedDeltaKeepsCachedBody()
     // ...while the body it deliberately omitted survives.
     QVERIFY(stored->body.has_value());
     QCOMPARE(*stored->body, QStringLiteral("<p>The real body</p>"));
+    // The mode survives with it. A preserved body whose mode was dropped is
+    // rendered by sniffing the characters again, which is the guess this
+    // client stopped making.
+    QVERIFY(stored->bodyMode.has_value());
+    QCOMPARE(*stored->bodyMode, QStringLiteral("html"));
     QCOMPARE(stored->preview, QStringLiteral("Old preview"));
 }
 

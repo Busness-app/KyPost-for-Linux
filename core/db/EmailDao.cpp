@@ -37,6 +37,7 @@ Email emailFromQuery(const QSqlQuery& query)
     email.subject = query.value(QStringLiteral("subject")).toString();
     email.preview = query.value(QStringLiteral("preview")).toString();
     email.body = variantToOptionalString(query.value(QStringLiteral("body")));
+    email.bodyMode = variantToOptionalString(query.value(QStringLiteral("body_mode")));
     email.label = query.value(QStringLiteral("label")).toString();
     email.keywords = decodeKeywords(query.value(QStringLiteral("keywords_json")).toString());
     email.status = query.value(QStringLiteral("status")).toString();
@@ -67,10 +68,10 @@ bool EmailDao::insertOrReplace(const Email& email)
     QSqlQuery query(m_db);
     query.prepare(QStringLiteral(
         "INSERT OR REPLACE INTO emails "
-        "(message_id, folder, sender, sent_to, cc, bcc, subject, preview, body, label, "
+        "(message_id, folder, sender, sent_to, cc, bcc, subject, preview, body, body_mode, label, "
         "keywords_json, status, at_utc, has_attachments, source_mode, pgp_encrypted, pgp_decrypt_error) "
         "VALUES (:message_id, :folder, :sender, :sent_to, :cc, :bcc, :subject, :preview, :body, "
-        ":label, :keywords_json, :status, :at_utc, :has_attachments, :source_mode, "
+        ":body_mode, :label, :keywords_json, :status, :at_utc, :has_attachments, :source_mode, "
         ":pgp_encrypted, :pgp_decrypt_error)"));
     query.bindValue(QStringLiteral(":message_id"), email.messageId);
     // A default-constructed QString is NULL to Qt's SQL layer, not ''. Since
@@ -87,6 +88,7 @@ bool EmailDao::insertOrReplace(const Email& email)
     query.bindValue(QStringLiteral(":subject"), email.subject);
     query.bindValue(QStringLiteral(":preview"), email.preview);
     query.bindValue(QStringLiteral(":body"), optionalStringToVariant(email.body));
+    query.bindValue(QStringLiteral(":body_mode"), optionalStringToVariant(email.bodyMode));
     query.bindValue(QStringLiteral(":label"), email.label);
     query.bindValue(QStringLiteral(":keywords_json"), encodeKeywords(email.keywords));
     query.bindValue(QStringLiteral(":status"), email.status);
