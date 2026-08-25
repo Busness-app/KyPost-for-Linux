@@ -150,6 +150,8 @@ add_library(kypostcore STATIC
   theme/Shape.h
   theme/ThemeManager.cpp
   theme/ThemeManager.h
+  version/VersionCompare.cpp
+  version/VersionCompare.h
 )
 
 # CONFIGURE_DEPENDS: adding db/migrations/NNN_*.sql should be enough to pick

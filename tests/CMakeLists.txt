@@ -30,6 +30,10 @@ kypost_add_test(StandardFolderTest core/models/StandardFolderTest.cpp)
 kypost_add_test(KeywordSettingsTest core/models/KeywordSettingsTest.cpp)
 kypost_add_test(PushNotificationTest core/models/PushNotificationTest.cpp)
 
+# core/version: the dotted-numeric compare behind the update notice. Pure, no
+# network -- the check that decides whether a user is told they are behind.
+kypost_add_test(VersionCompareTest core/version/VersionCompareTest.cpp)
+
 # core/security: PIN policy, lockout backoff, and the PIN-derived AEAD that
 # backs the credential gate. All three are pure/store-only, no GUI.
 kypost_add_test(LockoutPolicyTest core/security/LockoutPolicyTest.cpp)
