@@ -137,6 +137,11 @@ target_sources(kypost PRIVATE
   pairing/PairingController.h
 )
 
+target_sources(kypost PRIVATE
+  update/UpdateCheckController.cpp
+  update/UpdateCheckController.h
+)
+
 # SecureStoreKeychain talks to the Secret Service over QtDBus, so it belongs
 # in the app executable, never in kypostcore.
 find_package(Qt6Keychain REQUIRED)

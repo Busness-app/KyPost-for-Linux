@@ -186,6 +186,13 @@ kypost_add_app_test(PgpMessagePresentationTest
   LIBS KF6::I18n
 )
 
+# UpdateCheckController: decision logic only (isNewer + the compiled-in
+# version constant). The network path (ClientVersionClient) is already
+# covered by its own test.
+kypost_add_app_test(UpdateCheckControllerTest
+  SOURCES app/update/UpdateCheckControllerTest.cpp
+          ${CMAKE_SOURCE_DIR}/app/update/UpdateCheckController.cpp)
+
 kypost_add_app_test(MailControllerTest
   SOURCES
     app/mail/MailControllerTest.cpp
