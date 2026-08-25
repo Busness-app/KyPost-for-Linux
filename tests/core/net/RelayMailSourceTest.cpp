@@ -55,6 +55,7 @@ void RelayMailSourceTest::fetchInboxMapsTwoTabsWithAtUtcPassthroughAndOptionalFi
             "bcc": "bcc@example.com",
             "subject": "Hello",
             "body": "Body text",
+            "bodyMode": "plain",
             "status": "unread",
             "atUtc": "2026-07-01T12:00:00Z",
             "hasAttachments": true,
@@ -112,6 +113,12 @@ void RelayMailSourceTest::fetchInboxMapsTwoTabsWithAtUtcPassthroughAndOptionalFi
     QCOMPARE(item1.email.subject, QStringLiteral("Hello"));
     QVERIFY(item1.email.body.has_value());
     QCOMPARE(*item1.email.body, QStringLiteral("Body text"));
+    // bodyMode travels with the body. Parsed rather than re-derived: sniffing
+    // "Body text" would be harmless, but sniffing a plain-text message that
+    // opens with an RFC 5322 address deletes the address -- see
+    // Email::bodyMode.
+    QVERIFY(item1.email.bodyMode.has_value());
+    QCOMPARE(*item1.email.bodyMode, QStringLiteral("plain"));
     // No distinct "preview" key exists on the wire (confirmed against the Go
     // backend) -- preview must stay empty, not be populated from body.
     QVERIFY(item1.email.preview.isEmpty());
@@ -137,10 +144,13 @@ void RelayMailSourceTest::fetchInboxMapsTwoTabsWithAtUtcPassthroughAndOptionalFi
     const InboxEmailItem& item2 = archiveItems.at(0);
     QCOMPARE(item2.email.messageId, QStringLiteral("m2"));
     QCOMPARE(item2.email.folder, QStringLiteral("Archive"));
-    // "body"/"detail"/"changeType" absent from the wire -> nullopt/empty, not
-    // a parse error.
+    // "body"/"bodyMode"/"detail"/"changeType" absent from the wire ->
+    // nullopt/empty, not a parse error.
     QVERIFY(item2.email.keywords.isEmpty());
     QVERIFY(!item2.email.body.has_value());
+    // Absent bodyMode stays absent -- "the server did not say" is a distinct
+    // state from "plain", and only it falls back to the sniff.
+    QVERIFY(!item2.email.bodyMode.has_value());
     QVERIFY(item2.detail.isEmpty());
     QVERIFY(!item2.changeType.has_value());
 }

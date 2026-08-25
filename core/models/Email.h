@@ -18,6 +18,17 @@ struct Email
     QString subject;
     QString preview;
     std::optional<QString> body;
+
+    // Which MIME part `body` was taken from: "html" or "plain", straight from
+    // /api/inbox's `bodyMode` (omitempty on the wire, so absent is a real
+    // state). Absent means the server did not say -- NOT "plain".
+    //
+    // Carried rather than re-derived because sniffing the characters is
+    // lossy: a plain-text message containing an RFC 5322 address like
+    // <user@example.com> parses as an unknown tag and the address is dropped
+    // from what the reader sees. The server did the MIME parse already; this
+    // is that answer, travelling with the body it describes.
+    std::optional<QString> bodyMode;
     QString label;
     QStringList keywords;
     QString status;

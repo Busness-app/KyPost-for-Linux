@@ -1440,6 +1440,10 @@ QVariantMap MailController::findByMessageId(const QString& messageId) const
     map[QStringLiteral("subject")] = email->subject;
     map[QStringLiteral("preview")] = email->preview;
     map[QStringLiteral("body")] = email->body.value_or(QString());
+    // Empty string when the server did not say. QML's emailBodyIsHtml() reads
+    // "" as "fall back to the sniff", which is the same answer the absent
+    // optional means -- see Format.emailBodyIsHtml.
+    map[QStringLiteral("bodyMode")] = email->bodyMode.value_or(QString());
     map[QStringLiteral("label")] = email->label;
     map[QStringLiteral("keywords")] = QVariant::fromValue(email->keywords);
     map[QStringLiteral("status")] = email->status;

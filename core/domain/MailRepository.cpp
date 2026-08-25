@@ -211,6 +211,11 @@ MailFetchOutcome MailRepository::applyRefresh(const MailRefreshPlan& plan, const
                 const std::optional<Email> cached = m_emailDao.findById(folder, toStore.messageId);
                 if (cached.has_value() && cached->body.has_value() && !cached->body->isEmpty()) {
                     toStore.body = cached->body;
+                    // The mode travels with the body it describes. Restoring
+                    // one without the other leaves a body whose form nothing
+                    // knows, which sends the renderer back to sniffing the
+                    // characters -- see Email::bodyMode.
+                    toStore.bodyMode = cached->bodyMode;
                     if (toStore.preview.isEmpty())
                         toStore.preview = cached->preview;
                 }

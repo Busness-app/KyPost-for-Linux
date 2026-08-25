@@ -86,6 +86,48 @@ TestCase {
         verify(html.indexOf("&lt;div&gt;") !== -1)
     }
 
+    // ---- the server's own answer beats the sniff -------------------------
+
+    // The sniff above is a fallback, not the rule. /api/inbox carries
+    // `bodyMode` for every row -- the MIME Content-Type the server parsed --
+    // and this client ignored it, which is how the case below lost data.
+    function test_declared_plain_text_is_never_sniffed_as_html() {
+        // RFC 5322's own address form. Sniffed, it parses as an unknown tag
+        // and the address vanishes from what the reader sees.
+        var body = "<user@example.com> asked about the invoice."
+        verify(!Format.emailBodyIsHtml("plain", body))
+        var html = Format.renderedEmailHtml(body, true, "", !Format.emailBodyIsHtml("plain", body))
+        verify(html.indexOf("&lt;user@example.com&gt;") !== -1)
+    }
+
+    // The other direction: a declared-HTML body that does not happen to open
+    // with a tag was escaped and shown as source.
+    function test_declared_html_is_rendered_as_html() {
+        var body = "Hello there.<br><b>Invoice attached.</b>"
+        verify(!Format.looksLikeHtmlDocument(body)) // the sniff gets this wrong
+        verify(Format.emailBodyIsHtml("html", body))
+        var html = Format.renderedEmailHtml(body, true, "", !Format.emailBodyIsHtml("html", body))
+        verify(html.indexOf("<pre>") === -1)
+        verify(html.indexOf("<b>Invoice attached.</b>") !== -1)
+    }
+
+    // Absent means "the server did not say", not "plain" -- an older relay,
+    // or a row cached before this client stored the mode. Falling back to the
+    // sniff keeps those rows rendering exactly as they did before.
+    function test_absent_mode_falls_back_to_the_sniff() {
+        compare(Format.emailBodyIsHtml("", "<html><body>hi</body></html>"), true)
+        compare(Format.emailBodyIsHtml(undefined, "<html><body>hi</body></html>"), true)
+        compare(Format.emailBodyIsHtml(null, "plain sentence"), false)
+        compare(Format.emailBodyIsHtml("", "Use <br> for a line break."), false)
+    }
+
+    // An unknown value is not a licence to render markup: anything that is
+    // not exactly "html" must not turn a body into live HTML on its own.
+    function test_unknown_mode_does_not_grant_html() {
+        compare(Format.emailBodyIsHtml("HTML", "Hello there.<br>"), false)
+        compare(Format.emailBodyIsHtml("text/html", "Hello there.<br>"), false)
+    }
+
     // ---- escaping --------------------------------------------------------
 
     function test_escape_html_covers_quotes_too() {

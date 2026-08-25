@@ -1,0 +1,22 @@
+-- `bodyMode` has been on every /api/inbox row since the endpoint existed
+-- (server_inbox.go's inbox entry: "html" or "plain", which MIME part `body`
+-- was taken from), and this client never read it. EmailDetail.qml decided the
+-- question itself instead, by sniffing the body's first tag.
+--
+-- That guess is lossy in a way that deletes content: a plain-text message
+-- containing an RFC 5322 address -- <user@example.com>, the form the spec
+-- itself defines -- sniffs as markup, and the address is parsed as an unknown
+-- tag and never shown. The reader sees a message that says less than it does.
+--
+-- Stored rather than merely parsed because the cache outlives the response:
+-- rows are rendered from `emails` long after the fetch, so a mode kept only in
+-- memory would send the next open straight back to the sniff.
+--
+-- Nullable with no default on purpose. NULL means "the server did not say",
+-- which is exactly the state every row cached before this migration is in,
+-- and is distinct from "plain" -- see Email::bodyMode and Format's
+-- emailBodyIsHtml(), which fall back to the old sniff for NULL and only for
+-- NULL. Backfilling '' or 'plain' here would silently re-render every cached
+-- HTML message as escaped source.
+
+ALTER TABLE emails ADD COLUMN body_mode TEXT;

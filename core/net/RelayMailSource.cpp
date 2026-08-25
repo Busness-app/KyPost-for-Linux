@@ -10,7 +10,8 @@
 namespace {
 
 // Maps one wire inbox item -- {messageId, sender, sentTo, cc, bcc, subject,
-// body, status, atUtc, hasAttachments, label, keywords, detail?, changeType?}
+// body, bodyMode, status, atUtc, hasAttachments, label, keywords, detail?,
+// changeType?}
 // -- onto
 // InboxEmailItem. atUtc is a direct pass-through (core/models/Email::atUtc
 // already matches the wire key exactly, no casing translation). There is no
@@ -28,6 +29,11 @@ InboxEmailItem inboxItemFromJson(const QJsonObject& obj)
     item.email.subject = obj.value(QStringLiteral("subject")).toString();
     if (obj.contains(QStringLiteral("body")) && !obj.value(QStringLiteral("body")).isNull())
         item.email.body = obj.value(QStringLiteral("body")).toString();
+    // Travels with the body, and only with it. `omitempty` on the wire, so an
+    // absent key stays absent here rather than becoming "plain" -- see
+    // Email::bodyMode for what re-deriving it costs.
+    if (obj.contains(QStringLiteral("bodyMode")) && !obj.value(QStringLiteral("bodyMode")).isNull())
+        item.email.bodyMode = obj.value(QStringLiteral("bodyMode")).toString();
     item.email.status = obj.value(QStringLiteral("status")).toString();
     item.email.atUtc = obj.value(QStringLiteral("atUtc")).toString();
     item.email.hasAttachments = obj.value(QStringLiteral("hasAttachments")).toBool();
