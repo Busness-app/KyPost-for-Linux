@@ -213,6 +213,9 @@ code in a security ceremony.
 
 ## Bug 2 — real, filed, not fixed for 0.2.0
 
+Filed as [Busness-app/KyPost-for-Linux#50](https://github.com/Busness-app/KyPost-for-Linux/issues/50),
+targeted at 0.4.0.
+
 Linux never reads `pin=` from the pairing URI. It parses with `QUrlQuery`,
 requires only `sub`/`srv`/`pt`, reads `reg` optionally, and ignores unknown
 parameters (`app/pairing/PairingController.cpp:130-148` — note the path is
