@@ -1,0 +1,90 @@
+name: Bug report
+description: Something in the KyPost Linux client does not work as documented.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        **Not for security vulnerabilities** — report those through
+        [Security Advisories](https://github.com/Busness-app/KyPost-for-Linux/security/advisories/new).
+
+
+        **Not for server problems.** If mail is not arriving, not being labelled,
+        or the server refuses a pairing code, that belongs in
+        [KyPost-Server](https://github.com/Busness-app/KyPost-Server/issues).
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened, and what you expected instead
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: >-
+        Numbered, from a state someone else can reach. "It happens sometimes" is
+        still worth filing — say so rather than leaving this blank.
+    validations:
+      required: true
+
+  - type: input
+    id: client-version
+    attributes:
+      label: Client version
+      description: "`flatpak info com.kysecurity.mail`, or the tag you built from."
+      placeholder: "0.2.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install
+    attributes:
+      label: How did you install it?
+      options:
+        - Flatpak from a GitHub release (x86_64)
+        - Flatpak from a GitHub release (aarch64)
+        - Built from source
+        - Other (describe below)
+    validations:
+      required: true
+
+  - type: input
+    id: desktop
+    attributes:
+      label: Distribution and desktop session
+      description: >-
+        Include Wayland or X11 — this is a Qt application and several classes of
+        bug (window activation, tray icon, clipboard, screen scaling) differ
+        between the two.
+      placeholder: "Fedora 42, KDE Plasma 6.4, Wayland"
+    validations:
+      required: true
+
+  - type: input
+    id: server-version
+    attributes:
+      label: Server version, if the problem involves one
+      description: On the server, Admin -> Server -> Application.
+      placeholder: "0.3.0"
+
+  - type: dropdown
+    id: delivery
+    attributes:
+      label: Notification delivery, if this is a notification bug
+      options:
+        - "Not a notification bug"
+        - "Push (UnifiedPush distributor)"
+        - "App Pull"
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant output
+      description: >-
+        Run from a terminal to capture it:
+        `flatpak run com.kysecurity.mail`.
+        **Redact before pasting** — logs can carry email addresses and hostnames.
+      render: text
