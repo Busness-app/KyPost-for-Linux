@@ -93,6 +93,27 @@ TestCase {
         compare(toast.visible, false, "a later unlock must stay silent")
     }
 
+    // At most once per run, across a SECOND signal emission too, not just a
+    // second lock/unlock cycle with no new signal. updateBecameAvailable()
+    // is a transition signal and can genuinely fire more than once in one
+    // run (e.g. a later poll goes unavailable -> available again), so the
+    // once-per-run rule has to hold against a real second emission, not
+    // just against `pending` being already spent.
+    function test_secondEmission_afterAlreadyShown_doesNotShowAgain() {
+        AppLock.locked = true
+        const toast = createToast()
+        UpdateCheck.latestVersion = "1.5.0"
+        UpdateCheck.updateBecameAvailable()
+
+        AppLock.locked = false
+        compare(toast.visible, true, "first unlock must show it")
+        toast.visible = false // simulate the 2.5s auto-hide having already run
+
+        UpdateCheck.latestVersion = "1.6.0"
+        UpdateCheck.updateBecameAvailable()
+        compare(toast.visible, false, "a second emission this run must stay silent")
+    }
+
     // No update pending: unlocking must show nothing at all.
     function test_unlockWithNoUpdatePending_showsNothing() {
         AppLock.locked = true

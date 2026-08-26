@@ -49,8 +49,14 @@ public:
 
 signals:
     void changed();
-    // Raised on the transition into "an update is available", so a root can
-    // show a toast without polling the property.
+    // Raised on every false->true transition of updateAvailable, so a root
+    // can show a toast without polling the property. NOT one-shot-per-run:
+    // the poll timer keeps running for the life of the process, and a later
+    // check can genuinely go back to false (e.g. a result whose version this
+    // client cannot parse clears m_latestVersion) and then true again, which
+    // re-raises this signal. Any "show it at most once per run" suppression
+    // is the listener's job -- see UpdateToast.qml's `shown` latch -- not
+    // this class's.
     void updateBecameAvailable();
 
 private:
