@@ -52,6 +52,7 @@ private slots:
 
     void aNewerLatestVersionSetsUpdateAvailableAndEmitsTheTransitionSignalOnce();
     void anEqualOrOlderLatestVersionLeavesUpdateAvailableFalseAndEmitsNoTransition();
+    void anUnparseableLatestVersionLeavesTheUiInTheUnknownState();
     void aNetworkErrorLeavesLastKnownGoodValuesIntactAndEmitsNothing();
     void anUnsupportedServerLeavesLastKnownGoodValuesIntactAndEmitsNothing();
     void aSecondConsecutiveNewerResultDoesNotReEmitTheTransitionSignal();
@@ -102,19 +103,43 @@ void UpdateCheckControllerTest::anEqualOrOlderLatestVersionLeavesUpdateAvailable
     f.controller.applyResult(okResult(installed)); // equal
     QVERIFY(!f.controller.updateAvailable());
 
+    // Derived from minor (falling back to major), not patch: at the current
+    // 0.2.0 install, "patch - 1" clamped at zero comes out equal to
+    // installed ("0.2.0" again), and a guard used to silently skip this half
+    // of the test. Decrementing minor is older regardless of patch, so this
+    // never degenerates the same way.
     const QStringList parts = installed.split(QLatin1Char('.'));
     QCOMPARE(parts.size(), 3);
-    const int lastPart = parts[2].toInt();
-    const QString older = QStringLiteral("%1.%2.%3")
-                               .arg(parts[0].toInt())
-                               .arg(parts[1].toInt())
-                               .arg(lastPart > 0 ? lastPart - 1 : 0);
-    if (older != installed) {
-        f.controller.applyResult(okResult(older));
-        QVERIFY(!f.controller.updateAvailable());
-    }
+    const int major = parts[0].toInt();
+    const int minor = parts[1].toInt();
+    const int patch = parts[2].toInt();
+    const QString older = minor > 0
+        ? QStringLiteral("%1.%2.%3").arg(major).arg(minor - 1).arg(patch)
+        : QStringLiteral("%1.%2.%3").arg(major > 0 ? major - 1 : 0).arg(minor).arg(patch);
+    QVERIFY2(older != installed, "derived 'older' version must actually be older than installed");
+
+    f.controller.applyResult(okResult(older));
+    QVERIFY(!f.controller.updateAvailable());
 
     QCOMPARE(becameAvailableSpy.count(), 0);
+}
+
+// The server's ghrelease.Latest does not enforce N.N.N -- "0.3.0-rc1" is a
+// suffix form the repo's own scripts/verify-version.sh permits and can reach
+// the client without being flagged prerelease. VersionCompare::isNewer
+// correctly refuses it and returns false, but applyResult must not let that
+// "not newer" read as "you are current": it must discard the value so the UI
+// falls into the unknown-state branch instead.
+void UpdateCheckControllerTest::anUnparseableLatestVersionLeavesTheUiInTheUnknownState()
+{
+    Fixture f;
+    QSignalSpy changedSpy(&f.controller, &UpdateCheckController::changed);
+
+    f.controller.applyResult(okResult(QStringLiteral("0.3.0-rc1"), QStringLiteral("2026-08-25T12:00:00Z")));
+
+    QVERIFY(f.controller.latestVersion().isEmpty());
+    QVERIFY(!f.controller.updateAvailable());
+    QCOMPARE(changedSpy.count(), 1);
 }
 
 void UpdateCheckControllerTest::aNetworkErrorLeavesLastKnownGoodValuesIntactAndEmitsNothing()

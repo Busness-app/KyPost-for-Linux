@@ -51,4 +51,10 @@ bool isNewer(const QString& latest, const QString& installed)
     return false;
 }
 
+bool isValid(const QString& version)
+{
+    int parts[3];
+    return parseVersion(version, parts);
+}
+
 } // namespace VersionCompare

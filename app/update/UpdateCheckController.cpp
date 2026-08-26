@@ -72,7 +72,11 @@ void UpdateCheckController::applyResult(const ClientVersionResult& result)
         return;
 
     const bool wasAvailable = m_updateAvailable;
-    m_latestVersion = result.latestVersion;
+    // A tag the server forwards but this client cannot parse (see
+    // VersionCompare.h) must not be displayed at all: showing it would let
+    // the "not newer" branch below read as "you are current" rather than
+    // "unknown", which is exactly the conflation the About section forbids.
+    m_latestVersion = VersionCompare::isValid(result.latestVersion) ? result.latestVersion : QString();
     m_checkedAt = result.checkedAt;
     m_updateAvailable = VersionCompare::isNewer(m_latestVersion, compiledInVersion());
     emit changed();

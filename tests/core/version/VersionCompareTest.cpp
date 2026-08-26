@@ -11,6 +11,8 @@ private slots:
     void comparesDottedNumericVersions();
     void refusesAnythingThatIsNotThreeNumbers_data();
     void refusesAnythingThatIsNotThreeNumbers();
+    void isValidAgreesWithWhatIsNewerCanParse_data();
+    void isValidAgreesWithWhatIsNewerCanParse();
 };
 
 void VersionCompareTest::comparesDottedNumericVersions_data()
@@ -66,6 +68,31 @@ void VersionCompareTest::refusesAnythingThatIsNotThreeNumbers()
     QFETCH(QString, installed);
     // Refusing means "no update", never a crash and never a true.
     QCOMPARE(VersionCompare::isNewer(latest, installed), false);
+}
+
+// isValid() is the guard the controller uses to decide whether a fetched
+// latestVersion may be shown at all -- it must accept exactly what isNewer()
+// can parse, and refuse exactly what isNewer() refuses, or the two fall out
+// of sync and a tag isNewer() silently treats as false starts looking valid.
+void VersionCompareTest::isValidAgreesWithWhatIsNewerCanParse_data()
+{
+    QTest::addColumn<QString>("version");
+    QTest::addColumn<bool>("expected");
+
+    QTest::newRow("plain") << "0.2.0" << true;
+    QTest::newRow("leading v") << "v0.3.0" << true;
+    QTest::newRow("two components") << "0.4" << false;
+    QTest::newRow("four components") << "1.2.3.4" << false;
+    QTest::newRow("trailing suffix") << "0.3.0-rc1" << false;
+    QTest::newRow("non-numeric component") << "0.x.0" << false;
+    QTest::newRow("empty") << "" << false;
+}
+
+void VersionCompareTest::isValidAgreesWithWhatIsNewerCanParse()
+{
+    QFETCH(QString, version);
+    QFETCH(bool, expected);
+    QCOMPARE(VersionCompare::isValid(version), expected);
 }
 
 QTEST_MAIN(VersionCompareTest)
