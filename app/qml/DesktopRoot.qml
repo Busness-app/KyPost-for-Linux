@@ -1567,19 +1567,17 @@ Kirigami.ApplicationWindow {
     // danger-styled and cannot be dismissed, and is reserved for conditions
     // that stop the app working. A routine "a new version exists" painted in
     // the same red, unclearable strip would devalue the warnings that matter.
-    Toast {
+    //
+    // UpdateToast (not plain Toast): defers the toast until unlock when the
+    // startup update check lands while the PIN screen (z: 1000) is covering
+    // this z: 940 toast -- see UpdateToast.qml for why a plain Toast here
+    // meant a lock-enabled user was never told at all.
+    UpdateToast {
         id: updateToast
         anchors.horizontalCenter: parent.horizontalCenter
         anchors.bottom: parent.bottom
         anchors.bottomMargin: 24
         z: 940
-    }
-
-    Connections {
-        target: UpdateCheck
-        function onUpdateBecameAvailable() {
-            updateToast.show(i18n("KyPost %1 is available.", UpdateCheck.latestVersion))
-        }
     }
 
     // ---- app lock -----------------------------------------------------
