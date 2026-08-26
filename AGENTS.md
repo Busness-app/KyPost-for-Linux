@@ -27,7 +27,7 @@ Full detail (including per-subdirectory breakdowns) lives in
 map, not a duplicate:
 
 ```
-core/       — libkypostcore: models/net/db/stores/domain/theme, QtCore+Network+Sql only
+core/       — libkypostcore: models/net/db/stores/domain/theme/version, QtCore+Network+Sql only
 app/        — main.cpp, push/ (KUnifiedPush glue, Qt6-only), platform/ (SecureStore backends), qml/ (MobileRoot, DesktopRoot, pages, components)
 tests/      — QtTest, stubbed HttpClient; ctest-driven. tests/qml/ is the QML suite (QmlTests); tests/guards.tsv is the security-guard manifest (§5a)
 packaging/  — flatpak/ (manifest, desktop file, metainfo, notifyrc, icons), dbus/ (session D-Bus activation .service), click/ (empty .gitkeep placeholder — Ubuntu Touch is deferred, there is no Clickable manifest)

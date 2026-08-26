@@ -15,11 +15,13 @@
     <file>components/EmptyState.qml</file>
     <file>components/SectionLabel.qml</file>
     <file>components/MutedHint.qml</file>
+    <file>components/UpdateNotice.qml</file>
     <file>components/ThemedTextField.qml</file>
     <file>components/RepeaterField.qml</file>
     <file>components/TokenField.qml</file>
     <file>components/AutocompleteDropdown.qml</file>
     <file>components/Toast.qml</file>
+    <file>components/UpdateToast.qml</file>
     <file>components/LockOverlay.qml</file>
     <file>components/StatusBanner.qml</file>
     <file>components/AddressBookPickerDialog.qml</file>

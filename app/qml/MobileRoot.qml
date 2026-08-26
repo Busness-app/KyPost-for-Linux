@@ -927,6 +927,23 @@ Kirigami.ApplicationWindow {
         onReconnectRequested: Pairing.reconnectToServer()
     }
 
+    // Deliberately a Toast rather than a StatusBanner row. StatusBanner is
+    // danger-styled and cannot be dismissed, and is reserved for conditions
+    // that stop the app working. A routine "a new version exists" painted in
+    // the same red, unclearable strip would devalue the warnings that matter.
+    //
+    // UpdateToast (not plain Toast): defers the toast until unlock when the
+    // startup update check lands while the PIN screen (z: 1000) is covering
+    // this z: 940 toast -- see UpdateToast.qml for why a plain Toast here
+    // meant a lock-enabled user was never told at all.
+    UpdateToast {
+        id: updateToast
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.bottom: parent.bottom
+        anchors.bottomMargin: 24
+        z: 940
+    }
+
     // Same component the desktop root and its pop-out windows use, so there
     // is one definition of "what the lock screen covers" rather than two
     // hand-maintained copies. Mobile has no pop-out windows, so this single

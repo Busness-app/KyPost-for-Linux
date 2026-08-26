@@ -140,6 +140,8 @@ add_library(kypostcore STATIC
   net/PgpSendRequest.h
   net/RelayMailSource.cpp
   net/RelayMailSource.h
+  net/ClientVersionClient.cpp
+  net/ClientVersionClient.h
   vcard/VCardContact.cpp
   vcard/VCardContact.h
   theme/ThemePalette.cpp
@@ -150,6 +152,8 @@ add_library(kypostcore STATIC
   theme/Shape.h
   theme/ThemeManager.cpp
   theme/ThemeManager.h
+  version/VersionCompare.cpp
+  version/VersionCompare.h
 )
 
 # CONFIGURE_DEPENDS: adding db/migrations/NNN_*.sql should be enough to pick

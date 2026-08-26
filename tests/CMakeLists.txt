@@ -30,6 +30,10 @@ kypost_add_test(StandardFolderTest core/models/StandardFolderTest.cpp)
 kypost_add_test(KeywordSettingsTest core/models/KeywordSettingsTest.cpp)
 kypost_add_test(PushNotificationTest core/models/PushNotificationTest.cpp)
 
+# core/version: the dotted-numeric compare behind the update notice. Pure, no
+# network -- the check that decides whether a user is told they are behind.
+kypost_add_test(VersionCompareTest core/version/VersionCompareTest.cpp)
+
 # core/security: PIN policy, lockout backoff, and the PIN-derived AEAD that
 # backs the credential gate. All three are pure/store-only, no GUI.
 kypost_add_test(LockoutPolicyTest core/security/LockoutPolicyTest.cpp)
@@ -115,6 +119,7 @@ kypost_add_test(NativeRegistrationClientTest core/net/NativeRegistrationClientTe
 kypost_add_test(PushNotificationClientTest core/net/PushNotificationClientTest.cpp)
 kypost_add_test(DeregisterClientTest core/net/DeregisterClientTest.cpp)
 kypost_add_test(ContactSyncClientTest core/net/ContactSyncClientTest.cpp)
+kypost_add_test(ClientVersionClientTest core/net/ClientVersionClientTest.cpp)
 kypost_add_test(FolderClientTest core/net/FolderClientTest.cpp)
 kypost_add_test(GroupsClientTest core/net/GroupsClientTest.cpp)
 kypost_add_test(ContactPhotoClientTest core/net/ContactPhotoClientTest.cpp)
@@ -180,6 +185,13 @@ kypost_add_app_test(PgpMessagePresentationTest
     ${CMAKE_SOURCE_DIR}/app/mail/PgpMessagePresentation.cpp
   LIBS KF6::I18n
 )
+
+# UpdateCheckController: decision logic only (isNewer + the compiled-in
+# version constant). The network path (ClientVersionClient) is already
+# covered by its own test.
+kypost_add_app_test(UpdateCheckControllerTest
+  SOURCES app/update/UpdateCheckControllerTest.cpp
+          ${CMAKE_SOURCE_DIR}/app/update/UpdateCheckController.cpp)
 
 kypost_add_app_test(MailControllerTest
   SOURCES

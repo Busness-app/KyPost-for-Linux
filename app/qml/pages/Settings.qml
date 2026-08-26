@@ -596,6 +596,12 @@ Item {
                             }
                         }
                     }
+
+                    SectionLabel { text: i18n("About") }
+
+                    UpdateNotice {
+                        Layout.fillWidth: true
+                    }
                 }
             }
 

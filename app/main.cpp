@@ -15,6 +15,7 @@
 #include "push/UnifiedPushConnector.h"
 #include "theme/ThemeController.h"
 #include "tray/TrayController.h"
+#include "update/UpdateCheckController.h"
 
 #include "db/ContactDao.h"
 #include "db/Database.h"
@@ -1102,6 +1103,22 @@ int main(int argc, char* argv[])
                          if (appLockManager.locked())
                              pgpEnrollmentController.cancel();
                      });
+
+    // Update check: QML-facing bridge that asks the paired server (never
+    // GitHub -- see UpdateCheckController.h) what the newest published Linux
+    // release is. Constructed here, after pairingController, so it can wire
+    // to PairingController::pairingChanged the same way pgpEnrollmentController
+    // does above. Surfaces only -- a Flatpak cannot update itself.
+    UpdateCheckController updateCheckController(pairingStore, networkExecutor);
+    qmlRegisterSingletonInstance<UpdateCheckController>(
+        "com.kysecurity.mail", 1, 0, "UpdateCheck", &updateCheckController);
+    QObject::connect(&pairingController, &PairingController::pairingChanged,
+                     &updateCheckController, &UpdateCheckController::pairingMayHaveChanged);
+    // Kick the first check once the event loop is running, rather than from
+    // inside this still-executing constructor sequence.
+    QTimer::singleShot(0, &updateCheckController, [&updateCheckController]() {
+        updateCheckController.checkNow();
+    });
 
     // Keep PairingController's view of the lock current, so a
     // kypost://native-pair link arriving while the app is locked cannot raise a
