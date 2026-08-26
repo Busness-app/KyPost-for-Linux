@@ -54,12 +54,20 @@ for someone to discover.
 
 ## Disclosure timeline
 
-Matching the server repository, so a finding that spans both is not governed by
-two different clocks.
+The same commitments as the server repository, so a finding that spans both is
+not governed by two different clocks:
 
-- **Acknowledgement:** within 7 days
-- **Assessment:** within 14 days
-- **Fix or mitigation plan:** communicated with the assessment
+- Acknowledge receipt within **2 business days**
+- Provide a timeline and severity assessment
+- Develop and test a patch
+- Coordinate a release that includes the fix before the deadline
+- Credit you in the release notes, unless you prefer anonymity
+
+Public disclosure timelines are by severity — **critical** 30 days, **high** 60,
+**moderate** 90 — as set out in
+[the server's SECURITY.md](https://github.com/Busness-app/KyPost-Server/blob/main/SECURITY.md).
+This assumes good-faith coordination, and patches are publicly available before
+any advisory is published.
 
 ## Contact
 
