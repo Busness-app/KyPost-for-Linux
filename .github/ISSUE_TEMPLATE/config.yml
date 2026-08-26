@@ -1,0 +1,14 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/Busness-app/KyPost-for-Linux/security/advisories/new
+    about: >-
+      Do not open a public issue. Report privately here — see SECURITY.md.
+  - name: Server-side problem, not the client
+    url: https://github.com/Busness-app/KyPost-Server/issues
+    about: >-
+      Mail not being fetched or labelled, pairing codes refused, IMAP or SMTP
+      errors, TLS and reverse-proxy setup — those live in the server, not here.
+  - name: Setup and configuration questions
+    url: https://github.com/Busness-app/KyPost-for-Linux/blob/main/README.md
+    about: Check the README first — most first-run problems are covered there.
