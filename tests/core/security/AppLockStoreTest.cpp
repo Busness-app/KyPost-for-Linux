@@ -53,6 +53,8 @@ private slots:
     void aNewPinIsStoredInTheArgon2idFormat();
     void aLegacyPbkdf2RecordVerifiesAndIsUpgradedInPlace();
     void aFailedUpgradeStillAcceptsTheCorrectPin();
+    void aVerifierThatCannotBeComputedIsNotAWrongPin();
+    void anOrdinaryVerdictDoesNotClaimItCouldNotBeComputed();
     void tracksAttemptsAndLockoutDeadline();
     void credentialGateRoundTrips();
 };
@@ -451,6 +453,56 @@ void AppLockStoreTest::aFailedUpgradeStillAcceptsTheCorrectPin()
     // The old record still stands, so the next attempt can try again.
     QCOMPARE(secureStore.get(QStringLiteral("applock.pinRecord")).value_or(QString()),
              legacyRecord(QStringLiteral("864209")));
+}
+
+// A derivation that cannot RUN is not a wrong guess, and the difference is
+// not cosmetic: AppLockManager counts wrong guesses toward a ten-attempt wipe
+// that erases the mail cache, the pairing and the lock. Argon2id here wants a
+// 64 MiB working set, which a cgroup-capped or low-memory session refuses
+// deterministically -- so without this distinction a user entering the
+// CORRECT pin on a constrained machine loses their data.
+//
+// Forced with a salt argon2 refuses (its minimum is 8 bytes) rather than by
+// starving the process, so the case is portable and needs no seam in the
+// production type: what is provoked is argon2 returning non-OK, the same
+// branch an allocation failure takes.
+void AppLockStoreTest::aVerifierThatCannotBeComputedIsNotAWrongPin()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    SecureStoreFile secureStore(dir.path());
+    AppLockStore store(secureStore);
+
+    const QString shortSalt = QString::fromLatin1(QByteArray(4, 'x').toBase64());
+    const QString hash = QString::fromLatin1(QByteArray(32, 'y').toBase64());
+    QVERIFY(secureStore.set(QStringLiteral("applock.enabled"), QStringLiteral("1")));
+    QVERIFY(secureStore.set(QStringLiteral("applock.pinRecord"),
+                             QStringLiteral("a2:") + shortSalt + QStringLiteral(":") + hash));
+
+    bool couldNotEvaluate = false;
+    QVERIFY2(!store.verifyPin(QStringLiteral("864209"), &couldNotEvaluate),
+              "a pin was accepted against a verifier that could not be derived");
+    QVERIFY2(couldNotEvaluate, "a derivation failure was reported as an ordinary wrong pin");
+}
+
+// The flag is set by that failure and nothing else. An ordinary wrong pin,
+// and an ordinary right one, must both leave it false -- otherwise the caller
+// stops counting real guesses and the rate limit quietly stops existing.
+void AppLockStoreTest::anOrdinaryVerdictDoesNotClaimItCouldNotBeComputed()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    SecureStoreFile secureStore(dir.path());
+    AppLockStore store(secureStore);
+    QVERIFY(store.setPin(QStringLiteral("864209")));
+
+    bool couldNotEvaluate = true;
+    QVERIFY(store.verifyPin(QStringLiteral("864209"), &couldNotEvaluate));
+    QVERIFY2(!couldNotEvaluate, "a correct pin claimed the verifier could not be computed");
+
+    couldNotEvaluate = true;
+    QVERIFY(!store.verifyPin(QStringLiteral("864208"), &couldNotEvaluate));
+    QVERIFY2(!couldNotEvaluate, "a wrong pin claimed the verifier could not be computed");
 }
 
 QTEST_APPLESS_MAIN(AppLockStoreTest)

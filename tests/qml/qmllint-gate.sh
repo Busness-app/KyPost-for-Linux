@@ -82,6 +82,15 @@ fi
 # Blunt on purpose -- it does not trace where a value came from, so it costs a
 # line on a little chrome and in exchange needs no allowlist to stay quiet.
 #
+# Declaring a format is not enough; the format has to be a SAFE one. AutoText
+# is the default this whole gate exists to refuse, so writing it out by hand
+# is no better than omitting it. RichText and StyledText feed the same parser,
+# so they are allowed only over a value that cannot carry markup: a literal, a
+# translation of literals, or an expression that goes through escapeHtml() --
+# including via a function in the same file that does (which is how
+# AutocompleteDropdown's highlighted() is safe). Anything else -- a computed
+# textFormat this cannot read -- is reported rather than assumed.
+#
 # Not a QML parser: it reads indented blocks and strips literals and comments
 # before counting braces. Anything it cannot read that way -- a Text declared
 # on one line, a text: at an unexpected indent -- it reports rather than
@@ -94,10 +103,31 @@ CLOSES_LINE = re.compile(r'(^|[\s:])(Text|Label)\s*\{\s*$')
 LITERAL = re.compile(r'"(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\'')
 TRANSLATION = re.compile(r'\b(i18ncp|i18nc|i18np|i18n|qsTrId|qsTr)\b')
 
+ESCAPES = re.compile(r'\bescapeHtml\s*\(')
+FUNCTION = re.compile(r'^\s*function\s+([A-Za-z_$][\w$]*)\s*\(')
+
 def bare(line):
     # Literals first: stripping comments first would cut a line at the "//"
     # inside a URL string.
     return re.sub(r'//.*$', '', LITERAL.sub('', line))
+
+def escaping_functions(lines):
+    # Functions in THIS file whose body escapes. One level, deliberately: it
+    # covers the shape that exists here -- a local helper that escapes and
+    # then wraps its result in markup -- without becoming a call graph.
+    names = []
+    for n, line in enumerate(lines):
+        found = FUNCTION.match(bare(line))
+        if found is None:
+            continue
+        depth, end = 0, n
+        for end in range(n, len(lines)):
+            depth += bare(lines[end]).count("{") - bare(lines[end]).count("}")
+            if end > n and depth <= 0:
+                break
+        if any(ESCAPES.search(l) for l in lines[n:end + 1]):
+            names.append(found.group(1))
+    return names
 
 for path in sorted(pathlib.Path(os.environ["QML_DIR"]).rglob("*.qml")):
     lines = path.read_text().split("\n")
@@ -116,29 +146,51 @@ for path in sorted(pathlib.Path(os.environ["QML_DIR"]).rglob("*.qml")):
         block = lines[i:end + 1]
         # At this block's own indent, not a nested child's -- a Text whose
         # child pins textFormat has still said nothing about itself.
-        if any(re.match(r' {%d}textFormat\s*:' % (indent + 4), l) for l in block):
+        fmt_line = next((l for l in block
+                         if re.match(r' {%d}textFormat\s*:' % (indent + 4), l)), None)
+        fmt = bare(fmt_line).split(":", 1)[1].strip() if fmt_line is not None else None
+
+        if fmt == "Text.PlainText":
             continue
+        if fmt is not None and fmt not in ("Text.RichText", "Text.StyledText"):
+            what = ("AutoText is the default this gate exists to refuse"
+                    if fmt == "Text.AutoText" else "a textFormat this check cannot read")
+            print(f"{path}:{i + 1}: textFormat: {fmt} -- {what}")
+            continue
+
         at = next((n for n, l in enumerate(block)
                    if re.match(r' {%d}text\s*:' % (indent + 4), l)), None)
         if at is None:
-            print(f"{path}:{i + 1}: no text: of its own, so a caller supplies it")
+            if fmt is None:
+                print(f"{path}:{i + 1}: no text: of its own, so a caller supplies it")
+            else:
+                print(f"{path}:{i + 1}: textFormat: {fmt} with no text: of its own, "
+                      f"so a caller supplies the markup")
             continue
         expr = bare(block[at]).split(":", 1)[1]
         n = at
         while expr.count("(") > expr.count(")") and n + 1 < len(block):
             n += 1
             expr += " " + bare(block[n])
-        if re.search(r'[A-Za-z_$]', TRANSLATION.sub("", expr)):
+
+        # A literal, or a translation of literals, is safe under every format.
+        if not re.search(r'[A-Za-z_$]', TRANSLATION.sub("", expr)):
+            continue
+        if fmt is None:
             print(f"{path}:{i + 1}: {block[at].strip()}")
+            continue
+        if not ESCAPES.search(expr) and not any(
+                re.search(r'\b%s\s*\(' % re.escape(fn), expr) for fn in escaping_functions(lines)):
+            print(f"{path}:{i + 1}: {block[at].strip()}  -- {fmt} over a value that is not escaped")
 PY
 )
 
 if [[ -n "$offenders" ]]; then
-    echo "Text/Label rendering something a literal cannot account for, with no textFormat:"
+    echo "Text/Label rendering a value the format it declares cannot make safe:"
     echo "$offenders"
     status=1
 else
-    echo "textFormat: every data-bound Text and Label declares its format"
+    echo "textFormat: every data-bound Text and Label declares a format that is safe for it"
 fi
 
 exit $status

@@ -66,7 +66,15 @@ public:
     // Not const: a PBKDF2 record from an older build verifies and is then
     // rewritten under Argon2id, which needs the PIN and so can only happen
     // here. The rewrite never changes the answer -- see upgradePinVerifier().
-    bool verifyPin(const QString& pin);
+    //
+    // `couldNotEvaluate`, when supplied, separates "that PIN is wrong" from
+    // "the verifier could not be computed at all". Argon2id wants a 64 MiB
+    // working set and a cgroup-capped or low-memory session can refuse it,
+    // which fails closed here but is NOT a guess. Any caller that counts
+    // failed attempts MUST look at it: counting a derivation failure walks
+    // the user toward the ten-attempt wipe while they type the CORRECT pin.
+    // See AppLockManager::tryUnlock().
+    bool verifyPin(const QString& pin, bool* couldNotEvaluate = nullptr);
 
     // Clears the PIN, the lock flag, and all lockout state in one go. Used
     // when the user turns the lock off (having just proven the PIN) and by

@@ -186,8 +186,11 @@ bool AppLockStore::setPin(const QString& pin)
     return replaced;
 }
 
-bool AppLockStore::verifyPin(const QString& pin)
+bool AppLockStore::verifyPin(const QString& pin, bool* couldNotEvaluate)
 {
+    if (couldNotEvaluate != nullptr)
+        *couldNotEvaluate = false;
+
     // The combined record wins; the split pair is the pre-2026-07-27 layout
     // and is still honoured so an existing PIN survives the upgrade.
     QString saltB64;
@@ -223,8 +226,17 @@ bool AppLockStore::verifyPin(const QString& pin)
     // The timing signal that leaks is tiny here (the comparison is over a
     // KDF output, not the PIN), but constant-time costs nothing.
     const QByteArray actual = legacyKdf ? hashPinPbkdf2Legacy(pin, salt) : hashPinArgon2id(pin, salt);
-    // A derivation that failed returns empty, so this also fails CLOSED on an
-    // argon2 that could not allocate.
+    // A derivation that failed returns empty. Still fails CLOSED -- but it is
+    // reported as its own answer, because the alternative is worse than a
+    // refused unlock: argon2id's 64 MiB working set is genuinely refused on a
+    // cgroup-capped or low-memory session, deterministically, so a user
+    // entering the CORRECT pin would otherwise walk the failed-attempt
+    // counter to ten and have their mail, pairing and lock destroyed.
+    if (actual.isEmpty()) {
+        if (couldNotEvaluate != nullptr)
+            *couldNotEvaluate = true;
+        return false;
+    }
     if (actual.size() != expected.size())
         return false;
     quint8 diff = 0;

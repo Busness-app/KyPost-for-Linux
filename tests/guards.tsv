@@ -257,9 +257,30 @@ app/qml/components/PillTab.qml	        textFormat: Text.PlainText		QmlTests:Plai
 #
 # They are gated statically instead, by the textFormat check in
 # tests/qml/qmllint-gate.sh (ctest QmlPropertyLint): a Text or Label that
-# binds anything other than a literal without declaring its format fails it.
-# Delete the textFormat at MobileRoot.qml's timestamp and that test goes red.
-# This harness cannot say so, which is why it is written down here.
+# binds anything other than a literal without declaring a SAFE format fails
+# it. Delete the textFormat at MobileRoot.qml's timestamp and that test goes
+# red. This harness cannot say so -- it neutralises a line and runs a compiled
+# test binary, and QmlPropertyLint is a shell script -- which is why it is
+# written down here instead.
+#
+# "Safe" is checked by value, not by presence: Text.RichText and
+# Text.StyledText feed the same parser as the AutoText default, so they are
+# accepted only over a literal, a translation of literals, or a value that
+# goes through escapeHtml() -- directly or via a function in the same file
+# that does. That last clause is what makes AutocompleteDropdown's
+# highlighted() legal. Proven by hand, since the harness cannot: replacing
+# Format.escapeHtml(text) with String(text) in AutocompleteDropdown.qml:67
+# turns QmlPropertyLint red on both of that file's RichText bindings.
+#
+# ALSO NOT LISTED, for the same harness reason: the copy-before-call in
+# core/pgp/OpenPgpDecryptor.cpp's verify block. gpgme documents the
+# gpgme_verify_result_t as living only until the next operation on that
+# context, so `status` is read into a local before the key lookup runs.
+# Neutralising that would leave every test green on gpgme 2.1.2, which does
+# not actually clobber (gpgme_get_key runs on a private context of its own --
+# measured: same address, fields intact). It is written the safe way because
+# the contract, not that implementation detail, is what this file supports
+# across gpgme 1.x and 2.x.
 
 # --- a wipe that unlinks the live database opens a replacement -----------
 #
@@ -285,3 +306,19 @@ core/domain/LocalDataWipe.cpp	    const bool reopenAfterwards = databaseIsLiveOn
 # fails the open, and hits main()'s qFatal ABOVE the tripwire recovery that
 # would have finished the wipe.
 core/domain/LocalDataWipe.cpp	            !QFileInfo::exists(m_currentDatabasePath) && m_databaseKeyStore.clear();	            m_databaseKeyStore.clear();	LocalDataWipeTest:aDatabaseFileThatSurvivedTheWipeKeepsTheKeyThatOpensIt
+
+# --- a KDF that could not RUN is not a wrong pin -------------------------
+#
+# AppLockManager counts wrong guesses toward a ten-attempt wipe that erases
+# the mail cache, the pairing credential and the lock. Argon2id wants a 64 MiB
+# working set, and a cgroup-capped or low-memory session refuses it
+# deterministically -- so collapsing "could not derive" onto "wrong pin" means
+# a user typing the CORRECT pin is wiped. The KDF this replaced (PBKDF2) had
+# no allocation failure mode, so nothing upstream was watching for one.
+core/security/AppLockStore.cpp	    if (actual.isEmpty()) {	    if (false) {	AppLockStoreTest:aVerifierThatCannotBeComputedIsNotAWrongPin
+#
+# And the other half: the store reporting it is worth nothing if the caller
+# counts it anyway. Shared by both doors (tryUnlock and the Settings prompts)
+# so one line covers both -- which is also why it is a function rather than
+# two copies.
+app/security/AppLockManager.cpp	    if (!couldNotEvaluate)	    if (true)	AppLockManagerTest:aVerifierThatCannotBeComputedNeverReachesTheWipe
