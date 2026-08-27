@@ -13,6 +13,18 @@
 
 namespace {
 
+// SQL quoting, for the two things here that cannot be bound: a database path
+// and a table name. Both escape their own delimiter by doubling it.
+QString quotedLiteral(QString value)
+{
+    return QLatin1Char('\'') + value.replace(QLatin1Char('\''), QLatin1String("''")) + QLatin1Char('\'');
+}
+
+QString quotedIdentifier(QString name)
+{
+    return QLatin1Char('"') + name.replace(QLatin1Char('"'), QLatin1String("\"\"")) + QLatin1Char('"');
+}
+
 // Row counts per user table, which is what "the copy matches" is checked
 // against. Returns nullopt when the database could not be read at all --
 // distinct from "an empty database", which is a legitimate answer.
@@ -34,7 +46,8 @@ std::optional<QMap<QString, int>> tableCounts(QSqlDatabase& db)
         QSqlQuery count(db);
         // Table names cannot be bound. These come from sqlite_master, not
         // from user input, and are quoted defensively.
-        if (!count.exec(QStringLiteral("SELECT count(*) FROM \"%1\"").arg(name)) || !count.next())
+        if (!count.exec(QStringLiteral("SELECT count(*) FROM %1").arg(quotedIdentifier(name)))
+            || !count.next())
             return std::nullopt;
         counts.insert(name, count.value(0).toInt());
     }
@@ -161,9 +174,13 @@ bool DatabaseEncryptionMigration::exportEncrypted(const QByteArray& key)
     if (sourceVersion < 0)
         return false;
 
+    // The path sits under $HOME, so an apostrophe in it is a user's account
+    // name and not an attack -- but spliced in raw it ends the string literal,
+    // ATTACH fails, and the caller falls back to leaving this mail in
+    // plaintext on every launch. The key is hex and needs no quoting.
     QSqlQuery attach(source.handle());
-    if (!attach.exec(QStringLiteral("ATTACH DATABASE '%1' AS encrypted KEY \"x'%2'\"")
-                          .arg(m_workingCopyPath, QString::fromLatin1(key.toHex())))) {
+    if (!attach.exec(QStringLiteral("ATTACH DATABASE %1 AS encrypted KEY \"x'%2'\"")
+                          .arg(quotedLiteral(m_workingCopyPath), QString::fromLatin1(key.toHex())))) {
         qWarning("DatabaseEncryptionMigration: ATTACH failed: %s",
                   qUtf8Printable(attach.lastError().text()));
         return false;

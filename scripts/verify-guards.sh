@@ -99,7 +99,11 @@ while IFS= read -r line || [ -n "${line:-}" ]; do
     fi
 
     ctest_target="${target%%:*}"
-    test_name="${target##*:}"
+    # Everything after the FIRST colon, not the last: a Qt Quick Test function
+    # is addressed as "TestCaseName::functionName", and the greedy form left
+    # the runner a bare function name, which it accepts and silently runs
+    # nothing for.
+    test_name="${target#*:}"
     path="$REPO_ROOT/$file"
 
     if [ ! -f "$path" ]; then

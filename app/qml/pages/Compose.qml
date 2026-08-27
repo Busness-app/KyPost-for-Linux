@@ -399,6 +399,7 @@ Item {
                         spacing: 6
 
                         Text {
+                            textFormat: Text.PlainText
                             text: root.fileNameOf(modelData)
                             color: Theme.inkStrong
                             font.family: Theme.fontUi
@@ -438,6 +439,7 @@ Item {
                 visible: MailApp.pgpCanEncrypt
                 text: i18n("Encrypt")
                 contentItem: Text {
+                    textFormat: Text.PlainText
                     text: encryptToggle.text
                     color: Theme.inkStrong
                     font.family: Theme.fontUi
@@ -462,6 +464,7 @@ Item {
                 visible: MailApp.pgpCanSign
                 text: i18n("Sign")
                 contentItem: Text {
+                    textFormat: Text.PlainText
                     text: signToggle.text
                     color: Theme.inkStrong
                     font.family: Theme.fontUi
@@ -482,6 +485,7 @@ Item {
         Text {
             Layout.fillWidth: true
             visible: encryptToggle.checked && MailApp.pgpKeylessRecipients.length > 0
+            textFormat: Text.PlainText
             text: i18np("We don't have a PGP key on file for %2.",
                         "We don't have PGP keys on file for %2.",
                         MailApp.pgpKeylessRecipients.length,
@@ -555,6 +559,7 @@ Item {
         Text {
             Layout.fillWidth: true
             visible: root.validationError !== "" || MailApp.lastError !== ""
+            textFormat: Text.PlainText
             text: root.validationError !== "" ? root.validationError : MailApp.lastError
             color: Theme.dangerColor
             font.family: Theme.fontUi

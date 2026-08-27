@@ -89,6 +89,7 @@ private slots:
     void aRestoreThatCannotHappenIsReportedRatherThanCalledRecovery();
     void aSwapThatCannotStartLeavesThePlaintextDatabaseUsable();
     void aPlaintextCopyThatCannotBeDeletedStillLeavesTheMailReadable();
+    void anApostropheInTheProfilePathDoesNotStopTheConversion();
 };
 
 void DatabaseEncryptionMigrationTest::initTestCase()
@@ -342,6 +343,32 @@ void DatabaseEncryptionMigrationTest::aPlaintextCopyThatCannotBeDeletedStillLeav
     QCOMPARE(countEmails(reopened), 7);
 
     QVERIFY(makeDirectoryWritable(dir.path()));
+}
+
+// The profile directory sits under $HOME, so its path is whatever the user's
+// account is called. Spliced into ATTACH unquoted, an apostrophe ended the
+// string literal, the conversion failed, and the caller's fallback wrote this
+// mail to disk in plaintext -- identically on every subsequent launch.
+void DatabaseEncryptionMigrationTest::anApostropheInTheProfilePathDoesNotStopTheConversion()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString profile = dir.filePath(QStringLiteral("o'brien"));
+    QVERIFY(QDir().mkpath(profile));
+    const QString path = profile + QStringLiteral("/kypost.db");
+    seedPlaintextProfile(path, 5);
+    QVERIFY(anyFileUnder(profile, "SECRETSUBJECT0"));
+
+    DatabaseEncryptionMigration migration(path);
+    QCOMPARE(migration.run(testKey()), DatabaseEncryptionMigration::Status::Migrated);
+
+    QVERIFY2(databaseFileIsEncrypted(path), "the profile database is still plaintext");
+    QVERIFY2(!anyFileUnder(profile, "SECRETSUBJECT0"),
+             "a readable copy of the mail is still on disk somewhere in the profile");
+
+    Database reopened;
+    QVERIFY(reopened.open(path, testKey()));
+    QCOMPARE(countEmails(reopened), 5);
 }
 
 QTEST_GUILESS_MAIN(DatabaseEncryptionMigrationTest)

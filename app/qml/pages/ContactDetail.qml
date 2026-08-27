@@ -388,6 +388,7 @@ Item {
 
                         Text {
                             Layout.fillWidth: true
+                            textFormat: Text.PlainText
                             text: (root.contact.fn && root.contact.fn.length > 0) ? root.contact.fn : i18n("Unnamed")
                             color: Theme.inkStrong
                             font.family: Theme.fontUi

@@ -86,6 +86,7 @@ private slots:
     void onlyTheRetryableStatusCarriesDetail();
 
     void aSignatureFromTheSendersOwnKeyIsCreditedToThem();
+    void aSignatureFromTheSendersSigningSubkeyIsCreditedToThem();
     void aValidSignatureFromAKeyNobodyBindsToTheSenderIsNotCreditedToThem();
     void aSignatureFromAnAbsentKeyIsUnanswerableNotInvalid();
     void withNoKeyBoundToTheSenderNothingIsCredited();
@@ -313,6 +314,42 @@ void EncryptedMessageReaderTest::aSignatureFromTheSendersOwnKeyIsCreditedToThem(
     QCOMPARE(result.status, PgpReadStatus::Decrypted);
     QCOMPARE(result.signature, PgpSignatureVerdict::ValidFromSender);
     QCOMPARE(result.signedBy, QStringLiteral("sender@example.com"));
+}
+
+// The same credit, for the key layout most senders with a hardware token
+// have: a certify-only [C] primary and a dedicated [S] signing subkey.
+//
+// gpg reports the SUBKEY's fingerprint for the signature, while the relay
+// binds an address to the PRIMARY's -- so comparing those two strings finds no
+// match however honest both sides are, and every such sender is accused of
+// signing with a key nobody knows. The primary is what the binding is about,
+// and gpg is what resolves the one to the other.
+void EncryptedMessageReaderTest::aSignatureFromTheSendersSigningSubkeyIsCreditedToThem()
+{
+    GnupgFixture subkeySigner;
+    QVERIFY(subkeySigner.buildWithSigningSubkey(QStringLiteral("Sub <sub@example.com>")));
+    GnupgFixture reader;
+    QVERIFY(reader.build(QStringLiteral("Subr <subr@example.com>")));
+
+    const QByteArray armored =
+        signedAndEncryptedTo(subkeySigner, QStringLiteral("sub@example.com"), "signed by a subkey\n",
+                              &reader, QStringLiteral("subr@example.com"));
+    QVERIFY(!armored.isEmpty());
+
+    // What the importer reports and what the relay binds: the PRIMARY.
+    const QString primary = subkeySigner.fingerprintOf(QStringLiteral("sub@example.com"));
+    QVERIFY(!primary.isEmpty());
+
+    FakeRelayServer fake(signedPayloadResponse(
+        armored, subkeySigner.exportPublicKey(QStringLiteral("sub@example.com")), primary,
+        /*conflict=*/false, QStringLiteral("sub@example.com")));
+    const PgpReadResult result = readAgainst(fake, OpenPgpDecryptor(), reader.path());
+
+    QCOMPARE(result.status, PgpReadStatus::Decrypted);
+    QCOMPARE(result.signature, PgpSignatureVerdict::ValidFromSender);
+
+    GnupgFixture::killAgent(subkeySigner.path());
+    GnupgFixture::killAgent(reader.path());
 }
 
 // The forgery that matters, and the reason "valid" and "from this sender" are

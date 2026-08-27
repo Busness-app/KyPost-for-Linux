@@ -6,6 +6,7 @@
 class AppLockStore;
 class CursorStore;
 class Database;
+class DatabaseKeyStore;
 class PairingStore;
 class SettingsStore;
 
@@ -28,6 +29,7 @@ struct LocalDataWipeResult
 {
     bool tablesWiped = true;
     bool currentDatabaseRemoved = true;
+    bool databaseKeyCleared = true;
     bool legacyDatabasesRemoved = true;
     bool photoCacheCleared = true;
     bool syncCursorsCleared = true;
@@ -36,8 +38,8 @@ struct LocalDataWipeResult
 
     bool complete() const
     {
-        return tablesWiped && currentDatabaseRemoved && legacyDatabasesRemoved && photoCacheCleared
-            && syncCursorsCleared && pairingCleared && lockCleared;
+        return tablesWiped && currentDatabaseRemoved && databaseKeyCleared && legacyDatabasesRemoved
+            && photoCacheCleared && syncCursorsCleared && pairingCleared && lockCleared;
     }
 };
 
@@ -51,19 +53,27 @@ struct LocalDataWipeResult
 class LocalDataWipe
 {
 public:
-    LocalDataWipe(Database& database, PairingStore& pairingStore, AppLockStore& appLockStore,
-                  SettingsStore& settingsStore, CursorStore& cursorStore, const QString& dataDir,
-                  const QString& currentDatabasePath, const QStringList& legacyDatabasePaths);
+    LocalDataWipe(Database& database, DatabaseKeyStore& databaseKeyStore, PairingStore& pairingStore,
+                  AppLockStore& appLockStore, SettingsStore& settingsStore, CursorStore& cursorStore,
+                  const QString& dataDir, const QString& currentDatabasePath,
+                  const QStringList& legacyDatabasePaths);
 
     // The wipe-after-ten-failed-PIN-attempts path: local caches, the pairing
     // credential, AND the lock itself. The lock goes too on purpose --
     // leaving a PIN behind is a hint that there was an account here.
+    //
+    // The database file goes with them. It used to be kept, emptied, for the
+    // relaunch to reopen -- but the SQLCipher key is erased here now, and an
+    // encrypted file whose key no longer exists is one openProfileDatabase()
+    // can only treat as fatal. The next launch makes a fresh profile instead.
     LocalDataWipeResult wipeEverything();
 
     // Hostile Location Protection being switched ON. Erases what is already
     // on disk (the mode would otherwise "protect" a machine still holding
     // every cached message) but keeps the pairing and the lock: the user is
-    // not being wiped, they are changing where their mail lives.
+    // not being wiped, they are changing where their mail lives. The
+    // database key is not kept -- leaving it behind would mean any recovered
+    // copy of the file it just unlinked is still readable.
     LocalDataWipeResult wipeOnDiskDataOnly();
 
     // Account replacement: erase the PREVIOUS account's cached data while
@@ -83,9 +93,14 @@ public:
     LocalDataWipeResult wipeCachedAccountData();
 
 private:
-    LocalDataWipeResult wipeCaches(bool removeCurrentDatabaseFile);
+    // `removeCurrentDatabase` takes the database file AND the key that
+    // decrypts it. They are one unit: a file with no key cannot be opened
+    // again, and a key with no file names an account this device was told to
+    // forget.
+    LocalDataWipeResult wipeCaches(bool removeCurrentDatabase);
 
     Database& m_database;
+    DatabaseKeyStore& m_databaseKeyStore;
     PairingStore& m_pairingStore;
     AppLockStore& m_appLockStore;
     SettingsStore& m_settingsStore;

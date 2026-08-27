@@ -108,6 +108,7 @@ Item {
                 text: i18n("Style as button")
                 checked: root.styleAsButton
                 contentItem: Text {
+                    textFormat: Text.PlainText
                     text: control.text
                     color: Theme.inkStrong
                     font.family: Theme.fontUi
@@ -120,6 +121,7 @@ Item {
             Text {
                 Layout.fillWidth: true
                 visible: root.validationError !== ""
+                textFormat: Text.PlainText
                 text: root.validationError
                 color: Theme.dangerColor
                 font.family: Theme.fontUi

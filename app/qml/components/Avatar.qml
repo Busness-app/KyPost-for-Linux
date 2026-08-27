@@ -135,6 +135,7 @@ Rectangle {
 
     Text {
         anchors.centerIn: parent
+        textFormat: Text.PlainText
         text: root.initials
         color: Theme.readableOnAccent
         font.family: Theme.fontUi

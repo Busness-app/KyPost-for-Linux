@@ -24,6 +24,10 @@ import com.kysecurity.mail 1.0
 Text {
     id: root
 
+    // The text comes from callers, and some of them pass relay strings
+    // (ContactDetail's field labels are vCard data). Pinned here so no
+    // call site has to remember.
+    textFormat: Text.PlainText
     color: Theme.inkStrong
     opacity: 0.72
     font.family: Theme.fontUi

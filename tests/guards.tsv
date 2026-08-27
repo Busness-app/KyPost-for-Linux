@@ -228,3 +228,30 @@ core/security/AppLockStore.cpp	    replaced = m_secureStore.remove(kPinHash) && 
 
 # --- cache eviction keeps the photo it just handed back -----------------
 core/stores/ContactPhotoCache.cpp	        if (candidate == keepPath)	        if (false)	ContactPhotoCacheTest:evictionKeepsTheEntryItJustHandedBackEvenWhenItSortsFirst
+
+# --- a Text renders relay data as text, not as markup --------------------
+#
+# Text.textFormat defaults to Text.AutoText, which hands anything tag-shaped
+# to the rich-text parser -- and that parser fetches <img src> over the QML
+# engine's own QNetworkAccessManager, outside WebEngine, where neither
+# settings.autoLoadImages nor RemoteContentInterceptor can see it. A subject
+# header beacons the moment the list lays out.
+#
+# PillTab renders server-supplied keyword names and is a leaf, so a test can
+# build one and look at it.
+app/qml/components/PillTab.qml	        textFormat: Text.PlainText		QmlTests:PlainTextRendering::test_pill_tab_renders_keywords_as_plain_text
+#
+# NOT LISTED, deliberately: the other forty textFormat lines in app/qml,
+# including the one this section was written for -- the inbox timestamp at
+# MobileRoot.qml, which rendered the relay's raw atUtc string. Neutralisation
+# cannot reach them. QmlTests instantiates leaf components; the sites that
+# matter live in MobileRoot's inbox delegate and EmailDetail's headers, which
+# need every C++ singleton to load, and QML cannot read a file at runtime to
+# check them statically (XMLHttpRequest refuses local and qrc URLs unless
+# QML_XHR_ALLOW_FILE_READ is set).
+#
+# They are gated statically instead, by the textFormat check in
+# tests/qml/qmllint-gate.sh (ctest QmlPropertyLint): a Text or Label that
+# binds anything other than a literal without declaring its format fails it.
+# Delete the textFormat at MobileRoot.qml's timestamp and that test goes red.
+# This harness cannot say so, which is why it is written down here.

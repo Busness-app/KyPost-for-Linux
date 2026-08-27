@@ -195,6 +195,7 @@ Item {
                             SectionLabel { Layout.preferredWidth: 70; text: i18n("Server") }
                             Text {
                                 Layout.fillWidth: true
+                                textFormat: Text.PlainText
                                 text: Pairing.pairedServerHost
                                 color: Theme.inkStrong
                                 font.family: Theme.fontMono
@@ -208,6 +209,7 @@ Item {
                             SectionLabel { Layout.preferredWidth: 70; text: i18n("Device") }
                             Text {
                                 Layout.fillWidth: true
+                                textFormat: Text.PlainText
                                 text: Pairing.deviceId
                                 color: Theme.inkStrong
                                 font.family: Theme.fontMono
@@ -461,6 +463,7 @@ Item {
                             SectionLabel { Layout.preferredWidth: 100; text: i18n("Delivery Mode") }
                             Text {
                                 Layout.fillWidth: true
+                                textFormat: Text.PlainText
                                 text: Pairing.deliveryMode
                                 color: Theme.inkStrong
                                 font.family: Theme.fontMono
@@ -473,6 +476,7 @@ Item {
                             SectionLabel { Layout.preferredWidth: 100; text: i18n("Transport") }
                             Text {
                                 Layout.fillWidth: true
+                                textFormat: Text.PlainText
                                 text: Pairing.transport
                                 color: Theme.inkStrong
                                 font.family: Theme.fontMono
@@ -1003,6 +1007,7 @@ Item {
 
             Text {
                 Layout.fillWidth: true
+                textFormat: Text.PlainText
                 text: securityPrompt.headingText
                 color: Theme.inkStrong
                 font.family: Theme.fontUi
@@ -1062,6 +1067,7 @@ Item {
             Text {
                 Layout.fillWidth: true
                 visible: securityPrompt.errorText !== ""
+                textFormat: Text.PlainText
                 text: securityPrompt.errorText
                 color: Theme.dangerColor
                 font.family: Theme.fontUi

@@ -30,6 +30,7 @@ private slots:
     void everyCallReturnsEvenWhenTheStoreCannotBeConsulted();
     void readsFallBackToTheLegacyServiceAndCopyForward();
     void removeClearsTheLegacyServiceToo();
+    void aFailedLegacyRemovalDoesNotSilenceTheNextKey();
     void anAbsentLegacyServiceIsNotReportedAsFailure();
     void theCallingThreadIsReleasedByTheTimeoutNotByDBus();
     void theCallingThreadKeepsProcessingEventsWhileAJobRuns();
@@ -190,6 +191,31 @@ void SecureStoreKeychainTest::removeClearsTheLegacyServiceToo()
              "remove() left the credential in the pre-rename service, where the next read would "
              "resurrect it");
     QVERIFY(!store.contains(QStringLiteral("sub")));
+}
+
+// The ten-failed-PIN wipe is eleven remove() calls over ONE store, and it used
+// to skip the legacy service for keys 2..N as soon as key 1's legacy delete
+// failed -- reporting a clean wipe while com.urlxl.mail still held the pairing
+// secret and the PIN record, which the next read() would copy forward.
+//
+// timeoutMs=0 forces every job to fail, the same deterministic lever
+// aTimedOutReadIsFailedNeverAbsent() uses. The assertion is the per-key
+// warning: ignoreMessage() fails the test if the message never arrives, so the
+// second key going unattempted is a failure rather than a silent pass.
+void SecureStoreKeychainTest::aFailedLegacyRemovalDoesNotSilenceTheNextKey()
+{
+    SecureStoreKeychain store(m_service, /*timeoutMs=*/0, m_legacyService);
+
+    for (const auto& key : { QStringLiteral("pairing.deviceSecret"),
+                             QStringLiteral("applock.pinRecord") }) {
+        QTest::ignoreMessage(QtWarningMsg,
+                             qPrintable(QStringLiteral("SecureStoreKeychain: could not clear '%1' "
+                                                       "from the pre-rename service; a copy may "
+                                                       "remain in the keyring")
+                                            .arg(key)));
+        QVERIFY2(!store.remove(key),
+                 "a removal that could not reach the legacy service must report false");
+    }
 }
 
 // The overwhelmingly common case: a fresh install with no pre-rename profile

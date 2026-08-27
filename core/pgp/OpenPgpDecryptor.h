@@ -54,7 +54,15 @@ struct PgpSignature
     bool keyUnavailable = false;
 
     // The key that made it, as gpg computed it -- never as anything claimed.
+    // This is the SIGNING key, which on any key with a dedicated signing
+    // subkey is the subkey and not the identity anything is bound to.
     QString fingerprint;
+
+    // The primary key that signing key belongs to, resolved by gpg from its
+    // own keyring. This is what an address binding names, so it is what a
+    // binding check compares. Empty when gpg could not resolve it -- which is
+    // not a match and must never be treated as one.
+    QString primaryFingerprint;
 };
 
 struct PgpDecryptResult

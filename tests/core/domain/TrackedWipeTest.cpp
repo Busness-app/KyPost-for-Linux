@@ -4,6 +4,7 @@
 #include "domain/DevicePairing.h"
 #include "domain/PairingStore.h"
 #include "security/AppLockStore.h"
+#include "security/DatabaseKeyStore.h"
 #include "security/WipeTripwire.h"
 #include "stores/CursorStore.h"
 #include "stores/SecureStore.h"
@@ -50,6 +51,7 @@ struct WipeFixture
     QTemporaryDir settingsDir;
     Database database;
     std::unique_ptr<SecureStore> secureStore;
+    std::unique_ptr<DatabaseKeyStore> databaseKeyStore;
     std::unique_ptr<PairingStore> pairingStore;
     std::unique_ptr<AppLockStore> appLockStore;
     std::unique_ptr<SettingsStore> settingsStore;
@@ -74,6 +76,7 @@ struct WipeFixture
         else
             secureStore = std::make_unique<SecureStoreFile>(secureDir.path());
 
+        databaseKeyStore = std::make_unique<DatabaseKeyStore>(*secureStore);
         pairingStore = std::make_unique<PairingStore>(*secureStore);
         DevicePairing pairing;
         pairing.subscriberId = QStringLiteral("sub-1");
@@ -85,8 +88,9 @@ struct WipeFixture
         appLockStore = std::make_unique<AppLockStore>(*secureStore);
         settingsStore = std::make_unique<SettingsStore>(settingsDir.filePath(QStringLiteral("settings.ini")));
         cursorStore = std::make_unique<CursorStore>(dataDir.filePath(QStringLiteral("cursors.ini")));
-        wipe = std::make_unique<LocalDataWipe>(database, *pairingStore, *appLockStore, *settingsStore,
-                                                *cursorStore, dataDir.path(), QString(), QStringList{});
+        wipe = std::make_unique<LocalDataWipe>(database, *databaseKeyStore, *pairingStore, *appLockStore,
+                                                *settingsStore, *cursorStore, dataDir.path(), QString(),
+                                                QStringList{});
         return true;
     }
 

@@ -97,6 +97,36 @@ struct DataHandle
     }
 };
 
+struct KeyHandle
+{
+    gpgme_key_t handle = nullptr;
+    ~KeyHandle()
+    {
+        if (handle != nullptr)
+            gpgme_key_unref(handle);
+    }
+};
+
+// The primary key a signature's signing key belongs to, per gpg's own key
+// data. A key with a dedicated signing subkey -- a hardware token's, and what
+// Sequoia and Proton generate -- signs with the SUBKEY, so the fingerprint in
+// the signature is never the one an address is bound to.
+//
+// Empty on any failure: no such key in this keyring, or gpg cannot say. That
+// is the answer "unknown", and the caller must not read it as a match.
+QString primaryFingerprintOf(gpgme_ctx_t context, const char* signingFingerprint)
+{
+    if (signingFingerprint == nullptr)
+        return {};
+    KeyHandle key;
+    if (gpgme_err_code(gpgme_get_key(context, signingFingerprint, &key.handle, /*secret=*/0))
+            != GPG_ERR_NO_ERROR
+        || key.handle == nullptr || key.handle->fpr == nullptr) {
+        return {};
+    }
+    return QString::fromLatin1(key.handle->fpr);
+}
+
 } // namespace
 
 OpenPgpDecryptor::OpenPgpDecryptor(qint64 maxPlaintextBytes) : m_maxPlaintextBytes(maxPlaintextBytes)
@@ -193,6 +223,7 @@ PgpDecryptResult OpenPgpDecryptor::decrypt(const QByteArray& ciphertext, const Q
         result.signature.present = true;
         result.signature.fingerprint =
             signature->fpr != nullptr ? QString::fromLatin1(signature->fpr) : QString();
+        result.signature.primaryFingerprint = primaryFingerprintOf(context.handle, signature->fpr);
         switch (gpgme_err_code(signature->status)) {
         case GPG_ERR_NO_ERROR:
             result.signature.mathematicallyValid = true;

@@ -38,6 +38,7 @@ Rectangle {
     Text {
         id: label
         anchors.centerIn: parent
+        textFormat: Text.PlainText
         text: root.text
         color: Theme.dangerColor
         font.family: Theme.fontUi

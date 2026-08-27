@@ -27,7 +27,9 @@ namespace PinPolicy {
 //
 // The fix was the KDF, not the floor -- the seal now derives its key with
 // Argon2id at 64 MiB per guess, which caps an attacker's parallelism at
-// however many spare gigabytes their hardware has. See
+// however many spare gigabytes their hardware has. So does the app-lock PIN
+// verifier beside it (AppLockStore::setPin): the argument only holds while
+// EVERY value derived from the PIN is equally expensive to attack. See
 // CredentialCipher::kMagicArgon2id. Six digits remains the minimum for
 // parity with Android and iOS; a longer or alphanumeric PIN still helps and
 // nothing here prevents one (see kMaximumLength).

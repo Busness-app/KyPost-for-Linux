@@ -221,6 +221,7 @@ Item {
             // GhostButton's padding alone is taller than the line it sits in.
             Text {
                 objectName: "statusBannerToggle"
+                textFormat: Text.PlainText
                 text: root.collapsed ? i18n("Show") : i18n("Hide")
                 color: Theme.dangerColor
                 font.family: Theme.fontUi

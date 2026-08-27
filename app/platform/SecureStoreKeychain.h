@@ -131,6 +131,7 @@ public:
     // Removes from BOTH services, and reports false if the legacy service
     // still holds a copy. A half-removal that reported success would let
     // read()'s copy-forward resurrect a wiped credential on the next launch.
+    // Per key: one key's legacy failure never skips the next key's attempt.
     bool remove(const QString& key) override;
     bool contains(const QString& key) const override;
 
@@ -176,6 +177,9 @@ private:
     int m_timeoutMs;
     QString m_legacyService;
 
+    // read()'s guard ONLY -- remove() attempts the legacy service every time,
+    // because skipping a removal reports a wipe that did not happen.
+    //
     // Latches false the first time the legacy service reports Failed, for the
     // lifetime of this store. Without it, an unreachable legacy service costs
     // another ~25 s D-Bus block (see the measurements above) on EVERY missing

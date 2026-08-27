@@ -53,13 +53,20 @@ public:
     // rather than leaving the user to conclude they have forgotten it.
     bool storeReadable() const;
 
-    // Enables the lock and stores a fresh salt + PBKDF2 hash of `pin`. The
-    // raw PIN is never persisted. Returns false if the store write fails.
+    // Enables the lock and stores a fresh salt + Argon2id hash of `pin`, at
+    // CredentialCipher's parameters -- a cheaper verifier for the same PIN in
+    // the same keyring is what an offline attacker would attack instead of
+    // the seal. The raw PIN is never persisted. Returns false if the
+    // derivation or the store write fails.
     bool setPin(const QString& pin);
 
     // Constant-time comparison against the stored hash. False when no PIN is
     // set, so a store that lost its keys fails closed rather than open.
-    bool verifyPin(const QString& pin) const;
+    //
+    // Not const: a PBKDF2 record from an older build verifies and is then
+    // rewritten under Argon2id, which needs the PIN and so can only happen
+    // here. The rewrite never changes the answer -- see upgradePinVerifier().
+    bool verifyPin(const QString& pin);
 
     // Clears the PIN, the lock flag, and all lockout state in one go. Used
     // when the user turns the lock off (having just proven the PIN) and by
@@ -119,5 +126,9 @@ public:
     bool setCredentialPinGateEnabled(bool enabled);
 
 private:
+    // Rewrites a just-verified legacy record under Argon2id. Best effort by
+    // design; failures are logged, never propagated.
+    void upgradePinVerifier(const QString& pin);
+
     SecureStore& m_secureStore;
 };

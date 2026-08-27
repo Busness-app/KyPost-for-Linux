@@ -112,6 +112,7 @@ Item {
         Text {
             Layout.alignment: Qt.AlignHCenter
             visible: root.qrDataUrl !== ""
+            textFormat: Text.PlainText
             text: i18n("Expires %1", PgpQr.myQrExpiresAt)
             color: Theme.ink
             font.family: Theme.fontUi

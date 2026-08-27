@@ -1,11 +1,15 @@
 #include "security/AppLockStore.h"
 
+#include "security/CredentialCipher.h"
 #include "security/LockoutPolicy.h"
 #include "stores/SecureStore.h"
 
 #include <QCryptographicHash>
+#include <QLoggingCategory>
 #include <QPasswordDigestor>
 #include <QRandomGenerator>
+
+#include <argon2.h>
 
 namespace {
 
@@ -14,7 +18,7 @@ const QString kLockEnabled = QStringLiteral("applock.enabled");
 const QString kPinSalt = QStringLiteral("applock.pinSalt");
 const QString kPinHash = QStringLiteral("applock.pinHash");
 // Salt and hash as ONE value, so a reader can never observe them
-// half-updated. Written as "<saltB64>:<hashB64>". kPinSalt/kPinHash above
+// half-updated. Written as "a2:<saltB64>:<hashB64>". kPinSalt/kPinHash above
 // are the pre-2026-07-27 layout, still READ so that an install which
 // already has a PIN keeps working; they are removed on the next setPin().
 const QString kPinRecord = QStringLiteral("applock.pinRecord");
@@ -24,15 +28,78 @@ const QString kWipeAfterAttempts = QStringLiteral("applock.wipeAfterAttempts");
 const QString kBackgroundGrace = QStringLiteral("applock.backgroundGraceSeconds");
 const QString kCredentialGate = QString::fromLatin1(AppLockStore::kCredentialGateKey);
 
+// Version marker for the Argon2id record. Base64 contains no ':', so a
+// legacy "<saltB64>:<hashB64>" record can never begin with this and a
+// prefixed record can never be mistaken for one -- and the split kPinSalt /
+// kPinHash pair holds bare base64, so it is always PBKDF2.
+//
+// A build predating the marker reads "a2" as the salt and fails to verify,
+// which is the fail-closed direction: a downgrade refuses the PIN rather
+// than accepting it.
+const QString kArgon2Prefix = QStringLiteral("a2:");
+
+// Domain separation. CredentialCipher derives its session KEY from the bare
+// PIN with these same parameters; the verifier derives from a prefixed input
+// so the two values cannot coincide even if a salt were ever reused.
+const QByteArray kVerifierDomain = QByteArrayLiteral("kypost.applock.pin-verifier.v1|");
+
 // Matches Android's PBKDF2WithHmacSHA256(pin, salt, 150_000, 256-bit).
-constexpr int kIterations = 150000;
+constexpr int kPbkdf2Iterations = 150000;
 constexpr int kHashBytes = 32;
 constexpr int kSaltBytes = 16;
 
-QByteArray hashPin(const QString& pin, const QByteArray& salt)
+// The KDF for every verifier written from now on.
+//
+// PBKDF2 here defeated the seal next door. Both cover the SAME six-digit PIN
+// and live in the SAME keyring, so an offline attacker never touched
+// CredentialCipher's memory-hard blob: they walked the 10^6 keyspace against
+// this verifier at ~1.5e11 HMACs -- parallel, tiny working set, GPU-hours --
+// and then ran Argon2id exactly once. Same parameters as the seal, or the
+// cheaper of the two is the one that gets attacked. See
+// CredentialCipher::kMagicArgon2id.
+//
+// Empty on failure (out of memory, most plausibly); every caller checks the
+// size, so a record is never written from a derivation that did not run.
+QByteArray hashPinArgon2id(const QString& pin, const QByteArray& salt)
 {
-    return QPasswordDigestor::deriveKeyPbkdf2(QCryptographicHash::Sha256, pin.toUtf8(), salt, kIterations,
-                                               kHashBytes);
+    const QByteArray input = kVerifierDomain + pin.toUtf8();
+    QByteArray out(kHashBytes, Qt::Uninitialized);
+
+    const int rc = argon2id_hash_raw(
+        CredentialCipher::kArgon2Iterations, CredentialCipher::kArgon2MemoryKiB,
+        CredentialCipher::kArgon2Parallelism, input.constData(), static_cast<size_t>(input.size()),
+        salt.constData(), static_cast<size_t>(salt.size()), out.data(),
+        static_cast<size_t>(out.size()));
+
+    if (rc != ARGON2_OK) {
+        qWarning("AppLockStore: argon2id pin derivation failed (%s)", argon2_error_message(rc));
+        return QByteArray();
+    }
+    return out;
+}
+
+// The pre-Argon2id verifier. Used to VERIFY records written before the
+// marker existed, never to write one -- verifyPin() upgrades in place.
+QByteArray hashPinPbkdf2Legacy(const QString& pin, const QByteArray& salt)
+{
+    return QPasswordDigestor::deriveKeyPbkdf2(QCryptographicHash::Sha256, pin.toUtf8(), salt,
+                                               kPbkdf2Iterations, kHashBytes);
+}
+
+QByteArray freshSalt()
+{
+    QByteArray salt(kSaltBytes, Qt::Uninitialized);
+    static_assert(kSaltBytes % 4 == 0, "generate() fills whole 32-bit words");
+    // system() is the CSPRNG; the default global generator is not.
+    QRandomGenerator::system()->generate(reinterpret_cast<quint32*>(salt.data()),
+                                          reinterpret_cast<quint32*>(salt.data() + salt.size()));
+    return salt;
+}
+
+QString makeRecord(const QByteArray& salt, const QByteArray& hash)
+{
+    return kArgon2Prefix + QString::fromLatin1(salt.toBase64()) + QLatin1Char(':')
+        + QString::fromLatin1(hash.toBase64());
 }
 
 } // namespace
@@ -71,13 +138,8 @@ bool AppLockStore::storeReadable() const
 
 bool AppLockStore::setPin(const QString& pin)
 {
-    QByteArray salt(kSaltBytes, Qt::Uninitialized);
-    static_assert(kSaltBytes % 4 == 0, "generate() fills whole 32-bit words");
-    // system() is the CSPRNG; the default global generator is not.
-    QRandomGenerator::system()->generate(reinterpret_cast<quint32*>(salt.data()),
-                                          reinterpret_cast<quint32*>(salt.data() + salt.size()));
-
-    const QByteArray hash = hashPin(pin, salt);
+    const QByteArray salt = freshSalt();
+    const QByteArray hash = hashPinArgon2id(pin, salt);
     if (hash.size() != kHashBytes)
         return false;
 
@@ -96,13 +158,11 @@ bool AppLockStore::setPin(const QString& pin)
     // One write, one failure mode. As two writes this was only safe for the
     // FIRST PIN: on a change, applock.enabled is already "1", so a salt that
     // landed followed by a hash that did not left verifyPin() comparing
-    // PBKDF2(pin, newSalt) against the OLD hash -- neither the old nor the
+    // hash(pin, newSalt) against the OLD hash -- neither the old nor the
     // new PIN verified, with no way back. The user then guessed until the
     // tenth failure, at which point the app's own wipe destroyed the local
     // mail cache and the pairing.
-    const QString record =
-        QString::fromLatin1(salt.toBase64()) + QLatin1Char(':') + QString::fromLatin1(hash.toBase64());
-    if (!m_secureStore.set(kPinRecord, record))
+    if (!m_secureStore.set(kPinRecord, makeRecord(salt, hash)))
         return false;
 
     // Past this line the NEW pin is the one verifyPin() answers to, so every
@@ -126,18 +186,24 @@ bool AppLockStore::setPin(const QString& pin)
     return replaced;
 }
 
-bool AppLockStore::verifyPin(const QString& pin) const
+bool AppLockStore::verifyPin(const QString& pin)
 {
     // The combined record wins; the split pair is the pre-2026-07-27 layout
     // and is still honoured so an existing PIN survives the upgrade.
     QString saltB64;
     QString hashB64;
+    bool legacyKdf = true;
     if (const std::optional<QString> record = m_secureStore.get(kPinRecord); record.has_value()) {
-        const qsizetype sep = record->indexOf(QLatin1Char(':'));
+        QStringView body(*record);
+        if (body.startsWith(kArgon2Prefix)) {
+            legacyKdf = false;
+            body = body.sliced(kArgon2Prefix.size());
+        }
+        const qsizetype sep = body.indexOf(QLatin1Char(':'));
         if (sep < 0)
             return false;
-        saltB64 = record->left(sep);
-        hashB64 = record->mid(sep + 1);
+        saltB64 = body.left(sep).toString();
+        hashB64 = body.sliced(sep + 1).toString();
     } else {
         const std::optional<QString> legacySalt = m_secureStore.get(kPinSalt);
         const std::optional<QString> legacyHash = m_secureStore.get(kPinHash);
@@ -155,14 +221,50 @@ bool AppLockStore::verifyPin(const QString& pin) const
 
     // QByteArray::operator== short-circuits on the first differing byte.
     // The timing signal that leaks is tiny here (the comparison is over a
-    // PBKDF2 output, not the PIN), but constant-time costs nothing.
-    const QByteArray actual = hashPin(pin, salt);
+    // KDF output, not the PIN), but constant-time costs nothing.
+    const QByteArray actual = legacyKdf ? hashPinPbkdf2Legacy(pin, salt) : hashPinArgon2id(pin, salt);
+    // A derivation that failed returns empty, so this also fails CLOSED on an
+    // argon2 that could not allocate.
     if (actual.size() != expected.size())
         return false;
     quint8 diff = 0;
     for (int i = 0; i < actual.size(); ++i)
         diff |= static_cast<quint8>(actual[i]) ^ static_cast<quint8>(expected[i]);
-    return diff == 0;
+    if (diff != 0)
+        return false;
+
+    if (legacyKdf)
+        upgradePinVerifier(pin);
+    return true;
+}
+
+// A PBKDF2 verifier that just proved correct is rewritten under Argon2id
+// here, because leaving it IS the vulnerability: a cheap verifier for the
+// same PIN beside CredentialCipher's memory-hard seal is the one an offline
+// attacker attacks. The PIN is only in hand on this path, so this is the
+// only place the rewrite can happen.
+//
+// Every failure is logged and swallowed. The user typed the RIGHT pin;
+// refusing them because a rewrite did not land would be a worse bug than the
+// weak verifier it replaces.
+void AppLockStore::upgradePinVerifier(const QString& pin)
+{
+    const QByteArray salt = freshSalt();
+    const QByteArray hash = hashPinArgon2id(pin, salt);
+    if (hash.size() != kHashBytes) {
+        qWarning("AppLockStore: pin verifier upgrade skipped, argon2id derivation failed");
+        return;
+    }
+
+    if (!m_secureStore.set(kPinRecord, makeRecord(salt, hash))) {
+        qWarning("AppLockStore: pin verifier upgrade failed, the pbkdf2 record stands");
+        return;
+    }
+
+    // Only after the new record has landed: the split pair is this same pin's
+    // material, and removing it first would leave nothing to verify against.
+    if (!m_secureStore.remove(kPinSalt) || !m_secureStore.remove(kPinHash))
+        qWarning("AppLockStore: pin verifier upgrade left the pre-2026-07-27 keys behind");
 }
 
 bool AppLockStore::clear()

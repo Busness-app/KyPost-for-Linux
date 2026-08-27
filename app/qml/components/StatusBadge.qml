@@ -62,6 +62,7 @@ Rectangle {
 
         Text {
             anchors.verticalCenter: parent.verticalCenter
+            textFormat: Text.PlainText
             text: root.text
             color: root.active ? Theme.successTextColor : Theme.ink
             font.family: Theme.fontUi
