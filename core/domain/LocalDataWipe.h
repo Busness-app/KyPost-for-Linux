@@ -79,7 +79,8 @@ public:
     // The database file goes with them. It used to be kept, emptied, for the
     // relaunch to reopen -- but the SQLCipher key is erased here now, and an
     // encrypted file whose key no longer exists is one openProfileDatabase()
-    // can only treat as fatal.
+    // can only treat as fatal. Which is exactly why the key is erased only
+    // once the file is confirmed gone: see wipeCaches().
     //
     // A REPLACEMENT profile is then opened on the same path, reported in
     // `databaseReopenedAs`, and this is not a nicety. Two of the three
@@ -104,7 +105,8 @@ public:
     // every cached message) but keeps the pairing and the lock: the user is
     // not being wiped, they are changing where their mail lives. The
     // database key is not kept -- leaving it behind would mean any recovered
-    // copy of the file it just unlinked is still readable.
+    // copy of the file it just unlinked is still readable. Unless the unlink
+    // failed: see wipeCaches().
     //
     // Never reopens, unlike wipeEverything(): the caller is on its way to
     // relaunching into ":memory:", and re-creating the file on disk is
@@ -132,6 +134,11 @@ private:
     // decrypts it. They are one unit: a file with no key cannot be opened
     // again, and a key with no file names an account this device was told to
     // forget.
+    //
+    // The key goes only once the file is confirmed gone. An unlink that
+    // failed -- a non-writable profile directory, an EPERM -- is reported
+    // through currentDatabaseRemoved, and keeping the key for the file that
+    // survived is what leaves that state recoverable rather than fatal.
     LocalDataWipeResult wipeCaches(bool removeCurrentDatabase);
 
     // True when the live connection is open on m_currentDatabasePath, i.e.

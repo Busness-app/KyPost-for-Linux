@@ -3,6 +3,7 @@
 #include "stores/CursorStore.h"
 
 #include "db/Database.h"
+#include "db/ProfileDatabase.h"
 #include "domain/DevicePairing.h"
 #include "domain/PairingStore.h"
 #include "security/AppLockStore.h"
@@ -42,6 +43,21 @@ private:
     QHash<QString, QString> m_values;
 };
 
+// Unlinking needs write permission on the DIRECTORY, so this is how a
+// removal failure is staged without a second user or a fault injector. Every
+// caller puts it back before the QTemporaryDir goes out of scope, or the
+// directory cannot be cleaned up either.
+bool makeDirectoryUnwritable(const QString& dir)
+{
+    return QFile::setPermissions(dir, QFileDevice::ReadOwner | QFileDevice::ExeOwner);
+}
+
+bool makeDirectoryWritable(const QString& dir)
+{
+    return QFile::setPermissions(dir,
+                                  QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
+}
+
 QString writeDummyDatabase(const QString& path)
 {
     QFile f(path);
@@ -78,6 +94,7 @@ private slots:
     void hostileLocationWipeTakesTheDatabaseKeyWithTheFile();
     void wipeEverythingReportsAnUnremovableDatabaseKey();
     void accountReplacementKeepsTheDatabaseAndItsKey();
+    void aDatabaseFileThatSurvivedTheWipeKeepsTheKeyThatOpensIt();
 };
 
 void LocalDataWipeTest::wipeEverythingClearsCachesPairingAndLock()
@@ -513,6 +530,74 @@ void LocalDataWipeTest::wipeEverythingErasesTheSyncCursors()
         QVERIFY2(!remaining.contains("sub-1"), "a wiped cursors.ini must not still name the subscriber");
         QVERIFY2(!remaining.contains("4242"), "a wiped cursors.ini must not still hold a cursor value");
     }
+}
+
+// The unlink FAILS -- a non-writable profile directory, an EPERM -- and the
+// encrypted database is still sitting there afterwards. Clearing the key on
+// the strength of "we asked for a removal" rather than "the file is gone"
+// bricks the profile permanently: the next launch sees no key, mints a NEW
+// one, finds the file already encrypted so nothing to migrate, and fails the
+// open -- which main() treats as fatal, on every launch, with the tripwire
+// recovery that would finish the wipe sitting BELOW the qFatal it never
+// reaches. The mail is unrecoverable and the user did nothing wrong.
+//
+// So: a wipe that could not unlink is reported incomplete through
+// currentDatabaseRemoved, and the key stays with the file it opens.
+void LocalDataWipeTest::aDatabaseFileThatSurvivedTheWipeKeepsTheKeyThatOpensIt()
+{
+    if (!Database::encryptionAvailable())
+        QSKIP("built without SQLCipher -- this behaviour is NOT covered");
+
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    // The secret store lives OUTSIDE the profile directory, so that making
+    // that directory read-only stages a failed unlink and nothing else.
+    QTemporaryDir secureDir;
+    QVERIFY(secureDir.isValid());
+    SecureStoreFile secureStore(secureDir.path());
+    PairingStore pairingStore(secureStore);
+    AppLockStore appLockStore(secureStore);
+    SettingsStore settingsStore(secureDir.filePath(QStringLiteral("settings.ini")));
+    CursorStore cursorStore(secureDir.filePath(QStringLiteral("cursors.ini")));
+    DatabaseKeyStore databaseKeyStore(secureStore);
+
+    const QString dbPath = dir.filePath(QStringLiteral("kypost.db"));
+    Database database;
+    QCOMPARE(openProfileDatabase(database, databaseKeyStore, dbPath), ProfileDatabaseMode::EncryptedOnDisk);
+    QVERIFY2(databaseFileIsEncrypted(dbPath), "the premise did not hold: the profile is not encrypted");
+    const DatabaseKeyStore::Result keyBefore = databaseKeyStore.existing();
+    QCOMPARE(keyBefore.status, DatabaseKeyStore::Status::Found);
+
+    QVERIFY(makeDirectoryUnwritable(dir.path()));
+    LocalDataWipe wipe(database, databaseKeyStore, pairingStore, appLockStore, settingsStore, cursorStore,
+                        dir.path(), dbPath, {});
+    const LocalDataWipeResult result = wipe.wipeEverything();
+    QVERIFY(makeDirectoryWritable(dir.path()));
+
+    QVERIFY2(QFile::exists(dbPath), "the premise did not hold: the unlink actually worked");
+    QVERIFY2(!result.currentDatabaseRemoved, "a database file that is still there was reported erased");
+    QVERIFY2(!result.complete(), "a wipe that left the database on disk reported itself complete");
+
+    // The consequence first, because it is the one that matters: the next
+    // launch opens the profile instead of reaching main()'s qFatal, so the
+    // incomplete wipe stays recoverable.
+    Database nextLaunch;
+    QCOMPARE(openProfileDatabase(nextLaunch, databaseKeyStore, dbPath), ProfileDatabaseMode::EncryptedOnDisk);
+
+    // It opens because the key that opens it is still there -- and it is the
+    // SAME key, not a replacement minted over the top of it.
+    const DatabaseKeyStore::Result keyAfter = databaseKeyStore.existing();
+    QCOMPARE(keyAfter.status, DatabaseKeyStore::Status::Found);
+    QCOMPARE(keyAfter.key, keyBefore.key);
+    QVERIFY2(!result.databaseKeyCleared, "a key that is still in the store was reported cleared");
+
+    // And the retry, once whatever blocked the unlink is gone, finishes it.
+    LocalDataWipe retry(nextLaunch, databaseKeyStore, pairingStore, appLockStore, settingsStore,
+                         cursorStore, dir.path(), dbPath, {});
+    const LocalDataWipeResult retried = retry.wipeEverything();
+    QVERIFY(retried.currentDatabaseRemoved);
+    QVERIFY(retried.databaseKeyCleared);
 }
 
 QTEST_GUILESS_MAIN(LocalDataWipeTest)

@@ -1003,9 +1003,9 @@ int main(int argc, char* argv[])
                           if (!wiped.lockCleared)
                               qCritical("App lock: WIPE INCOMPLETE -- the stored PIN material could not be removed");
                           if (!wiped.databaseKeyCleared)
-                              qCritical("App lock: WIPE INCOMPLETE -- the database encryption key could not be "
-                                        "removed from the secret store; a recovered copy of the database file "
-                                        "is still readable");
+                              qCritical("App lock: WIPE INCOMPLETE -- the database encryption key is still in "
+                                        "the secret store; a recovered copy of the database file is still "
+                                        "readable");
                           if (!wiped.currentDatabaseRemoved)
                               qCritical("App lock: WIPE INCOMPLETE -- the database file could not be erased");
                           if (wiped.databaseReopenedAs == ProfileDatabaseMode::FailedToOpen) {

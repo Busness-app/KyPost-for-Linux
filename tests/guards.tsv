@@ -272,3 +272,11 @@ core/domain/LocalDataWipe.cpp	    if (reopenAfterwards)	    if (false)	TrackedWi
 # LocalDataWipe still holds the on-disk path so a leftover file gets erased --
 # reopening there would create the one thing the mode exists to prevent.
 core/domain/LocalDataWipe.cpp	    const bool reopenAfterwards = databaseIsLiveOnDisk();	    const bool reopenAfterwards = true;	LocalDataWipeTest:wipeEverythingLeavesNoDatabaseFileWhenTheSessionWasInMemory
+#
+# The SQLCipher key goes only once the file it opens is confirmed gone.
+# QFile::remove() genuinely fails -- a non-writable profile directory, an
+# EPERM -- and clearing the key over a surviving encrypted database bricks the
+# profile for good: the next launch mints a new key, finds nothing to migrate,
+# fails the open, and hits main()'s qFatal ABOVE the tripwire recovery that
+# would have finished the wipe.
+core/domain/LocalDataWipe.cpp	            !QFileInfo::exists(m_currentDatabasePath) && m_databaseKeyStore.clear();	            m_databaseKeyStore.clear();	LocalDataWipeTest:aDatabaseFileThatSurvivedTheWipeKeepsTheKeyThatOpensIt

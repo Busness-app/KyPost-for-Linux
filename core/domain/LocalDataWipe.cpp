@@ -10,6 +10,7 @@
 #include "stores/SettingsStore.h"
 
 #include <QFile>
+#include <QFileInfo>
 #include <QSqlDatabase>
 
 LocalDataWipe::LocalDataWipe(Database& database, DatabaseKeyStore& databaseKeyStore,
@@ -50,8 +51,25 @@ LocalDataWipeResult LocalDataWipe::wipeCaches(bool removeCurrentDatabase)
     // fresh profile. The reverse leaves an encrypted file whose key exists
     // nowhere, which openProfileDatabase() can only answer with FailedToOpen
     // -- and main() makes that fatal, on every launch, permanently.
-    if (removeCurrentDatabase)
-        result.databaseKeyCleared = m_databaseKeyStore.clear();
+    //
+    // So the gate is the FILE, not the flag: QFile::remove() genuinely fails
+    // (a non-writable profile directory, an EPERM unlink), and a wipe that
+    // could not unlink is already reported incomplete through
+    // currentDatabaseRemoved. Keeping the key in that case is what makes the
+    // state recoverable -- the surviving database still opens, and the next
+    // attempt can finish the job -- instead of bricking the profile.
+    //
+    // m_currentDatabasePath itself rather than currentDatabaseRemoved:
+    // that flag is false when only a -wal or -shm sidecar resisted, and the
+    // database proper being gone is what decides the key's fate.
+    //
+    // Reported as NOT cleared when it is deliberately kept, because it is
+    // not cleared: the key is still in the secret store next to a database
+    // file that survived, which is precisely what that field warns about.
+    if (removeCurrentDatabase) {
+        result.databaseKeyCleared =
+            !QFileInfo::exists(m_currentDatabasePath) && m_databaseKeyStore.clear();
+    }
 
     // The pre-rename profiles are separate FILES, which wipeAllTables()
     // cannot reach -- it scrubs one connection. They were missing from both
@@ -125,9 +143,10 @@ LocalDataWipeResult LocalDataWipe::wipeEverything()
     // a name. See the header for what that costs the one caller --
     // TrackedWipe::recoverIfInterrupted() -- that does not relaunch.
     //
-    // openProfileDatabase() rather than Database::open(): the key was erased
-    // a moment ago, so this has to mint a new one, and every decision about
-    // how a profile may be opened already lives there.
+    // openProfileDatabase() rather than Database::open(): whether the key
+    // was erased a moment ago depends on whether the file actually went, so
+    // this has to mint a new one or reuse the surviving one, and every
+    // decision about how a profile may be opened already lives there.
     if (reopenAfterwards)
         result.databaseReopenedAs = openProfileDatabase(m_database, m_databaseKeyStore, m_currentDatabasePath);
 
