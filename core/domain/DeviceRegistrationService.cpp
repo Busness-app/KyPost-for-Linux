@@ -77,7 +77,7 @@ DeviceRegistrationService::PairAttempt::operator=(PairAttempt&& other) noexcept
     return *this;
 }
 
-DeviceRegistrationService::PairAttempt DeviceRegistrationService::beginPair()
+DeviceRegistrationService::PairAttempt DeviceRegistrationService::beginPair(const PairingParams& params)
 {
     PairAttempt attempt;
 
@@ -105,10 +105,25 @@ DeviceRegistrationService::PairAttempt DeviceRegistrationService::beginPair()
     // pin must not be allowed to abort it -- that is what made the
     // certificate-mismatch banner's own "unpair and pair again" advice
     // impossible to follow without restarting the process.
+    //
+    // Either way the previous pin is saved first and ~PairAttempt puts it
+    // back, so an attempt that is abandoned or fails cannot leave this device
+    // less protected than it was.
     attempt.m_pinSink = &m_pinSink;
     attempt.m_savedPin = m_pinSink.pinState();
     attempt.m_restorePin = true;
-    m_pinSink.clearPin();
+    if (params.spkiPin.isEmpty()) {
+        m_pinSink.clearPin();
+    } else {
+        // The link named the key. Arm it now, so the handshake carrying the
+        // pairing token and the push credentials is checked before those
+        // bytes are written -- HttpClient tests the pin on ::encrypted, which
+        // fires after the handshake and before the request body goes out.
+        //
+        // Scoped to serverBaseUrl, the origin the confirm dialog showed and
+        // the origin the parser already forced registrationUrl to share.
+        m_pinSink.setPin(params.spkiPin, QUrl(params.serverBaseUrl));
+    }
     return attempt;
 }
 
@@ -130,6 +145,27 @@ NativeRegistrationResult DeviceRegistrationService::finishPair(PairAttempt attem
     if (result.outcome != RegistrationOutcome::Success)
         return result; // ~PairAttempt restores the pin
 
+    // A link-supplied pin was armed on the sink before the request, and
+    // HttpClient aborts a handshake that does not match one, so reaching here
+    // with a disagreement would mean enforcement did not actually cover this
+    // request. Unreachable by construction -- and therefore exactly the kind
+    // of assumption worth failing closed on rather than persisting.
+    if (!params.spkiPin.isEmpty() && !result.peerSpkiSha256.isEmpty()
+        && params.spkiPin != result.peerSpkiSha256) {
+        NativeRegistrationResult mismatch = result;
+        mismatch.outcome = RegistrationOutcome::Failure;
+        qWarning("DeviceRegistrationService: the server presented a key other than the one the "
+                 "pairing link pinned; refusing to save this pairing");
+        return mismatch; // ~PairAttempt restores the pin
+    }
+
+    // The key this pairing is anchored to. The link's pin wins: it was
+    // enforced on the handshake that carried the registration, so a success
+    // means the peer matched it, and taking it from here keeps a pooled
+    // connection that produced no fresh handshake evidence
+    // (peerSpkiSha256 empty) from downgrading a pinned pairing to none.
+    const QByteArray anchorPin = params.spkiPin.isEmpty() ? result.peerSpkiSha256 : params.spkiPin;
+
     DevicePairing pairing;
     pairing.subscriberId = params.subscriberId;
     pairing.serverBaseUrl = params.serverBaseUrl;
@@ -141,17 +177,17 @@ NativeRegistrationResult DeviceRegistrationService::finishPair(PairAttempt attem
     // invalidating whatever was stored before -- persist unconditionally,
     // never fall back to the previous value.
     pairing.deviceSecret = result.response.deviceSecret;
-    // Trust on first use: pin the key that served THIS registration, read
-    // from the reply itself. Reading a shared "last handshake seen" value on
-    // HttpClient instead meant a pooled keep-alive connection left it holding
-    // whatever host handshook most recently -- so a scanned QR code aimed at
-    // an attacker's server could decide what the next unattended
-    // re-registration pinned as the relay's key.
+    // Without a link pin this is trust on first use: pin the key that served
+    // THIS registration, read from the reply itself. Reading a shared "last
+    // handshake seen" value on HttpClient instead meant a pooled keep-alive
+    // connection left it holding whatever host handshook most recently -- so
+    // a scanned QR code aimed at an attacker's server could decide what the
+    // next unattended re-registration pinned as the relay's key.
     //
     // Empty over plain http (no handshake, so nothing to pin), which is the
     // testing case -- enforcement then stays off rather than failing every
     // later request.
-    pairing.certificateSpkiSha256 = QString::fromLatin1(result.peerSpkiSha256.toBase64());
+    pairing.certificateSpkiSha256 = QString::fromLatin1(anchorPin.toBase64());
 
     // Checked, not fire-and-forget. SecureStoreKeychain::set() returns false
     // whenever no Secret Service provider is running, which is not exotic on
@@ -179,8 +215,8 @@ NativeRegistrationResult DeviceRegistrationService::finishPair(PairAttempt attem
     // the paired server's origin: the pin describes that relay, and enforcing
     // it on the deliberately cross-server PGP QR fetch only ever produced a
     // false "your mail server is being impersonated" alarm.
-    if (!result.peerSpkiSha256.isEmpty()) {
-        m_pinSink.setPin(result.peerSpkiSha256, QUrl(params.serverBaseUrl));
+    if (!anchorPin.isEmpty()) {
+        m_pinSink.setPin(anchorPin, QUrl(params.serverBaseUrl));
         attempt.m_restorePin = false; // the new pin stands; the saved one is stale
     } else if (attempt.m_savedPin.isEnforcing()) {
         // Registered successfully but there is nothing to pin. Over plain
@@ -216,7 +252,7 @@ NativeRegistrationResult DeviceRegistrationService::finishPair(PairAttempt attem
 // tests pin.
 NativeRegistrationResult DeviceRegistrationService::pair(const PairingParams& params, const QString& deviceToken)
 {
-    PairAttempt attempt = beginPair();
+    PairAttempt attempt = beginPair(params);
     if (const std::optional<RegistrationOutcome> refused = attempt.refusedOutcome()) {
         NativeRegistrationResult out;
         out.outcome = *refused;

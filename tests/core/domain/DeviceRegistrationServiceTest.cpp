@@ -107,6 +107,11 @@ private slots:
     void anAbandonedPairAttemptRestoresThePin();
     void aPairAttemptRefusedByTheGuardsNeverClearsThePin();
 
+    // The pairing link's server-published `pin`.
+    void aLinkSuppliedPinIsArmedBeforeTheRegistrationRequest();
+    void aLinkSuppliedPinSurvivesARegistrationThatSawNoHandshake();
+    void aPeerKeyDisagreeingWithTheLinkPinIsRefused();
+
 private:
     static PairingParams sampleParams(quint16 port);
 };
@@ -662,8 +667,13 @@ void DeviceRegistrationServiceTest::anAbandonedPairAttemptRestoresThePin()
     const QUrl origin(QStringLiteral("https://relay.example"));
     pinSink.setPin(pin, origin);
 
+    // No spkiPin: a link that published none, so beginPair suspends rather
+    // than arms. The armed case is covered by
+    // aLinkSuppliedPinIsArmedBeforeTheRegistrationRequest below.
+    const PairingParams unpinned;
+
     {
-        DeviceRegistrationService::PairAttempt attempt = service.beginPair();
+        DeviceRegistrationService::PairAttempt attempt = service.beginPair(unpinned);
         QVERIFY(!attempt.refusedOutcome().has_value());
         // Suspended for the duration of the request, as the synchronous form
         // does -- the old pin must not abort the handshake that establishes
@@ -678,7 +688,7 @@ void DeviceRegistrationServiceTest::anAbandonedPairAttemptRestoresThePin()
     // Moving it must neither double-restore nor lose the restore: the
     // attempt is handed to a completion handler by value.
     {
-        DeviceRegistrationService::PairAttempt first = service.beginPair();
+        DeviceRegistrationService::PairAttempt first = service.beginPair(unpinned);
         QVERIFY(pinSink.pinState().spkiSha256.isEmpty());
         DeviceRegistrationService::PairAttempt second = std::move(first);
         QVERIFY(pinSink.pinState().spkiSha256.isEmpty());
@@ -714,9 +724,132 @@ void DeviceRegistrationServiceTest::aPairAttemptRefusedByTheGuardsNeverClearsThe
     const QByteArray pin(32, 'B');
     pinSink.setPin(pin, QUrl(existing.serverBaseUrl));
 
-    DeviceRegistrationService::PairAttempt attempt = service.beginPair();
+    DeviceRegistrationService::PairAttempt attempt = service.beginPair(PairingParams{});
     QCOMPARE(attempt.refusedOutcome().value(), RegistrationOutcome::CredentialsLocked);
     QCOMPARE(pinSink.pinState().spkiSha256, pin);
+}
+
+// The point of the whole `pin` parameter: the pin is enforcing BEFORE the
+// registration request goes out, not captured from its reply. Everything the
+// POST discloses -- the pairing token, the push endpoint, the WebPush keys --
+// is therefore covered by it, instead of being sent inside a
+// trust-on-first-use window and pinned afterwards.
+void DeviceRegistrationServiceTest::aLinkSuppliedPinIsArmedBeforeTheRegistrationRequest()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    SecureStoreFile secureStore(dir.path());
+    PairingStore pairingStore(secureStore);
+    SettingsStore settingsStore(dir.filePath(QStringLiteral("settings.ini")));
+
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    NativeRegistrationClient client(http);
+    HttpClientPinSink pinSink(http);
+    DeviceRegistrationService service(client, pairingStore, settingsStore, pinSink);
+
+    const QByteArray previousPin(32, 'A');
+    pinSink.setPin(previousPin, QUrl(QStringLiteral("https://old.example")));
+
+    PairingParams params;
+    params.serverBaseUrl = QStringLiteral("https://relay.example");
+    params.registrationUrl = QStringLiteral("https://relay.example/api/notifications/native/register");
+    params.spkiPin = QByteArray(32, 'L');
+
+    {
+        DeviceRegistrationService::PairAttempt attempt = service.beginPair(params);
+        QVERIFY(!attempt.refusedOutcome().has_value());
+        // Armed, not cleared -- and scoped to the origin the confirm dialog
+        // showed, which is the origin the parser forced registrationUrl to
+        // share.
+        QCOMPARE(pinSink.pinState().spkiSha256, params.spkiPin);
+        QCOMPARE(pinSink.pinState().origin, QUrl(params.serverBaseUrl));
+    }
+
+    // An abandoned attempt still puts the previous pin back: arming must not
+    // cost the protection the device already had.
+    QCOMPARE(pinSink.pinState().spkiSha256, previousPin);
+    QCOMPARE(pinSink.pinState().origin, QUrl(QStringLiteral("https://old.example")));
+}
+
+// A registration can complete with no fresh handshake evidence -- over plain
+// http, or on a pooled keep-alive connection that never re-handshook, which
+// is why peerSpkiSha256 is documented as empty in both cases. Persisting that
+// empty value over a link-supplied pin would turn a pinned pairing into an
+// unpinned one at the last step.
+void DeviceRegistrationServiceTest::aLinkSuppliedPinSurvivesARegistrationThatSawNoHandshake()
+{
+    const QByteArray body = R"({"ok":true,"synced":true,"deviceId":"dev-1","deviceSecret":"fresh",)"
+                             R"("devices":1,"deliveryMode":"pull","transport":"unifiedpush"})";
+    FakeRelayServer fake(httpResponse(200, "OK", body));
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    NativeRegistrationClient client(http);
+
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    SecureStoreFile secureStore(dir.path());
+    PairingStore pairingStore(secureStore);
+    SettingsStore settingsStore(dir.filePath(QStringLiteral("settings.ini")));
+
+    HttpClientPinSink pinSink(http);
+    DeviceRegistrationService service(client, pairingStore, settingsStore, pinSink);
+
+    PairingParams params = sampleParams(fake.port());
+    params.spkiPin = QByteArray(32, 'L');
+
+    const NativeRegistrationResult result = service.pair(params, QStringLiteral("https://push.example/e"));
+    QCOMPARE(result.outcome, RegistrationOutcome::Success);
+    // Plain http, so the reply carried no peer key at all.
+    QVERIFY(result.peerSpkiSha256.isEmpty());
+
+    PairingStore verifyStore(secureStore);
+    const std::optional<DevicePairing> loaded = verifyStore.load();
+    QVERIFY(loaded.has_value());
+    QCOMPARE(loaded->certificateSpkiSha256, QString::fromLatin1(params.spkiPin.toBase64()));
+    // ...and enforcing in-process too, not only on the next launch.
+    QCOMPARE(pinSink.pinState().spkiSha256, params.spkiPin);
+}
+
+// Unreachable by construction -- HttpClient aborts a handshake that does not
+// match an armed pin, so a success cannot carry a different key. Asserted
+// anyway: the alternative to failing closed here is persisting a pairing
+// anchored to a key the link never named.
+void DeviceRegistrationServiceTest::aPeerKeyDisagreeingWithTheLinkPinIsRefused()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    SecureStoreFile secureStore(dir.path());
+    PairingStore pairingStore(secureStore);
+    SettingsStore settingsStore(dir.filePath(QStringLiteral("settings.ini")));
+
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    NativeRegistrationClient client(http);
+    HttpClientPinSink pinSink(http);
+    DeviceRegistrationService service(client, pairingStore, settingsStore, pinSink);
+
+    PairingParams params;
+    params.subscriberId = QStringLiteral("sub-1");
+    params.serverBaseUrl = QStringLiteral("https://relay.example");
+    params.registrationUrl = QStringLiteral("https://relay.example/api/notifications/native/register");
+    params.spkiPin = QByteArray(32, 'L');
+
+    NativeRegistrationResult served;
+    served.outcome = RegistrationOutcome::Success;
+    served.response.deviceId = QStringLiteral("dev-1");
+    served.response.deviceSecret = QStringLiteral("fresh");
+    served.peerSpkiSha256 = QByteArray(32, 'X'); // not the pinned key
+
+    DeviceRegistrationService::PairAttempt attempt = service.beginPair(params);
+    QVERIFY(!attempt.refusedOutcome().has_value());
+    const NativeRegistrationResult applied = service.finishPair(std::move(attempt), params, served);
+
+    QCOMPARE(applied.outcome, RegistrationOutcome::Failure);
+    // Nothing persisted, and no pin left armed from the refused attempt.
+    PairingStore verifyStore(secureStore);
+    QVERIFY(!verifyStore.load().has_value());
+    QVERIFY(pinSink.pinState().spkiSha256.isEmpty());
 }
 
 QTEST_GUILESS_MAIN(DeviceRegistrationServiceTest)
