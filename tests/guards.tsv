@@ -255,3 +255,20 @@ app/qml/components/PillTab.qml	        textFormat: Text.PlainText		QmlTests:Plai
 # binds anything other than a literal without declaring its format fails it.
 # Delete the textFormat at MobileRoot.qml's timestamp and that test goes red.
 # This harness cannot say so, which is why it is written down here.
+
+# --- a wipe that unlinks the live database opens a replacement -----------
+#
+# TrackedWipe::recoverIfInterrupted() is the one wipeEverything() caller that
+# does NOT relaunch: it finishes an interrupted wipe at startup and falls
+# through into a full session. Without the reopen that session keeps writing
+# through a connection bound to the unlinked inode, where the write either
+# fails outright or is invisible to the next launch -- which cursors.ini
+# (erased by the wipe, then repopulated by the re-pair's sync) tells is
+# already up to date.
+core/domain/LocalDataWipe.cpp	    if (reopenAfterwards)	    if (false)	TrackedWipeTest:aFinishedRecoveryLeavesASessionWhoseWritesSurvive
+#
+# The mirror: the reopen must NOT fire for a session that was never on that
+# file. Under Hostile Location Protection main() opens ":memory:" while
+# LocalDataWipe still holds the on-disk path so a leftover file gets erased --
+# reopening there would create the one thing the mode exists to prevent.
+core/domain/LocalDataWipe.cpp	    const bool reopenAfterwards = databaseIsLiveOnDisk();	    const bool reopenAfterwards = true;	LocalDataWipeTest:wipeEverythingLeavesNoDatabaseFileWhenTheSessionWasInMemory

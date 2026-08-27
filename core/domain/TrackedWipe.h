@@ -52,6 +52,12 @@ public:
     {
         bool wasInterrupted = false;  // a marker was found
         bool nowErased = false;       // the retry (if any) reported complete
+        // The retry's per-step detail, default-constructed when there was no
+        // retry. Carried because this caller -- unlike the two that relaunch
+        // -- goes on to run a full session, and it has to know how
+        // LocalDataWipe reopened the database it just unlinked
+        // (`databaseReopenedAs`) before anything writes to it.
+        LocalDataWipeResult result;
     };
     RecoveryOutcome recoverIfInterrupted();
 

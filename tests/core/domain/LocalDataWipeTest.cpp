@@ -71,7 +71,8 @@ private slots:
     void wipeEverythingClearsCachesPairingAndLock();
     void wipeEverythingErasesTheSyncCursors();
     void wipeEverythingTakesThePreRenameDatabasesToo();
-    void wipeEverythingUnlinksTheLiveDatabaseWithItsKey();
+    void wipeEverythingUnlinksTheLiveDatabaseAndReopensAWritableOne();
+    void wipeEverythingLeavesNoDatabaseFileWhenTheSessionWasInMemory();
     void wipeEverythingReportsAnUnremovablePairingCredential();
     void hostileLocationWipeUnlinksTheLiveDatabaseButKeepsThePairing();
     void hostileLocationWipeTakesTheDatabaseKeyWithTheFile();
@@ -166,12 +167,20 @@ void LocalDataWipeTest::wipeEverythingTakesThePreRenameDatabasesToo()
     QVERIFY(!QFile::exists(dir.filePath(QStringLiteral("llamamail.db-shm"))));
 }
 
-// The database file and the key that decrypts it go together. This path used
-// to keep the file for the relaunch to reopen, which stopped being possible
-// once the key was erased with it: an encrypted file whose key exists nowhere
-// is one openProfileDatabase() can only treat as fatal. The still-open
-// connection keeps working, because the app runs on until the relaunch lands.
-void LocalDataWipeTest::wipeEverythingUnlinksTheLiveDatabaseWithItsKey()
+// The database file and the key that decrypts it go together, and what
+// replaces them has to be a profile the NEXT launch can read.
+//
+// This path used to keep the file for the relaunch to reopen, which stopped
+// being possible once the key was erased with it. Unlinking alone is not
+// enough either: the connection goes on answering queries against an inode
+// with no name, so a session that keeps running -- which is exactly what
+// TrackedWipe::recoverIfInterrupted() does, see TrackedWipeTest -- has no
+// database anything can be kept in. Asserting that the old connection still
+// answers a SELECT proves nothing; it answers precisely BECAUSE the unlinked
+// inode is still alive. So the check here is durability: write through the
+// post-wipe connection, then read it back through a separate Database that
+// finds the file by NAME.
+void LocalDataWipeTest::wipeEverythingUnlinksTheLiveDatabaseAndReopensAWritableOne()
 {
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
@@ -188,17 +197,70 @@ void LocalDataWipeTest::wipeEverythingUnlinksTheLiveDatabaseWithItsKey()
     QVERIFY(cursorStore.setMailCursor(QStringLiteral("sub-1"), QStringLiteral("INBOX"), QStringLiteral("4242")));
     QVERIFY(cursorStore.setNotificationCursor(77));
     DatabaseKeyStore databaseKeyStore(secureStore);
-    QVERIFY(!databaseKeyStore.create().isEmpty());
+    const QByteArray keyBefore = databaseKeyStore.create();
+    QVERIFY(!keyBefore.isEmpty());
     LocalDataWipe wipe(database, databaseKeyStore, pairingStore, appLockStore, settingsStore, cursorStore,
                         dir.path(), dbPath, {});
     const LocalDataWipeResult result = wipe.wipeEverything();
     QVERIFY(result.complete());
     QVERIFY(result.databaseKeyCleared);
+    QVERIFY(result.currentDatabaseRemoved);
 
-    QVERIFY(!QFile::exists(dbPath));
+    // The pre-wipe key is gone. Whatever sits on that path now, it is not
+    // the database this wipe was asked to destroy.
+    const DatabaseKeyStore::Result keyAfter = databaseKeyStore.existing();
+    QVERIFY(keyAfter.key != keyBefore);
+
+    // The durability check comes FIRST, before anything the wipe reported
+    // about itself: it is the property that matters, and it is the one an
+    // assertion on the still-open connection cannot see.
+    QSqlQuery insert(database.handle());
+    QVERIFY(insert.exec(QStringLiteral("INSERT INTO emails (message_id, folder, at_utc) "
+                                        "VALUES ('after-wipe', 'INBOX', '2026-01-01')")));
+
+    Database nextLaunch;
+    QVERIFY(nextLaunch.open(dbPath,
+                             keyAfter.status == DatabaseKeyStore::Status::Found ? keyAfter.key : QByteArray()));
+    QSqlQuery readBack(nextLaunch.handle());
+    QVERIFY(readBack.exec(QStringLiteral("SELECT COUNT(*) FROM emails WHERE message_id = 'after-wipe'")));
+    QVERIFY(readBack.next());
+    QVERIFY2(readBack.value(0).toInt() == 1,
+              "the post-wipe session wrote into an unlinked inode; the next launch cannot see it");
+
+    QVERIFY(result.databaseReopenedAs.has_value());
+    QVERIFY(*result.databaseReopenedAs != ProfileDatabaseMode::FailedToOpen);
+}
+
+// The mirror image, and the reason the reopen is conditional. Under Hostile
+// Location Protection -- or a data directory that could not be made
+// owner-only -- main() opens ":memory:" and never touches the on-disk path,
+// while LocalDataWipe still gets that path so a leftover file is erased.
+// Reopening there would CREATE the very file those modes exist to keep off
+// this disk.
+void LocalDataWipeTest::wipeEverythingLeavesNoDatabaseFileWhenTheSessionWasInMemory()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString dbPath = dir.filePath(QStringLiteral("kypost.db"));
+
+    Database database;
+    QVERIFY(database.open(QStringLiteral(":memory:")));
+    SecureStoreFile secureStore(dir.path());
+    PairingStore pairingStore(secureStore);
+    AppLockStore appLockStore(secureStore);
+    SettingsStore settingsStore(dir.filePath(QStringLiteral("settings.ini")));
+    CursorStore cursorStore(dir.filePath(QStringLiteral("cursors.ini")));
+    DatabaseKeyStore databaseKeyStore(secureStore);
+
+    LocalDataWipe wipe(database, databaseKeyStore, pairingStore, appLockStore, settingsStore, cursorStore,
+                        dir.path(), dbPath, {});
+    const LocalDataWipeResult result = wipe.wipeEverything();
+
+    QVERIFY(result.complete());
+    QVERIFY2(!result.databaseReopenedAs.has_value(),
+              "a session running in memory was handed an on-disk profile by the wipe");
+    QVERIFY2(!QFile::exists(dbPath), "the wipe created a database file on a disk that must hold none");
     QCOMPARE(databaseKeyStore.existing().status, DatabaseKeyStore::Status::Absent);
-    QSqlQuery stillWorks(database.handle());
-    QVERIFY(stillWorks.exec(QStringLiteral("SELECT COUNT(*) FROM emails")));
 }
 
 // "Wiped" while the device secret is still in the keychain is a materially

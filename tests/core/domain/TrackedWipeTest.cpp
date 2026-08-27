@@ -58,11 +58,15 @@ struct WipeFixture
     std::unique_ptr<CursorStore> cursorStore;
     std::unique_ptr<LocalDataWipe> wipe;
 
-    bool build(bool secureStoreRefusesRemovals)
+    // `databasePath` empty keeps the session in memory, which is what main()
+    // does under Hostile Location Protection. Passing a path is the ordinary
+    // session, and the only shape in which "the wipe unlinked the file this
+    // connection is bound to" is reachable at all.
+    bool build(bool secureStoreRefusesRemovals, const QString& databasePath = QString())
     {
         if (!dataDir.isValid() || !secureDir.isValid() || !settingsDir.isValid())
             return false;
-        if (!database.open(QStringLiteral(":memory:")))
+        if (!database.open(databasePath.isEmpty() ? QStringLiteral(":memory:") : databasePath))
             return false;
 
         QSqlQuery seed(database.handle());
@@ -89,7 +93,7 @@ struct WipeFixture
         settingsStore = std::make_unique<SettingsStore>(settingsDir.filePath(QStringLiteral("settings.ini")));
         cursorStore = std::make_unique<CursorStore>(dataDir.filePath(QStringLiteral("cursors.ini")));
         wipe = std::make_unique<LocalDataWipe>(database, *databaseKeyStore, *pairingStore, *appLockStore,
-                                                *settingsStore, *cursorStore, dataDir.path(), QString(),
+                                                *settingsStore, *cursorStore, dataDir.path(), databasePath,
                                                 QStringList{});
         return true;
     }
@@ -115,6 +119,7 @@ private slots:
     void anInterruptedWipeIsFinishedOnTheNextLaunch();
     void nothingIsRetriedWhenNoWipeWasEverStarted();
     void aRecoveryThatStillFailsStaysArmed();
+    void aFinishedRecoveryLeavesASessionWhoseWritesSurvive();
 };
 
 // The ordinary path: everything erased, marker gone, next launch has nothing
@@ -217,6 +222,65 @@ void TrackedWipeTest::aRecoveryThatStillFailsStaysArmed()
     QVERIFY(tripwire.isArmed());
     // What it COULD erase, it did: the retry is not all-or-nothing.
     QVERIFY(!f.emailsRemain());
+}
+
+// Recovery is the ONE wipeEverything() caller that does not relaunch: it runs
+// at startup and returns straight into a full normal session. So the wipe's
+// effect on the live database is load-bearing here in a way it is not for the
+// ten-failed-PIN or account-replacement paths, both of which end in
+// AppRelauncher::requestRelaunch().
+//
+// The failure this locks down: the wipe unlinks the database file and erases
+// its key, and the session carries on through a connection whose file has no
+// name. The user -- shown the pairing screen because the wipe cleared the
+// pairing -- re-pairs and syncs, and that sync either fails at the first
+// write or lands in an inode no later launch can open, while cursors.ini
+// (erased by the same wipe, then repopulated by that sync) tells the next
+// launch it is already up to date. The mail is then permanently absent
+// locally with nothing left to force a resync.
+//
+// A SELECT through the old connection does NOT catch this -- it succeeds
+// precisely because the unlinked inode is still alive. Writing and then
+// reading back by NAME does.
+void TrackedWipeTest::aFinishedRecoveryLeavesASessionWhoseWritesSurvive()
+{
+    WipeFixture f;
+    QTemporaryDir profileDir;
+    QVERIFY(profileDir.isValid());
+    const QString dbPath = profileDir.filePath(QStringLiteral("kypost.db"));
+    QVERIFY(f.build(/*secureStoreRefusesRemovals=*/false, dbPath));
+    QVERIFY(!f.databaseKeyStore->create().isEmpty());
+
+    WipeTripwire tripwire(f.dataDir.filePath(QStringLiteral("wipe-pending")));
+    QVERIFY(tripwire.arm());
+
+    TrackedWipe tracked(tripwire, *f.wipe);
+    const TrackedWipe::RecoveryOutcome recovery = tracked.recoverIfInterrupted();
+
+    QVERIFY(recovery.wasInterrupted);
+    QVERIFY(recovery.nowErased);
+    QVERIFY(!tripwire.isArmed());
+    QVERIFY(!f.emailsRemain());
+
+    // A session continues from here, so it needs a database it can actually
+    // keep something in. Checked by writing and reading back rather than by
+    // asking the wipe what it did -- the report is asserted afterwards.
+    QSqlQuery insert(f.database.handle());
+    QVERIFY(insert.exec(QStringLiteral("INSERT INTO emails (message_id, folder, at_utc) "
+                                        "VALUES ('post-recovery', 'INBOX', '2026-01-01')")));
+
+    const DatabaseKeyStore::Result key = f.databaseKeyStore->existing();
+    Database nextLaunch;
+    QVERIFY(nextLaunch.open(dbPath,
+                             key.status == DatabaseKeyStore::Status::Found ? key.key : QByteArray()));
+    QSqlQuery readBack(nextLaunch.handle());
+    QVERIFY(readBack.exec(QStringLiteral("SELECT COUNT(*) FROM emails WHERE message_id = 'post-recovery'")));
+    QVERIFY(readBack.next());
+    QVERIFY2(readBack.value(0).toInt() == 1,
+              "the session that finished an interrupted wipe was left writing to an unlinked file");
+
+    QVERIFY(recovery.result.databaseReopenedAs.has_value());
+    QVERIFY(*recovery.result.databaseReopenedAs != ProfileDatabaseMode::FailedToOpen);
 }
 
 QTEST_GUILESS_MAIN(TrackedWipeTest)

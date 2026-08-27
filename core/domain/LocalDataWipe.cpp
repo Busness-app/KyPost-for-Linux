@@ -1,6 +1,7 @@
 #include "domain/LocalDataWipe.h"
 
 #include "db/Database.h"
+#include "db/ProfileDatabase.h"
 #include "db/SecurityWipe.h"
 #include "domain/PairingStore.h"
 #include "security/AppLockStore.h"
@@ -9,6 +10,7 @@
 #include "stores/SettingsStore.h"
 
 #include <QFile>
+#include <QSqlDatabase>
 
 LocalDataWipe::LocalDataWipe(Database& database, DatabaseKeyStore& databaseKeyStore,
                               PairingStore& pairingStore, AppLockStore& appLockStore,
@@ -91,8 +93,20 @@ LocalDataWipeResult LocalDataWipe::wipeCachedAccountData()
     return wipeCaches(/*removeCurrentDatabase=*/false);
 }
 
+bool LocalDataWipe::databaseIsLiveOnDisk() const
+{
+    // databaseName() is the path the connection was opened on: ":memory:"
+    // for the two in-memory startup branches, m_currentDatabasePath for an
+    // ordinary session.
+    return !m_currentDatabasePath.isEmpty()
+        && m_database.handle().databaseName() == m_currentDatabasePath;
+}
+
 LocalDataWipeResult LocalDataWipe::wipeEverything()
 {
+    // Asked BEFORE the file is unlinked -- see databaseIsLiveOnDisk().
+    const bool reopenAfterwards = databaseIsLiveOnDisk();
+
     LocalDataWipeResult result = wipeCaches(/*removeCurrentDatabase=*/true);
 
     // Every result checked and aggregated, because all of these genuinely
@@ -105,6 +119,17 @@ LocalDataWipeResult LocalDataWipe::wipeEverything()
     // Not part of the result: this is a preference, not a secret, and a
     // failure to reset it leaks nothing.
     m_settingsStore.setDeliveryMode(QString());
+
+    // A replacement profile on the same path, so the session that called
+    // this is not left writing through a connection whose file no longer has
+    // a name. See the header for what that costs the one caller --
+    // TrackedWipe::recoverIfInterrupted() -- that does not relaunch.
+    //
+    // openProfileDatabase() rather than Database::open(): the key was erased
+    // a moment ago, so this has to mint a new one, and every decision about
+    // how a profile may be opened already lives there.
+    if (reopenAfterwards)
+        result.databaseReopenedAs = openProfileDatabase(m_database, m_databaseKeyStore, m_currentDatabasePath);
 
     return result;
 }

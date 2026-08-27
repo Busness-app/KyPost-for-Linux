@@ -1,7 +1,11 @@
 #pragma once
 
+#include "db/ProfileDatabase.h"
+
 #include <QString>
 #include <QStringList>
+
+#include <optional>
 
 class AppLockStore;
 class CursorStore;
@@ -36,6 +40,16 @@ struct LocalDataWipeResult
     bool pairingCleared = true;
     bool lockCleared = true;
 
+    // How the replacement profile was opened after the wipe unlinked the
+    // live database, or nullopt when this wipe had no database to reopen
+    // (see LocalDataWipe::wipeEverything). FailedToOpen means the caller has
+    // no database at all and must not go on using the old connection.
+    //
+    // Deliberately NOT part of complete(): that answers "is everything
+    // erased", and a reopen that failed is a broken session rather than
+    // surviving data. The caller acts on it separately.
+    std::optional<ProfileDatabaseMode> databaseReopenedAs;
+
     bool complete() const
     {
         return tablesWiped && currentDatabaseRemoved && databaseKeyCleared && legacyDatabasesRemoved
@@ -65,7 +79,24 @@ public:
     // The database file goes with them. It used to be kept, emptied, for the
     // relaunch to reopen -- but the SQLCipher key is erased here now, and an
     // encrypted file whose key no longer exists is one openProfileDatabase()
-    // can only treat as fatal. The next launch makes a fresh profile instead.
+    // can only treat as fatal.
+    //
+    // A REPLACEMENT profile is then opened on the same path, reported in
+    // `databaseReopenedAs`, and this is not a nicety. Two of the three
+    // callers relaunch immediately, but TrackedWipe::recoverIfInterrupted()
+    // -- which finishes an interrupted wipe at startup -- returns into a
+    // full normal session. Without the reopen that session is left holding a
+    // connection whose file has no name: writes through it either fail
+    // outright or land in an inode no later launch can reach. The user
+    // re-pairs (the wipe cleared the pairing, so they are shown that screen)
+    // and syncs, while cursors.ini -- erased by this wipe and repopulated by
+    // that same sync -- tells the next launch it is already up to date, so
+    // the mail is permanently absent locally with nothing left to force a
+    // resync.
+    //
+    // Skipped when this session was never on that file (":memory:", under
+    // Hostile Location Protection or an unprotected data directory):
+    // creating it there is the one thing those modes exist to prevent.
     LocalDataWipeResult wipeEverything();
 
     // Hostile Location Protection being switched ON. Erases what is already
@@ -74,6 +105,10 @@ public:
     // not being wiped, they are changing where their mail lives. The
     // database key is not kept -- leaving it behind would mean any recovered
     // copy of the file it just unlinked is still readable.
+    //
+    // Never reopens, unlike wipeEverything(): the caller is on its way to
+    // relaunching into ":memory:", and re-creating the file on disk is
+    // exactly what this mode was asked to prevent.
     LocalDataWipeResult wipeOnDiskDataOnly();
 
     // Account replacement: erase the PREVIOUS account's cached data while
@@ -98,6 +133,13 @@ private:
     // again, and a key with no file names an account this device was told to
     // forget.
     LocalDataWipeResult wipeCaches(bool removeCurrentDatabase);
+
+    // True when the live connection is open on m_currentDatabasePath, i.e.
+    // when unlinking that file would pull the ground out from under this
+    // session. Must be asked BEFORE the file goes: afterwards the connection
+    // still answers queries against a nameless inode, and nothing
+    // distinguishes that from a session that was always in memory.
+    bool databaseIsLiveOnDisk() const;
 
     Database& m_database;
     DatabaseKeyStore& m_databaseKeyStore;

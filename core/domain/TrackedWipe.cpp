@@ -40,8 +40,8 @@ TrackedWipe::RecoveryOutcome TrackedWipe::recoverIfInterrupted()
     // Deliberately NOT re-armed first: the marker is already there, which is
     // the state arm() would produce anyway, and a failed re-arm would then
     // be indistinguishable from success.
-    const LocalDataWipeResult result = m_wipe.wipeEverything();
-    outcome.nowErased = result.complete();
+    outcome.result = m_wipe.wipeEverything();
+    outcome.nowErased = outcome.result.complete();
     if (outcome.nowErased)
         m_tripwire.disarm();
 

@@ -631,7 +631,8 @@ int main(int argc, char* argv[])
 
     Database database;
     // Outlives the open below because LocalDataWipe (step 5b) borrows it: a
-    // wipe that unlinks the database must take its key too. Only borrows the
+    // wipe that unlinks the database must take its key too, and then mint a
+    // fresh one for the profile it opens in its place. Only borrows the
     // SecureStore -- no key material is held here, and the bytes
     // openProfileDatabase() works with stay inside that call.
     DatabaseKeyStore databaseKeyStore(secureStore);
@@ -772,6 +773,23 @@ int main(int argc, char* argv[])
     } else if (wipeRecovery.wasInterrupted) {
         qCritical("main: a previous wipe did NOT complete and could not be finished on this launch -- "
                    "data the user believes was erased is still on this device");
+    }
+
+    // This is the ONLY wipeEverything() caller that does not relaunch: the
+    // other two hand the user a fresh process. So the profile LocalDataWipe
+    // opened in place of the one it unlinked has to be adopted here, before
+    // any DAO below writes through it -- including when opening it failed
+    // and this session has to fall back to memory rather than keep writing
+    // into a file no later launch can find.
+    if (wipeRecovery.result.databaseReopenedAs) {
+        profileDatabaseMode = *wipeRecovery.result.databaseReopenedAs;
+        if (profileDatabaseMode == ProfileDatabaseMode::FailedToOpen) {
+            qCritical("main: the database could not be reopened after finishing an interrupted wipe; "
+                       "this session is being kept in memory and will not be saved to this device");
+            if (!database.open(QStringLiteral(":memory:")))
+                qFatal("main: Database::open failed for in-memory database");
+            profileDatabaseMode = ProfileDatabaseMode::InMemoryNoKeyStorage;
+        }
     }
 
     // 6. HttpClient -- default transferTimeoutMs. networkManager must
@@ -990,6 +1008,13 @@ int main(int argc, char* argv[])
                                         "is still readable");
                           if (!wiped.currentDatabaseRemoved)
                               qCritical("App lock: WIPE INCOMPLETE -- the database file could not be erased");
+                          if (wiped.databaseReopenedAs == ProfileDatabaseMode::FailedToOpen) {
+                              // Not fatal here: the relaunch below is what
+                              // this session ends with anyway, and the fresh
+                              // process opens the profile from scratch.
+                              qCritical("App lock: no replacement database could be opened after the wipe; "
+                                         "nothing written between here and the relaunch will be saved");
+                          }
                           if (!wiped.legacyDatabasesRemoved)
                               qCritical("App lock: WIPE INCOMPLETE -- a pre-rename database could not be erased");
                           if (!wiped.syncCursorsCleared)
