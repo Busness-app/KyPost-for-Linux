@@ -266,6 +266,34 @@ NativeRegistrationResult DeviceRegistrationService::pair(const PairingParams& pa
     return finishPair(std::move(attempt), params, result);
 }
 
+// Note what this deliberately does NOT copy: the stored certificate pin.
+//
+// Leaving spkiPin empty means beginPair() suspends the pin for a
+// re-registration and finishPair() re-anchors to whatever key answered. In the
+// threat model pinning exists for -- an attacker holding a locally trusted CA
+// -- that is a window: wait for a push-endpoint rotation, read the pairing
+// token, have your own key persisted as the pin.
+//
+// It stays open because closing it costs more than it buys here. The pin is
+// over the SubjectPublicKeyInfo, so it only breaks when the KEY rotates -- and
+// the deployment this project documents (kypost-server's
+// docs/Reverse_Proxy_Networking.md) puts a reverse proxy or cloudflared in
+// front, where the device validates an edge certificate whose key the operator
+// does not hold and cannot choose to reuse. That key rotates on someone else's
+// schedule. Enforcing the pin here would abort every relay request until the
+// user ran "Reconnect to server", on a cycle nobody can predict. This
+// re-anchor is what absorbs that today.
+//
+// What bounds the damage: the pin is checked on TOP of Qt's chain validation
+// (HttpClient never relaxes peer verification), so the unpinned window still
+// requires a certificate the CA chain accepts for this host. Not "trust
+// anything".
+//
+// The principled fix is server-side, and is recorded rather than done: the
+// relay already knows whether it publishes a pin it controls (leafSPKIPin --
+// own key, reusable across renewal) or one probed off whatever fronts it
+// (probedSPKIPin). Only the first kind can be hard-enforced across a rotation.
+// Revisit if that distinction ever reaches the client.
 std::optional<PairingParams> DeviceRegistrationService::reregistrationParams() const
 {
     const std::optional<DevicePairing> pairing = m_pairingStore.load();

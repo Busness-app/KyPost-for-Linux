@@ -34,8 +34,8 @@ struct PairingParams
     // locally trusted CA the secrets have gone to the interceptor by then.
     //
     // Only the deep-link path fills this. Re-registration leaves it empty on
-    // purpose -- suspending the stored pin is what lets reconnectToServer()
-    // re-anchor after a legitimate certificate rotation.
+    // purpose: that is a deliberate tradeoff with a written reason, not an
+    // omission -- see reregistrationParams().
     QByteArray spkiPin;
 };
 
