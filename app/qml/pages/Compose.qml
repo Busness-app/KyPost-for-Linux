@@ -482,6 +482,7 @@ Item {
         Text {
             Layout.fillWidth: true
             visible: encryptToggle.checked && MailApp.pgpKeylessRecipients.length > 0
+            textFormat: Text.PlainText
             text: i18np("We don't have a PGP key on file for %2.",
                         "We don't have PGP keys on file for %2.",
                         MailApp.pgpKeylessRecipients.length,
@@ -555,6 +556,7 @@ Item {
         Text {
             Layout.fillWidth: true
             visible: root.validationError !== "" || MailApp.lastError !== ""
+            textFormat: Text.PlainText
             text: root.validationError !== "" ? root.validationError : MailApp.lastError
             color: Theme.dangerColor
             font.family: Theme.fontUi

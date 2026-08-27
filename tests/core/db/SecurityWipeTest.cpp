@@ -1,6 +1,7 @@
 #include "db/SecurityWipe.h"
 
 #include "db/Database.h"
+#include "db/DatabaseEncryptionMigration.h"
 #include "db/EmailDao.h"
 #include "models/Email.h"
 
@@ -16,6 +17,7 @@ class SecurityWipeTest : public QObject
 
 private slots:
     void removesDatabaseAndEverySidecar();
+    void removesEveryCopyTheEncryptionMigrationCanLeave();
     void missingFilesAreNotAFailure();
     void neverTouchesTheInMemoryPseudoPath();
     void clearsCacheDirectoryContentsButKeepsTheDirectory();
@@ -129,6 +131,40 @@ void SecurityWipeTest::removesDatabaseAndEverySidecar()
     QVERIFY(SecurityWipe::removeDatabaseFiles(dbPath));
     for (const QString& path : all)
         QVERIFY2(!QFile::exists(path), qPrintable(path));
+}
+
+// The one this exists for: DatabaseEncryptionMigration renames the plaintext
+// database aside before deleting it, tolerates that delete failing, and
+// survives being killed between its two renames -- so `<db>.plaintext-old` can
+// still be sitting there holding every cached message. No wipe path in the
+// repo knew the name: this function listed the four SQLite paths only, and
+// both Hostile Location Protection and the ten-failure wipe reported success
+// over a full unencrypted mail database.
+void SecurityWipeTest::removesEveryCopyTheEncryptionMigrationCanLeave()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString dbPath = dir.filePath(QStringLiteral("kypost.db"));
+
+    const QStringList databases = { dbPath,
+                                     dbPath + DatabaseEncryptionMigration::kMarkerSuffix,
+                                     dbPath + DatabaseEncryptionMigration::kWorkingCopySuffix,
+                                     dbPath + DatabaseEncryptionMigration::kSupersededSuffix };
+    // Each copy is a database in its own right, so each can carry its own
+    // sidecars, and -wal can hold committed pages of somebody's mail.
+    QStringList all;
+    for (const QString& database : databases)
+        all << database << database + QStringLiteral("-journal") << database + QStringLiteral("-wal")
+            << database + QStringLiteral("-shm");
+
+    for (const QString& path : all)
+        writeFile(path, "SECRETSUBJECT0");
+
+    QVERIFY(SecurityWipe::removeDatabaseFiles(dbPath));
+    for (const QString& path : all)
+        QVERIFY2(!QFile::exists(path), qPrintable(path));
+    // Nothing else was invented in the profile directory either.
+    QCOMPARE(QDir(dir.path()).entryList(QDir::AllEntries | QDir::NoDotAndDotDot).size(), 0);
 }
 
 void SecurityWipeTest::missingFilesAreNotAFailure()

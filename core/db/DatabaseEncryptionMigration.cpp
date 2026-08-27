@@ -53,9 +53,9 @@ int userVersion(QSqlDatabase& db)
 
 DatabaseEncryptionMigration::DatabaseEncryptionMigration(const QString& databasePath)
     : m_databasePath(databasePath)
-    , m_markerPath(databasePath + QStringLiteral(".encrypting"))
-    , m_workingCopyPath(databasePath + QStringLiteral(".encrypted-new"))
-    , m_supersededPath(databasePath + QStringLiteral(".plaintext-old"))
+    , m_markerPath(databasePath + kMarkerSuffix)
+    , m_workingCopyPath(databasePath + kWorkingCopySuffix)
+    , m_supersededPath(databasePath + kSupersededSuffix)
 {
 }
 
@@ -161,9 +161,19 @@ bool DatabaseEncryptionMigration::exportEncrypted(const QByteArray& key)
     if (sourceVersion < 0)
         return false;
 
+    // The path goes into a SQL string literal and comes from AppDataLocation,
+    // i.e. from $HOME/$XDG_DATA_HOME. One apostrophe in it -- /mnt/o'brien/data
+    // -- ends the literal early and makes the whole statement a syntax error
+    // (measured: near "brien": syntax error), after which run() reports Failed
+    // and openProfileDatabase() falls back to the plaintext database: that
+    // profile's mail is then silently never encrypted, on every launch.
+    // Doubling is the SQL escape for it. The hex key needs none by construction.
+    QString escapedCopyPath = m_workingCopyPath;
+    escapedCopyPath.replace(QLatin1Char('\''), QLatin1String("''"));
+
     QSqlQuery attach(source.handle());
     if (!attach.exec(QStringLiteral("ATTACH DATABASE '%1' AS encrypted KEY \"x'%2'\"")
-                          .arg(m_workingCopyPath, QString::fromLatin1(key.toHex())))) {
+                          .arg(escapedCopyPath, QString::fromLatin1(key.toHex())))) {
         qWarning("DatabaseEncryptionMigration: ATTACH failed: %s",
                   qUtf8Printable(attach.lastError().text()));
         return false;

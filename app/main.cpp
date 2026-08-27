@@ -645,6 +645,15 @@ int main(int argc, char* argv[])
         // crashed between "write the flag" and "delete the file", or the
         // erase at toggle time did not finish, there could still be a
         // database on disk holding exactly what this mode exists to prevent.
+        //
+        // That includes what an interrupted database conversion leaves
+        // behind. `<db>.plaintext-old` is a complete unencrypted copy of this
+        // mail, and this branch never reaches openProfileDatabase(), so
+        // DatabaseEncryptionMigration::reconcile() -- the only other code
+        // that clears it -- does not run in this mode at all. The erase names
+        // those copies itself, the same way legacyDbPaths above are named
+        // rather than rediscovered; proven by
+        // SecurityWipeTest::removesEveryCopyTheEncryptionMigrationCanLeave.
         hostileLocationResidue = !SecurityWipe::eraseOnDiskProfile(newDbPath, legacyDbPaths,
                                                                     ContactPhotoCache::directoryFor(dataDir, true));
         if (hostileLocationResidue) {

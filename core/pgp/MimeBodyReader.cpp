@@ -123,9 +123,18 @@ QByteArray parameterOf(const QByteArray& headerValue, const char* name)
     qsizetype at = 0;
     while ((at = headerValue.indexOf(';', at)) >= 0) {
         ++at;
+        qsizetype segmentEnd = headerValue.indexOf(';', at);
+        if (segmentEnd < 0)
+            segmentEnd = headerValue.size();
         const qsizetype equals = headerValue.indexOf('=', at);
-        if (equals < 0)
-            return {};
+        // A parameter carrying no `=` of its own is skipped, never fatal.
+        // Searching unbounded took the NEXT parameter's `=` instead and
+        // swallowed both segments, so `multipart/mixed; flowed; boundary="b1"`
+        // yielded no boundary at all -- and a sender writes that header.
+        if (equals < 0 || equals > segmentEnd) {
+            at = segmentEnd;
+            continue;
+        }
         const QByteArray key = headerValue.mid(at, equals - at).trimmed().toLower();
         qsizetype valueStart = equals + 1;
         while (valueStart < headerValue.size() && headerValue[valueStart] == ' ')

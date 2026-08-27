@@ -136,6 +136,7 @@ Item {
             }
             Text {
                 Layout.fillWidth: true
+                textFormat: Text.PlainText
                 text: Pairing.pendingPairOrigin
                 color: Theme.inkStrong
                 font.family: Theme.fontMono
@@ -232,6 +233,7 @@ Item {
                     SectionLabel { Layout.preferredWidth: 70; text: i18n("Server") }
                     Text {
                         Layout.fillWidth: true
+                        textFormat: Text.PlainText
                         text: Pairing.pairedServerHost
                         color: Theme.inkStrong
                         font.family: Theme.fontMono
@@ -245,6 +247,7 @@ Item {
                     SectionLabel { Layout.preferredWidth: 70; text: i18n("Device") }
                     Text {
                         Layout.fillWidth: true
+                        textFormat: Text.PlainText
                         text: Pairing.deviceId
                         color: Theme.inkStrong
                         font.family: Theme.fontMono

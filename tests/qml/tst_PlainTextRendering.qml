@@ -18,6 +18,14 @@ import "qrc:/qml/components" as Components
 // an earlier fix to the PGP QR pane. Every Text bound to wire or sender data
 // must set it, so these tests assert the shipped components rather than
 // synthetic ones -- a delegate that loses its textFormat fails here.
+//
+// Every reusable label component under app/qml/components/ is swept, not just
+// the ones known to carry wire data today. This file used to assert only
+// PillTab and Toast, and PrimaryButton -- which NotificationFolderDialog hands
+// a raw IMAP mailbox path off /api/inbox -- passed CI with an AutoText label
+// for as long as it existed. A generic `text` property is an open door: which
+// caller walks through it is not this component's to know, so the whole family
+// is pinned and the sweep is the thing that keeps it that way.
 TestCase {
     id: testCase
     name: "PlainTextRendering"
@@ -39,6 +47,31 @@ TestCase {
     Component {
         id: toastComponent
         Components.Toast {}
+    }
+
+    Component {
+        id: primaryButtonComponent
+        Components.PrimaryButton {}
+    }
+
+    Component {
+        id: ghostButtonComponent
+        Components.GhostButton {}
+    }
+
+    Component {
+        id: dangerButtonComponent
+        Components.DangerButton {}
+    }
+
+    Component {
+        id: emptyStateComponent
+        Components.EmptyState {}
+    }
+
+    Component {
+        id: statusBadgeComponent
+        Components.StatusBadge {}
     }
 
     // Walks an item tree and returns every Text-like descendant that has not
@@ -71,6 +104,44 @@ TestCase {
         var toast = createTemporaryObject(toastComponent, testCase, { text: hostilePayload })
         verify(toast !== null)
         compare(richTextCapableDescendants(toast).length, 0)
+    }
+
+    // PrimaryButton renders raw IMAP mailbox paths: NotificationFolderDialog
+    // builds one choice button per folder returned by foldersHolding(), which
+    // is /api/inbox's `folder` column verbatim and has no character
+    // restriction. Laying the dialog out was enough to issue the fetch.
+    function test_primary_button_renders_wire_text_as_plain_text() {
+        var button = createTemporaryObject(primaryButtonComponent, testCase, { text: hostilePayload })
+        verify(button !== null)
+        compare(richTextCapableDescendants(button).length, 0)
+    }
+
+    // GhostButton, DangerButton, EmptyState and StatusBadge share
+    // PrimaryButton's `text` API and are interchangeable with it by design, so
+    // the next caller to hand one a folder name, a contact name or a relay
+    // error is the whole distance between latent and reachable.
+    function test_ghost_button_renders_wire_text_as_plain_text() {
+        var button = createTemporaryObject(ghostButtonComponent, testCase, { text: hostilePayload })
+        verify(button !== null)
+        compare(richTextCapableDescendants(button).length, 0)
+    }
+
+    function test_danger_button_renders_wire_text_as_plain_text() {
+        var button = createTemporaryObject(dangerButtonComponent, testCase, { text: hostilePayload })
+        verify(button !== null)
+        compare(richTextCapableDescendants(button).length, 0)
+    }
+
+    function test_empty_state_renders_wire_text_as_plain_text() {
+        var empty = createTemporaryObject(emptyStateComponent, testCase, { text: hostilePayload })
+        verify(empty !== null)
+        compare(richTextCapableDescendants(empty).length, 0)
+    }
+
+    function test_status_badge_renders_wire_text_as_plain_text() {
+        var badge = createTemporaryObject(statusBadgeComponent, testCase, { text: hostilePayload })
+        verify(badge !== null)
+        compare(richTextCapableDescendants(badge).length, 0)
     }
 
     // The reason the rule exists, stated as a check: left to itself, Qt

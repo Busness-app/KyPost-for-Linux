@@ -89,6 +89,7 @@ private slots:
     void aRestoreThatCannotHappenIsReportedRatherThanCalledRecovery();
     void aSwapThatCannotStartLeavesThePlaintextDatabaseUsable();
     void aPlaintextCopyThatCannotBeDeletedStillLeavesTheMailReadable();
+    void aProfilePathWithAnApostropheIsStillConverted();
 };
 
 void DatabaseEncryptionMigrationTest::initTestCase()
@@ -342,6 +343,35 @@ void DatabaseEncryptionMigrationTest::aPlaintextCopyThatCannotBeDeletedStillLeav
     QCOMPARE(countEmails(reopened), 7);
 
     QVERIFY(makeDirectoryWritable(dir.path()));
+}
+
+// The working copy's path is spliced into ATTACH DATABASE's string literal,
+// and it is derived from AppDataLocation -- i.e. from $HOME/$XDG_DATA_HOME,
+// which the user owns. One apostrophe in it ended the literal early: ATTACH
+// failed with a syntax error, run() reported Failed, openProfileDatabase()
+// fell back to the untouched plaintext database, and that profile's mail was
+// silently never encrypted -- on that launch and on every later one, because
+// nothing about the path was going to change.
+void DatabaseEncryptionMigrationTest::aProfilePathWithAnApostropheIsStillConverted()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString profileDir = dir.filePath(QStringLiteral("o'brien's data"));
+    QVERIFY(QDir().mkpath(profileDir));
+    const QString path = profileDir + QStringLiteral("/kypost.db");
+    seedPlaintextProfile(path, 3);
+    QVERIFY(!databaseFileIsEncrypted(path));
+
+    DatabaseEncryptionMigration migration(path);
+    QCOMPARE(migration.run(testKey()), DatabaseEncryptionMigration::Status::Migrated);
+
+    QVERIFY2(databaseFileIsEncrypted(path), "the profile database is still plaintext");
+    QVERIFY2(!anyFileUnder(profileDir, "SECRETSUBJECT0"),
+             "a readable copy of the mail is still on disk somewhere in the profile");
+
+    Database reopened;
+    QVERIFY(reopened.open(path, testKey()));
+    QCOMPARE(countEmails(reopened), 3);
 }
 
 QTEST_GUILESS_MAIN(DatabaseEncryptionMigrationTest)
