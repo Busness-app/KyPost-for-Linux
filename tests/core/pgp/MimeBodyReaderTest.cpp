@@ -24,6 +24,9 @@ private slots:
     void aBoundaryInsideContentDoesNotSplit();
     void aBoundaryThatMerelyPrefixesAnotherIsNotADelimiter();
     void nestedBoundariesThatPrefixEachOtherDoNotTruncate();
+    void aValuelessParameterBeforeTheBoundaryDoesNotLoseIt();
+    void aValuelessParameterBeforeTheCharsetDoesNotLoseIt();
+    void aTrailingValuelessParameterKeepsAnEarlierParameter();
     void theEpilogueAfterTheClosingDelimiterIsIgnored();
     void bareLineFeedsParseLikeCrLf();
     void aLaterNonBlankSiblingWins();
@@ -294,6 +297,47 @@ void MimeBodyReaderTest::nestedBoundariesThatPrefixEachOtherDoNotTruncate()
                                       "--b2--\r\n"
                                       "--b20--\r\n";
     QCOMPARE(readMimeBody(innerIsPrefix).plain, QStringLiteral("inner text 2"));
+}
+
+// A parameter with no value of its own is legal-ish in the wild, and the
+// sender writes the Content-Type. Scanning for the `=` without bounding it to
+// the segment took the NEXT parameter's `=`, so the key became
+// "flowed; boundary", the scan ran off the end of the string, and the boundary
+// was lost -- which splits into no parts, finds no text/plain, and renders the
+// decrypted message as a blank page with no error to explain it.
+void MimeBodyReaderTest::aValuelessParameterBeforeTheBoundaryDoesNotLoseIt()
+{
+    const QByteArray message = "Content-Type: multipart/mixed; flowed; boundary=\"b1\"\r\n"
+                                "\r\n"
+                                "--b1\r\n"
+                                "Content-Type: text/plain\r\n"
+                                "\r\n"
+                                "still readable\r\n"
+                                "--b1--\r\n";
+    const MimeBody body = readMimeBody(message);
+
+    QCOMPARE(body.plain, QStringLiteral("still readable"));
+}
+
+// The same scan serves charset, so the fix is checked at both call sites --
+// here the loss would be silent mojibake rather than a blank page.
+void MimeBodyReaderTest::aValuelessParameterBeforeTheCharsetDoesNotLoseIt()
+{
+    QByteArray message = "Content-Type: text/plain; flowed; charset=\"iso-8859-1\"\r\n\r\n";
+    message += "caf\xE9\r\n"; // 0xE9 is e-acute in Latin-1, invalid on its own in UTF-8
+    QCOMPARE(readMimeBody(message).plain.trimmed(), QStringLiteral("café"));
+}
+
+void MimeBodyReaderTest::aTrailingValuelessParameterKeepsAnEarlierParameter()
+{
+    const QByteArray message = "Content-Type: multipart/mixed; boundary=\"b1\"; flowed\r\n"
+                                "\r\n"
+                                "--b1\r\n"
+                                "Content-Type: text/plain\r\n"
+                                "\r\n"
+                                "found anyway\r\n"
+                                "--b1--\r\n";
+    QCOMPARE(readMimeBody(message).plain, QStringLiteral("found anyway"));
 }
 
 void MimeBodyReaderTest::theEpilogueAfterTheClosingDelimiterIsIgnored()

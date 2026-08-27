@@ -66,9 +66,9 @@ int userVersion(QSqlDatabase& db)
 
 DatabaseEncryptionMigration::DatabaseEncryptionMigration(const QString& databasePath)
     : m_databasePath(databasePath)
-    , m_markerPath(databasePath + QStringLiteral(".encrypting"))
-    , m_workingCopyPath(databasePath + QStringLiteral(".encrypted-new"))
-    , m_supersededPath(databasePath + QStringLiteral(".plaintext-old"))
+    , m_markerPath(databasePath + kMarkerSuffix)
+    , m_workingCopyPath(databasePath + kWorkingCopySuffix)
+    , m_supersededPath(databasePath + kSupersededSuffix)
 {
 }
 
@@ -174,10 +174,15 @@ bool DatabaseEncryptionMigration::exportEncrypted(const QByteArray& key)
     if (sourceVersion < 0)
         return false;
 
-    // The path sits under $HOME, so an apostrophe in it is a user's account
-    // name and not an attack -- but spliced in raw it ends the string literal,
-    // ATTACH fails, and the caller falls back to leaving this mail in
-    // plaintext on every launch. The key is hex and needs no quoting.
+    // The path goes into a SQL string literal and comes from AppDataLocation,
+    // i.e. $HOME/$XDG_DATA_HOME. One apostrophe in it -- /mnt/o'brien/data --
+    // ends the literal early and makes the whole statement a syntax error
+    // (measured: near "brien": syntax error), after which run() reports Failed
+    // and openProfileDatabase() falls back to the plaintext database: that
+    // profile's mail is then silently never encrypted, on every launch. So an
+    // apostrophe here is a user's account name, not an attack, and it still
+    // costs them their encryption. quotedLiteral() doubles it, which is the
+    // SQL escape. The key is hex and needs none by construction.
     QSqlQuery attach(source.handle());
     if (!attach.exec(QStringLiteral("ATTACH DATABASE %1 AS encrypted KEY \"x'%2'\"")
                           .arg(quotedLiteral(m_workingCopyPath), QString::fromLatin1(key.toHex())))) {

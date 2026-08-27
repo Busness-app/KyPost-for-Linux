@@ -89,7 +89,7 @@ private slots:
     void aRestoreThatCannotHappenIsReportedRatherThanCalledRecovery();
     void aSwapThatCannotStartLeavesThePlaintextDatabaseUsable();
     void aPlaintextCopyThatCannotBeDeletedStillLeavesTheMailReadable();
-    void anApostropheInTheProfilePathDoesNotStopTheConversion();
+    void aProfilePathWithAnApostropheIsStillConverted();
 };
 
 void DatabaseEncryptionMigrationTest::initTestCase()
@@ -345,18 +345,25 @@ void DatabaseEncryptionMigrationTest::aPlaintextCopyThatCannotBeDeletedStillLeav
     QVERIFY(makeDirectoryWritable(dir.path()));
 }
 
-// The profile directory sits under $HOME, so its path is whatever the user's
-// account is called. Spliced into ATTACH unquoted, an apostrophe ended the
-// string literal, the conversion failed, and the caller's fallback wrote this
-// mail to disk in plaintext -- identically on every subsequent launch.
-void DatabaseEncryptionMigrationTest::anApostropheInTheProfilePathDoesNotStopTheConversion()
+// The working copy's path is spliced into ATTACH DATABASE's string literal,
+// and it is derived from AppDataLocation -- i.e. from $HOME/$XDG_DATA_HOME,
+// which the user owns. One apostrophe in it ended the literal early: ATTACH
+// failed with a syntax error, run() reported Failed, openProfileDatabase()
+// fell back to the untouched plaintext database, and that profile's mail was
+// silently never encrypted -- on that launch and on every later one, because
+// nothing about the path was going to change.
+//
+// TWO apostrophes, not one: a fix that escapes only the first occurrence
+// passes the single-apostrophe case and still loses the profile here.
+void DatabaseEncryptionMigrationTest::aProfilePathWithAnApostropheIsStillConverted()
 {
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
-    const QString profile = dir.filePath(QStringLiteral("o'brien"));
+    const QString profile = dir.filePath(QStringLiteral("o'brien's data"));
     QVERIFY(QDir().mkpath(profile));
     const QString path = profile + QStringLiteral("/kypost.db");
     seedPlaintextProfile(path, 5);
+    QVERIFY2(!databaseFileIsEncrypted(path), "the premise did not hold: the seed is already encrypted");
     QVERIFY(anyFileUnder(profile, "SECRETSUBJECT0"));
 
     DatabaseEncryptionMigration migration(path);

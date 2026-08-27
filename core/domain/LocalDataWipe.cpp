@@ -46,6 +46,12 @@ LocalDataWipeResult LocalDataWipe::wipeCaches(bool removeCurrentDatabase)
     if (removeCurrentDatabase && !m_currentDatabasePath.isEmpty())
         result.currentDatabaseRemoved = SecurityWipe::removeDatabaseFiles(m_currentDatabasePath);
 
+    // The encryption migration's copies go on BOTH paths, including the one
+    // that keeps the live file. `<db>.plaintext-old` is a whole readable mail
+    // store in its own right, and wipeAllTables() cannot reach it.
+    result.currentDatabaseRemoved =
+        SecurityWipe::removeMigrationCopies(m_currentDatabasePath) && result.currentDatabaseRemoved;
+
     // The file FIRST, then the key that decrypts it. A process death between
     // the two leaves a key and no database, which the next launch opens as a
     // fresh profile. The reverse leaves an encrypted file whose key exists

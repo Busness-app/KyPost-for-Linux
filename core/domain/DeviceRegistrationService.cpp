@@ -159,17 +159,18 @@ NativeRegistrationResult DeviceRegistrationService::finishPair(PairAttempt attem
     // deviceSecret, nothing reached disk, and the UI still reported "paired".
     if (!m_pairingStore.save(pairing, attempt.m_sealingKey)) {
         NativeRegistrationResult persistFailed = result;
-        persistFailed.outcome = RegistrationOutcome::Failure;
-        persistFailed.detail = QStringLiteral(
-            "Registered with the server, but the credentials could not be saved to this "
-            "system's secret store. Check that a keyring service (gnome-keyring or "
-            "kwallet) is running, then pair again.");
+        // The outcome carries the fact; app/ carries the sentence. This used
+        // to set an English `detail`, which PairingController rendered
+        // verbatim -- untranslatable, since core/ cannot call i18n()
+        // (AGENTS.md section 5), and exactly the defect HttpClient's
+        // certificate-mismatch branch records.
+        persistFailed.outcome = RegistrationOutcome::CredentialsNotSaved;
         // Leave nothing half-written: a partial record whose `sub` key
         // landed would make isPaired() true with an unusable secret.
-        if (!m_pairingStore.clear()) {
-            persistFailed.detail += QStringLiteral(
-                " The partially-written pairing record could also not be removed.");
-        }
+        // A failure to remove it is a different fact for the user -- the
+        // device still looks paired -- so it is a different outcome.
+        if (!m_pairingStore.clear())
+            persistFailed.outcome = RegistrationOutcome::CredentialsNotSavedAndNotCleared;
         return persistFailed; // ~PairAttempt restores the pin
     }
 

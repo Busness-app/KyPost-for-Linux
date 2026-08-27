@@ -228,6 +228,11 @@ core/security/AppLockStore.cpp	    replaced = m_secureStore.remove(kPinHash) && 
 
 # --- cache eviction keeps the photo it just handed back -----------------
 core/stores/ContactPhotoCache.cpp	        if (candidate == keepPath)	        if (false)	ContactPhotoCacheTest:evictionKeepsTheEntryItJustHandedBackEvenWhenItSortsFirst
+core/pgp/MimeBodyReader.cpp	        if (equals < 0 || equals > segmentEnd) {	        if (false) {	MimeBodyReaderTest:aValuelessParameterBeforeTheBoundaryDoesNotLoseIt
+core/db/SecurityWipe.cpp	    for (const QString& copy : migrationCopies(dbPath))	    for (const QString& copy : QStringList{})	SecurityWipeTest:removesEveryCopyTheEncryptionMigrationCanLeave
+core/db/DatabaseEncryptionMigration.cpp	    return QLatin1Char('\'') + value.replace(QLatin1Char('\''), QLatin1String("''")) + QLatin1Char('\'');	    return QLatin1Char('\'') + value + QLatin1Char('\'');	DatabaseEncryptionMigrationTest:aProfilePathWithAnApostropheIsStillConverted
+core/net/HttpClient.cpp	    if (enforcePin && !pinMismatch) {	    if (false) {	HttpClientTest:aRequestOnAPooledConnectionIsStillPinChecked
+core/net/HttpClient.cpp	        if (!enforcePin)	        if (true)	HttpClientTest:aMismatchOnAFreshHandshakeIsRefusedBeforeTheRequestIsSent
 
 # --- a Text renders relay data as text, not as markup --------------------
 #

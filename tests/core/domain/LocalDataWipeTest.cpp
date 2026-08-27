@@ -3,6 +3,7 @@
 #include "stores/CursorStore.h"
 
 #include "db/Database.h"
+#include "db/DatabaseEncryptionMigration.h"
 #include "db/ProfileDatabase.h"
 #include "domain/DevicePairing.h"
 #include "domain/PairingStore.h"
@@ -89,6 +90,7 @@ private slots:
     void wipeEverythingTakesThePreRenameDatabasesToo();
     void wipeEverythingUnlinksTheLiveDatabaseAndReopensAWritableOne();
     void wipeEverythingLeavesNoDatabaseFileWhenTheSessionWasInMemory();
+    void wipeEverythingTakesTheEncryptionMigrationsPlaintextCopy();
     void wipeEverythingReportsAnUnremovablePairingCredential();
     void hostileLocationWipeUnlinksTheLiveDatabaseButKeepsThePairing();
     void hostileLocationWipeTakesTheDatabaseKeyWithTheFile();
@@ -278,6 +280,45 @@ void LocalDataWipeTest::wipeEverythingLeavesNoDatabaseFileWhenTheSessionWasInMem
               "a session running in memory was handed an on-disk profile by the wipe");
     QVERIFY2(!QFile::exists(dbPath), "the wipe created a database file on a disk that must hold none");
     QCOMPARE(databaseKeyStore.existing().status, DatabaseKeyStore::Status::Absent);
+}
+
+// Keeping the live file is not licence to keep a second copy of it. The
+// encryption migration leaves `<db>.plaintext-old` -- the same mail, in the
+// clear -- and tolerates failing to delete it, so it can outlive the launch
+// that made it. wipeAllTables() scrubs one open connection and cannot reach
+// a separate file, so this path reported a completed wipe over the top of it.
+void LocalDataWipeTest::wipeEverythingTakesTheEncryptionMigrationsPlaintextCopy()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString dbPath = dir.filePath(QStringLiteral("kypost.db"));
+
+    Database database;
+    QVERIFY(database.open(dbPath));
+
+    const QString supersededPath = dbPath + DatabaseEncryptionMigration::kSupersededSuffix;
+    QFile superseded(supersededPath);
+    QVERIFY(superseded.open(QIODevice::WriteOnly));
+    QVERIFY(superseded.write("plaintext mail") > 0);
+    superseded.close();
+
+    SecureStoreFile secureStore(dir.path());
+    PairingStore pairingStore(secureStore);
+    AppLockStore appLockStore(secureStore);
+    SettingsStore settingsStore(dir.filePath(QStringLiteral("settings.ini")));
+    CursorStore cursorStore(dir.filePath(QStringLiteral("cursors.ini")));
+
+    DatabaseKeyStore databaseKeyStore(secureStore);
+    LocalDataWipe wipe(database, databaseKeyStore, pairingStore, appLockStore, settingsStore, cursorStore,
+                        dir.path(), dbPath, {});
+    QVERIFY(wipe.wipeEverything().complete());
+
+    QVERIFY2(!QFile::exists(supersededPath), "the migration's plaintext copy survived the wipe");
+    // A file is here, but it is a REPLACEMENT rather than the survivor this
+    // assertion originally described: wipeEverything() now unlinks the live
+    // database and opens a fresh profile in its place, so what exists at this
+    // path is empty.
+    QVERIFY(QFile::exists(dbPath));
 }
 
 // "Wiped" while the device secret is still in the keychain is a materially

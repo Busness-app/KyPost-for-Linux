@@ -724,7 +724,7 @@ void PairingController::pairFromParsedParams(const QString& sub, const QString& 
             if (result.outcome == RegistrationOutcome::Success && !purgePreviousAccountIfReplaced(params)) {
                 NativeRegistrationResult refused = result;
                 refused.outcome = RegistrationOutcome::Failure;
-                refused.detail = QStringLiteral(
+                refused.detail = i18n(
                     "Could not remove the previous account's data from this device, so this device "
                     "has been erased instead. Pair again to continue.");
                 // `attempt` is dropped without finishPair(), so its destructor
@@ -759,6 +759,21 @@ void PairingController::applyRegistrationResult(const NativeRegistrationResult& 
         return;
     case RegistrationOutcome::CredentialsLocked:
         setPairingState(State::Failed, i18n("Unlock KyPost first, then try again."));
+        return;
+    // The wording for both of these lives here rather than in core/, which
+    // owns the error VALUE and never the sentence (AGENTS.md 6c).
+    case RegistrationOutcome::CredentialsNotSaved:
+        setPairingState(State::Failed,
+                         i18n("Registered with the server, but the credentials could not be saved to "
+                              "this system's secret store. Check that a keyring service "
+                              "(gnome-keyring or kwallet) is running, then pair again."));
+        return;
+    case RegistrationOutcome::CredentialsNotSavedAndNotCleared:
+        setPairingState(State::Failed,
+                         i18n("Registered with the server, but the credentials could not be saved to "
+                              "this system's secret store. Check that a keyring service "
+                              "(gnome-keyring or kwallet) is running, then pair again. The "
+                              "partially-written pairing record could also not be removed."));
         return;
     case RegistrationOutcome::Failure:
         setPairingState(State::Failed,

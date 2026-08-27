@@ -45,6 +45,15 @@ struct NativeRegistrationResponse
 // secret a successful register would mint could not be re-sealed. It is a
 // deferral, not an error: nothing is wrong with the pairing, and retrying
 // after the user unlocks succeeds.
+//
+// CredentialsNotSaved and CredentialsNotSavedAndNotCleared are likewise
+// produced by DeviceRegistrationService::finishPair(), not here: the server
+// registered this device and minted a fresh one-shot secret, but the secret
+// store refused the write -- and, for the second value, refused to remove
+// the half-written record afterwards too, so something that looks like a
+// pairing is still on disk. They are distinct values rather than a Failure
+// carrying an English sentence because core/ owns error values, never error
+// wording (AGENTS.md 6c); PairingController's switch holds both sentences.
 enum class RegistrationOutcome
 {
     Success,
@@ -52,6 +61,8 @@ enum class RegistrationOutcome
     BackendMisconfigured,
     Failure,
     CredentialsLocked,
+    CredentialsNotSaved,
+    CredentialsNotSavedAndNotCleared,
 };
 
 struct NativeRegistrationResult

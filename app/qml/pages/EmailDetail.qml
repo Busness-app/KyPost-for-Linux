@@ -494,6 +494,7 @@ Item {
             Layout.fillWidth: true
             visible: root.blockedLinkScheme !== ""
             wrapMode: Text.WordWrap
+            textFormat: Text.PlainText
             text: i18n("That link uses an address type KyPost will not open (%1:). It was blocked.",
                        root.blockedLinkScheme)
         }
