@@ -51,6 +51,7 @@ Window {
             width: root.width - 64
             horizontalAlignment: Text.AlignHCenter
             wrapMode: Text.WordWrap
+            textFormat: Text.PlainText
             text: root.statusText
             color: Theme.ink
             font.family: Theme.fontUi

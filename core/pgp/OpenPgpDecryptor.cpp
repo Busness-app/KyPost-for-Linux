@@ -97,6 +97,48 @@ struct DataHandle
     }
 };
 
+struct KeyHandle
+{
+    gpgme_key_t handle = nullptr;
+    ~KeyHandle()
+    {
+        if (handle != nullptr)
+            gpgme_key_unref(handle);
+    }
+};
+
+// The primary key a signature's signing key belongs to, per gpg's own key
+// data. A key with a dedicated signing subkey -- a hardware token's, and what
+// Sequoia and Proton generate -- signs with the SUBKEY, so the fingerprint in
+// the signature is never the one an address is bound to.
+//
+// Empty on any failure: no such key in this keyring, or gpg cannot say. That
+// is the answer "unknown", and the caller must not read it as a match.
+//
+// Takes the fingerprint BY VALUE, not as a pointer into the verify result.
+//
+// gpgme_op_verify_result() hands back memory the context owns and documents
+// as valid only until the next operation starts on it. gpgme 2.1.2 happens
+// not to bite here -- gpgme_get_key() runs its listing on a private context
+// of its own, so the caller's result survives intact (measured: same address,
+// status and fpr unchanged across the call) -- but that is an implementation
+// detail, not the documented contract, and this file deliberately supports
+// gpgme 1.x too. Copying the pattern in, and reading every other field of the
+// signature before calling this, means the answer does not depend on which
+// gpgme is linked.
+QString primaryFingerprintOf(gpgme_ctx_t context, const QByteArray& signingFingerprint)
+{
+    if (signingFingerprint.isEmpty())
+        return {};
+    KeyHandle key;
+    if (gpgme_err_code(gpgme_get_key(context, signingFingerprint.constData(), &key.handle, /*secret=*/0))
+            != GPG_ERR_NO_ERROR
+        || key.handle == nullptr || key.handle->fpr == nullptr) {
+        return {};
+    }
+    return QString::fromLatin1(key.handle->fpr);
+}
+
 } // namespace
 
 OpenPgpDecryptor::OpenPgpDecryptor(qint64 maxPlaintextBytes) : m_maxPlaintextBytes(maxPlaintextBytes)
@@ -191,9 +233,20 @@ PgpDecryptResult OpenPgpDecryptor::decrypt(const QByteArray& ciphertext, const Q
         // favourable one would be the wrong answer by construction.
         const gpgme_signature_t signature = verified->signatures;
         result.signature.present = true;
+
+        // COPIED OUT FIRST, every field, before any further gpgme call.
+        // The verify result belongs to `context` and is documented as living
+        // only until the next operation starts on it, so `status` -- the field
+        // that decides whether a signature counts as valid -- must not be read
+        // across the key lookup below. See primaryFingerprintOf().
+        const QByteArray signingFingerprint =
+            signature->fpr != nullptr ? QByteArray(signature->fpr) : QByteArray();
+        const gpgme_err_code_t signatureStatus = gpgme_err_code(signature->status);
+
         result.signature.fingerprint =
-            signature->fpr != nullptr ? QString::fromLatin1(signature->fpr) : QString();
-        switch (gpgme_err_code(signature->status)) {
+            signingFingerprint.isEmpty() ? QString() : QString::fromLatin1(signingFingerprint);
+        result.signature.primaryFingerprint = primaryFingerprintOf(context.handle, signingFingerprint);
+        switch (signatureStatus) {
         case GPG_ERR_NO_ERROR:
             result.signature.mathematicallyValid = true;
             break;

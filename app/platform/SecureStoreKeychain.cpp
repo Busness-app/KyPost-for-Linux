@@ -233,8 +233,13 @@ bool SecureStoreKeychain::remove(const QString& key)
     // their keys, and read() above resurrects anything the legacy service
     // still holds. Without this line a wipe the user was told had happened
     // would be silently undone on the next launch.
-    if (m_legacyReachable && !removeFrom(m_legacyService, key)) {
-        m_legacyReachable = false;
+    //
+    // m_legacyReachable is deliberately NOT consulted here; it is read()'s
+    // latency guard alone. Letting it short-circuit meant every key after the
+    // first failure skipped the legacy service and still reported success, so
+    // a wipe that half-failed came back clean. Each key gets its own attempt
+    // and its own answer, even if that costs the D-Bus timeout per key.
+    if (!m_legacyService.isEmpty() && !removeFrom(m_legacyService, key)) {
         qWarning("SecureStoreKeychain: could not clear '%s' from the pre-rename service; a copy "
                  "may remain in the keyring",
                  qUtf8Printable(key));

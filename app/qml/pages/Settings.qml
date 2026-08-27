@@ -1007,6 +1007,7 @@ Item {
 
             Text {
                 Layout.fillWidth: true
+                textFormat: Text.PlainText
                 text: securityPrompt.headingText
                 color: Theme.inkStrong
                 font.family: Theme.fontUi
@@ -1066,6 +1067,7 @@ Item {
             Text {
                 Layout.fillWidth: true
                 visible: securityPrompt.errorText !== ""
+                textFormat: Text.PlainText
                 text: securityPrompt.errorText
                 color: Theme.dangerColor
                 font.family: Theme.fontUi

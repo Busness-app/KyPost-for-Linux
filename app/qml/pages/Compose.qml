@@ -399,6 +399,7 @@ Item {
                         spacing: 6
 
                         Text {
+                            textFormat: Text.PlainText
                             text: root.fileNameOf(modelData)
                             color: Theme.inkStrong
                             font.family: Theme.fontUi
@@ -438,6 +439,7 @@ Item {
                 visible: MailApp.pgpCanEncrypt
                 text: i18n("Encrypt")
                 contentItem: Text {
+                    textFormat: Text.PlainText
                     text: encryptToggle.text
                     color: Theme.inkStrong
                     font.family: Theme.fontUi
@@ -462,6 +464,7 @@ Item {
                 visible: MailApp.pgpCanSign
                 text: i18n("Sign")
                 contentItem: Text {
+                    textFormat: Text.PlainText
                     text: signToggle.text
                     color: Theme.inkStrong
                     font.family: Theme.fontUi

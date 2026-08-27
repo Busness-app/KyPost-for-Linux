@@ -139,6 +139,7 @@ Item {
             clip: true
 
             Text {
+                textFormat: Text.PlainText
                 text: root.placeholderText
                 visible: inputField.text === "" && !inputField.activeFocus
                 color: Theme.ink

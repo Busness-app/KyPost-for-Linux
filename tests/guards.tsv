@@ -195,10 +195,10 @@ core/stores/ContactPhotoCache.cpp	    return persistent ? dataDir + QStringLiter
 # Content-addressed keys remove staleness, not growth. Every distinct photoRef
 # the user ever views deposits another file, and a relay handing out a fresh
 # reference per request turns the user's disk into the limit.
-core/stores/ContactPhotoCache.cpp	    evictToBudget();		ContactPhotoCacheTest:theCacheDoesNotGrowPastItsBudget
+core/stores/ContactPhotoCache.cpp	    evictToBudget(path);		ContactPhotoCacheTest:theCacheDoesNotGrowPastItsBudget
 
 # an avatar is not eight megabytes
-core/net/ContactPhotoClient.cpp	                                                            auth.headerItems(), {}, kMaxPhotoBytes);	                                                            auth.headerItems());	ContactPhotoClientTest:aPhotoLargerThanAnAvatarIsRefusedWellBeforeTheGenericCeiling
+core/net/ContactPhotoClient.cpp	        m_httpClient.get(*endpoint, {}, auth.headerItems(), {}, kMaxPhotoBytes);	        m_httpClient.get(*endpoint, {}, auth.headerItems());	ContactPhotoClientTest:aPhotoLargerThanAnAvatarIsRefusedWellBeforeTheGenericCeiling
 
 # --- a capability token goes to the route it was minted for -----------------
 #
@@ -230,6 +230,95 @@ core/security/AppLockStore.cpp	    replaced = m_secureStore.remove(kPinHash) && 
 core/stores/ContactPhotoCache.cpp	        if (candidate == keepPath)	        if (false)	ContactPhotoCacheTest:evictionKeepsTheEntryItJustHandedBackEvenWhenItSortsFirst
 core/pgp/MimeBodyReader.cpp	        if (equals < 0 || equals > segmentEnd) {	        if (false) {	MimeBodyReaderTest:aValuelessParameterBeforeTheBoundaryDoesNotLoseIt
 core/db/SecurityWipe.cpp	    for (const QString& copy : migrationCopies(dbPath))	    for (const QString& copy : QStringList{})	SecurityWipeTest:removesEveryCopyTheEncryptionMigrationCanLeave
-core/db/DatabaseEncryptionMigration.cpp	    escapedCopyPath.replace(QLatin1Char('\''), QLatin1String("''"));		DatabaseEncryptionMigrationTest:aProfilePathWithAnApostropheIsStillConverted
+core/db/DatabaseEncryptionMigration.cpp	    return QLatin1Char('\'') + value.replace(QLatin1Char('\''), QLatin1String("''")) + QLatin1Char('\'');	    return QLatin1Char('\'') + value + QLatin1Char('\'');	DatabaseEncryptionMigrationTest:aProfilePathWithAnApostropheIsStillConverted
 core/net/HttpClient.cpp	    if (enforcePin && !pinMismatch) {	    if (false) {	HttpClientTest:aRequestOnAPooledConnectionIsStillPinChecked
 core/net/HttpClient.cpp	        if (!enforcePin)	        if (true)	HttpClientTest:aMismatchOnAFreshHandshakeIsRefusedBeforeTheRequestIsSent
+
+# --- a Text renders relay data as text, not as markup --------------------
+#
+# Text.textFormat defaults to Text.AutoText, which hands anything tag-shaped
+# to the rich-text parser -- and that parser fetches <img src> over the QML
+# engine's own QNetworkAccessManager, outside WebEngine, where neither
+# settings.autoLoadImages nor RemoteContentInterceptor can see it. A subject
+# header beacons the moment the list lays out.
+#
+# PillTab renders server-supplied keyword names and is a leaf, so a test can
+# build one and look at it.
+app/qml/components/PillTab.qml	        textFormat: Text.PlainText		QmlTests:PlainTextRendering::test_pill_tab_renders_keywords_as_plain_text
+#
+# NOT LISTED, deliberately: the other forty textFormat lines in app/qml,
+# including the one this section was written for -- the inbox timestamp at
+# MobileRoot.qml, which rendered the relay's raw atUtc string. Neutralisation
+# cannot reach them. QmlTests instantiates leaf components; the sites that
+# matter live in MobileRoot's inbox delegate and EmailDetail's headers, which
+# need every C++ singleton to load, and QML cannot read a file at runtime to
+# check them statically (XMLHttpRequest refuses local and qrc URLs unless
+# QML_XHR_ALLOW_FILE_READ is set).
+#
+# They are gated statically instead, by the textFormat check in
+# tests/qml/qmllint-gate.sh (ctest QmlPropertyLint): a Text or Label that
+# binds anything other than a literal without declaring a SAFE format fails
+# it. Delete the textFormat at MobileRoot.qml's timestamp and that test goes
+# red. This harness cannot say so -- it neutralises a line and runs a compiled
+# test binary, and QmlPropertyLint is a shell script -- which is why it is
+# written down here instead.
+#
+# "Safe" is checked by value, not by presence: Text.RichText and
+# Text.StyledText feed the same parser as the AutoText default, so they are
+# accepted only over a literal, a translation of literals, or a value that
+# goes through escapeHtml() -- directly or via a function in the same file
+# that does. That last clause is what makes AutocompleteDropdown's
+# highlighted() legal. Proven by hand, since the harness cannot: replacing
+# Format.escapeHtml(text) with String(text) in AutocompleteDropdown.qml:67
+# turns QmlPropertyLint red on both of that file's RichText bindings.
+#
+# ALSO NOT LISTED, for the same harness reason: the copy-before-call in
+# core/pgp/OpenPgpDecryptor.cpp's verify block. gpgme documents the
+# gpgme_verify_result_t as living only until the next operation on that
+# context, so `status` is read into a local before the key lookup runs.
+# Neutralising that would leave every test green on gpgme 2.1.2, which does
+# not actually clobber (gpgme_get_key runs on a private context of its own --
+# measured: same address, fields intact). It is written the safe way because
+# the contract, not that implementation detail, is what this file supports
+# across gpgme 1.x and 2.x.
+
+# --- a wipe that unlinks the live database opens a replacement -----------
+#
+# TrackedWipe::recoverIfInterrupted() is the one wipeEverything() caller that
+# does NOT relaunch: it finishes an interrupted wipe at startup and falls
+# through into a full session. Without the reopen that session keeps writing
+# through a connection bound to the unlinked inode, where the write either
+# fails outright or is invisible to the next launch -- which cursors.ini
+# (erased by the wipe, then repopulated by the re-pair's sync) tells is
+# already up to date.
+core/domain/LocalDataWipe.cpp	    if (reopenAfterwards)	    if (false)	TrackedWipeTest:aFinishedRecoveryLeavesASessionWhoseWritesSurvive
+#
+# The mirror: the reopen must NOT fire for a session that was never on that
+# file. Under Hostile Location Protection main() opens ":memory:" while
+# LocalDataWipe still holds the on-disk path so a leftover file gets erased --
+# reopening there would create the one thing the mode exists to prevent.
+core/domain/LocalDataWipe.cpp	    const bool reopenAfterwards = databaseIsLiveOnDisk();	    const bool reopenAfterwards = true;	LocalDataWipeTest:wipeEverythingLeavesNoDatabaseFileWhenTheSessionWasInMemory
+#
+# The SQLCipher key goes only once the file it opens is confirmed gone.
+# QFile::remove() genuinely fails -- a non-writable profile directory, an
+# EPERM -- and clearing the key over a surviving encrypted database bricks the
+# profile for good: the next launch mints a new key, finds nothing to migrate,
+# fails the open, and hits main()'s qFatal ABOVE the tripwire recovery that
+# would have finished the wipe.
+core/domain/LocalDataWipe.cpp	            !QFileInfo::exists(m_currentDatabasePath) && m_databaseKeyStore.clear();	            m_databaseKeyStore.clear();	LocalDataWipeTest:aDatabaseFileThatSurvivedTheWipeKeepsTheKeyThatOpensIt
+
+# --- a KDF that could not RUN is not a wrong pin -------------------------
+#
+# AppLockManager counts wrong guesses toward a ten-attempt wipe that erases
+# the mail cache, the pairing credential and the lock. Argon2id wants a 64 MiB
+# working set, and a cgroup-capped or low-memory session refuses it
+# deterministically -- so collapsing "could not derive" onto "wrong pin" means
+# a user typing the CORRECT pin is wiped. The KDF this replaced (PBKDF2) had
+# no allocation failure mode, so nothing upstream was watching for one.
+core/security/AppLockStore.cpp	    if (actual.isEmpty()) {	    if (false) {	AppLockStoreTest:aVerifierThatCannotBeComputedIsNotAWrongPin
+#
+# And the other half: the store reporting it is worth nothing if the caller
+# counts it anyway. Shared by both doors (tryUnlock and the Settings prompts)
+# so one line covers both -- which is also why it is a function rather than
+# two copies.
+app/security/AppLockManager.cpp	    if (!couldNotEvaluate)	    if (true)	AppLockManagerTest:aVerifierThatCannotBeComputedNeverReachesTheWipe

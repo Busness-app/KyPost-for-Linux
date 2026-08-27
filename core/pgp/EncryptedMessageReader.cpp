@@ -69,13 +69,22 @@ PgpSignatureVerdict verdictFor(const PgpSignature& signature, const QStringList&
     if (boundFingerprints.isEmpty())
         return PgpSignatureVerdict::CannotCheck;
 
+    // The PRIMARY key of whatever made the signature, not the signing key
+    // itself. A sender whose key has a dedicated signing subkey signs with the
+    // subkey while a binding names the primary, so comparing the signature's
+    // own fingerprint -- which this did until 2026-08-26 -- never matched for
+    // them, and every hardware-token user was told their mail came from a key
+    // nobody knew. gpg resolves the subkey to its primary; when it cannot, the
+    // resolution is empty and matches nothing, which is the safe direction.
+    //
     // Compared case-insensitively because gpg renders a fingerprint in upper
     // case and nothing guarantees the other side did. A case mismatch here
     // would silently downgrade every valid signature to "unknown key", which
     // reads as an accusation.
+    if (signature.primaryFingerprint.isEmpty())
+        return PgpSignatureVerdict::ValidFromUnknownKey;
     for (const QString& fingerprint : boundFingerprints) {
-        if (!fingerprint.isEmpty()
-            && fingerprint.compare(signature.fingerprint, Qt::CaseInsensitive) == 0) {
+        if (fingerprint.compare(signature.primaryFingerprint, Qt::CaseInsensitive) == 0) {
             return PgpSignatureVerdict::ValidFromSender;
         }
     }

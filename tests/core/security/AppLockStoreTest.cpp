@@ -3,9 +3,36 @@
 #include "stores/SecureStore.h"
 #include "stores/SecureStoreFile.h"
 
+#include <QCryptographicHash>
 #include <QMap>
+#include <QPasswordDigestor>
 #include <QTemporaryDir>
 #include <QTest>
+
+namespace {
+
+// A 16-byte salt and the pre-Argon2id PBKDF2 verifier over it, reproduced so
+// a test can plant credential material exactly as an older build left it.
+const QByteArray kPlantedSalt = QByteArrayLiteral("kypost-test-salt");
+
+QString plantedSaltB64()
+{
+    return QString::fromLatin1(kPlantedSalt.toBase64());
+}
+
+QString legacyHashB64(const QString& pin)
+{
+    return QString::fromLatin1(QPasswordDigestor::deriveKeyPbkdf2(QCryptographicHash::Sha256,
+                                                                  pin.toUtf8(), kPlantedSalt, 150000, 32)
+                                   .toBase64());
+}
+
+QString legacyRecord(const QString& pin)
+{
+    return plantedSaltB64() + QLatin1Char(':') + legacyHashB64(pin);
+}
+
+} // namespace
 
 class AppLockStoreTest : public QObject
 {
@@ -23,6 +50,11 @@ private slots:
     void changingThePinDestroysTheOldBuildsCopyOfTheOldPin();
     void aLegacyRemovalThatFailsIsReportedRatherThanSwallowed();
     void aFailedEnableIsReportedWithTheNewPinAuthoritative();
+    void aNewPinIsStoredInTheArgon2idFormat();
+    void aLegacyPbkdf2RecordVerifiesAndIsUpgradedInPlace();
+    void aFailedUpgradeStillAcceptsTheCorrectPin();
+    void aVerifierThatCannotBeComputedIsNotAWrongPin();
+    void anOrdinaryVerdictDoesNotClaimItCouldNotBeComputed();
     void tracksAttemptsAndLockoutDeadline();
     void credentialGateRoundTrips();
 };
@@ -97,13 +129,18 @@ void AppLockStoreTest::eachPinGetsAFreshSalt()
     SecureStoreFile secureStore(dir.path());
     AppLockStore store(secureStore);
 
-    const auto saltOf = [&secureStore]() {
-        const QString record = secureStore.get(QStringLiteral("applock.pinRecord")).value_or(QString());
-        return record.left(record.indexOf(QLatin1Char(':')));
-    };
-    const auto hashOf = [&secureStore]() {
+    // Records are "a2:<saltB64>:<hashB64>", so both fields sit past the marker.
+    const auto bodyOf = [&secureStore]() {
         const QString record = secureStore.get(QStringLiteral("applock.pinRecord")).value_or(QString());
         return record.mid(record.indexOf(QLatin1Char(':')) + 1);
+    };
+    const auto saltOf = [&bodyOf]() {
+        const QString body = bodyOf();
+        return body.left(body.indexOf(QLatin1Char(':')));
+    };
+    const auto hashOf = [&bodyOf]() {
+        const QString body = bodyOf();
+        return body.mid(body.indexOf(QLatin1Char(':')) + 1);
     };
 
     QVERIFY(store.setPin(QStringLiteral("123456")));
@@ -122,9 +159,11 @@ void AppLockStoreTest::eachPinGetsAFreshSalt()
     QVERIFY(store.verifyPin(QStringLiteral("123456")));
 }
 
-// The pre-2026-07-27 layout wrote applock.pinSalt/applock.pinHash. An
-// install carrying those must keep working, or the atomicity fix below would
-// itself lock out every existing user on first launch.
+// The pre-2026-07-27 layout wrote applock.pinSalt/applock.pinHash, PBKDF2.
+// An install carrying those must keep working, or the atomicity fix below
+// would itself lock out every existing user on first launch -- and the pair
+// must then be upgraded away, since a PBKDF2 verifier for the same PIN is
+// the cheap offline target the Argon2id seal exists to remove.
 void AppLockStoreTest::aPinSetByAnOlderBuildStillVerifies()
 {
     QTemporaryDir dir;
@@ -133,15 +172,21 @@ void AppLockStoreTest::aPinSetByAnOlderBuildStillVerifies()
     AppLockStore store(secureStore);
 
     QVERIFY(store.setPin(QStringLiteral("123456")));
-    // Rewrite the record in the old split form, exactly as an older build left it.
-    const QString record = secureStore.get(QStringLiteral("applock.pinRecord")).value_or(QString());
-    const qsizetype sep = record.indexOf(QLatin1Char(':'));
-    QVERIFY(sep > 0);
-    QVERIFY(secureStore.set(QStringLiteral("applock.pinSalt"), record.left(sep)));
-    QVERIFY(secureStore.set(QStringLiteral("applock.pinHash"), record.mid(sep + 1)));
+    // Replace it with the old split form, exactly as an older build left it.
+    QVERIFY(secureStore.set(QStringLiteral("applock.pinSalt"), plantedSaltB64()));
+    QVERIFY(secureStore.set(QStringLiteral("applock.pinHash"), legacyHashB64(QStringLiteral("123456"))));
     QVERIFY(secureStore.remove(QStringLiteral("applock.pinRecord")));
 
     QVERIFY(store.lockEnabled());
+    QVERIFY(store.verifyPin(QStringLiteral("123456")));
+
+    // Upgraded in place: one Argon2id record, and the split pair gone so no
+    // older build can still unlock on it.
+    const QString upgraded = secureStore.get(QStringLiteral("applock.pinRecord")).value_or(QString());
+    QVERIFY(upgraded.startsWith(QStringLiteral("a2:")));
+    QVERIFY(!secureStore.contains(QStringLiteral("applock.pinSalt")));
+    QVERIFY(!secureStore.contains(QStringLiteral("applock.pinHash")));
+
     QVERIFY(store.verifyPin(QStringLiteral("123456")));
     QVERIFY(!store.verifyPin(QStringLiteral("654321")));
 }
@@ -298,14 +343,9 @@ void AppLockStoreTest::changingThePinDestroysTheOldBuildsCopyOfTheOldPin()
 
     // A pin written by an older build: split salt/hash, no record.
     QVERIFY(store.setPin(QStringLiteral("111111")));
-    const std::optional<QString> record = secureStore.get(QStringLiteral("applock.pinRecord"));
-    QVERIFY(record.has_value());
-    const qsizetype sep = record->indexOf(QLatin1Char(':'));
-    QVERIFY(sep > 0);
-    QVERIFY(secureStore.set(QStringLiteral("applock.pinSalt"), record->left(sep)));
-    QVERIFY(secureStore.set(QStringLiteral("applock.pinHash"), record->mid(sep + 1)));
+    QVERIFY(secureStore.set(QStringLiteral("applock.pinSalt"), plantedSaltB64()));
+    QVERIFY(secureStore.set(QStringLiteral("applock.pinHash"), legacyHashB64(QStringLiteral("111111"))));
     QVERIFY(secureStore.remove(QStringLiteral("applock.pinRecord")));
-    QVERIFY(store.verifyPin(QStringLiteral("111111"))); // via the legacy pair
 
     QVERIFY(store.setPin(QStringLiteral("222222")));
 
@@ -352,6 +392,117 @@ void AppLockStoreTest::aFailedEnableIsReportedWithTheNewPinAuthoritative()
     QVERIFY(store.verifyPin(QStringLiteral("123456")));
     QVERIFY(!secureStore.contains(QStringLiteral("applock.pinSalt")));
     QVERIFY(!secureStore.contains(QStringLiteral("applock.pinHash")));
+}
+
+void AppLockStoreTest::aNewPinIsStoredInTheArgon2idFormat()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    SecureStoreFile secureStore(dir.path());
+    AppLockStore store(secureStore);
+
+    QVERIFY(store.setPin(QStringLiteral("864209")));
+
+    const QString record = secureStore.get(QStringLiteral("applock.pinRecord")).value_or(QString());
+    QVERIFY2(record.startsWith(QStringLiteral("a2:")), "a new pin was not written under Argon2id");
+    QCOMPARE(record.count(QLatin1Char(':')), 2);
+
+    QVERIFY(store.verifyPin(QStringLiteral("864209")));
+    QVERIFY(!store.verifyPin(QStringLiteral("864208")));
+}
+
+// The PBKDF2 record is the finding: a 10^6 keyspace behind 150k iterations,
+// in the same keyring as the Argon2id-sealed device secret, so the attacker
+// brute-forces this and runs Argon2id once. It must still open -- users have
+// one -- and it must not survive the unlock that opened it.
+void AppLockStoreTest::aLegacyPbkdf2RecordVerifiesAndIsUpgradedInPlace()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    SecureStoreFile secureStore(dir.path());
+    AppLockStore store(secureStore);
+
+    QVERIFY(secureStore.set(QStringLiteral("applock.enabled"), QStringLiteral("1")));
+    QVERIFY(secureStore.set(QStringLiteral("applock.pinRecord"), legacyRecord(QStringLiteral("864209"))));
+
+    QVERIFY(store.verifyPin(QStringLiteral("864209")));
+
+    const QString upgraded = secureStore.get(QStringLiteral("applock.pinRecord")).value_or(QString());
+    QVERIFY2(upgraded.startsWith(QStringLiteral("a2:")), "the pbkdf2 record survived a successful verify");
+    QVERIFY(upgraded != legacyRecord(QStringLiteral("864209")));
+
+    // Same pin, new format, and nothing else opens it.
+    QVERIFY(store.verifyPin(QStringLiteral("864209")));
+    QVERIFY(!store.verifyPin(QStringLiteral("864208")));
+    QCOMPARE(secureStore.get(QStringLiteral("applock.pinRecord")).value_or(QString()), upgraded);
+}
+
+// The upgrade is opportunistic. The user typed the RIGHT pin; a store that
+// refuses the rewrite must cost them a stronger verifier, never their unlock.
+void AppLockStoreTest::aFailedUpgradeStillAcceptsTheCorrectPin()
+{
+    SelectivelyFailingStore secureStore;
+    secureStore.seed(QStringLiteral("applock.enabled"), QStringLiteral("1"));
+    secureStore.seed(QStringLiteral("applock.pinRecord"), legacyRecord(QStringLiteral("864209")));
+    AppLockStore store(secureStore);
+
+    secureStore.refuseSetOf = QStringLiteral("applock.pinRecord");
+    QVERIFY2(store.verifyPin(QStringLiteral("864209")), "a failed upgrade write refused the correct pin");
+    QVERIFY(!store.verifyPin(QStringLiteral("864208")));
+
+    // The old record still stands, so the next attempt can try again.
+    QCOMPARE(secureStore.get(QStringLiteral("applock.pinRecord")).value_or(QString()),
+             legacyRecord(QStringLiteral("864209")));
+}
+
+// A derivation that cannot RUN is not a wrong guess, and the difference is
+// not cosmetic: AppLockManager counts wrong guesses toward a ten-attempt wipe
+// that erases the mail cache, the pairing and the lock. Argon2id here wants a
+// 64 MiB working set, which a cgroup-capped or low-memory session refuses
+// deterministically -- so without this distinction a user entering the
+// CORRECT pin on a constrained machine loses their data.
+//
+// Forced with a salt argon2 refuses (its minimum is 8 bytes) rather than by
+// starving the process, so the case is portable and needs no seam in the
+// production type: what is provoked is argon2 returning non-OK, the same
+// branch an allocation failure takes.
+void AppLockStoreTest::aVerifierThatCannotBeComputedIsNotAWrongPin()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    SecureStoreFile secureStore(dir.path());
+    AppLockStore store(secureStore);
+
+    const QString shortSalt = QString::fromLatin1(QByteArray(4, 'x').toBase64());
+    const QString hash = QString::fromLatin1(QByteArray(32, 'y').toBase64());
+    QVERIFY(secureStore.set(QStringLiteral("applock.enabled"), QStringLiteral("1")));
+    QVERIFY(secureStore.set(QStringLiteral("applock.pinRecord"),
+                             QStringLiteral("a2:") + shortSalt + QStringLiteral(":") + hash));
+
+    bool couldNotEvaluate = false;
+    QVERIFY2(!store.verifyPin(QStringLiteral("864209"), &couldNotEvaluate),
+              "a pin was accepted against a verifier that could not be derived");
+    QVERIFY2(couldNotEvaluate, "a derivation failure was reported as an ordinary wrong pin");
+}
+
+// The flag is set by that failure and nothing else. An ordinary wrong pin,
+// and an ordinary right one, must both leave it false -- otherwise the caller
+// stops counting real guesses and the rate limit quietly stops existing.
+void AppLockStoreTest::anOrdinaryVerdictDoesNotClaimItCouldNotBeComputed()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    SecureStoreFile secureStore(dir.path());
+    AppLockStore store(secureStore);
+    QVERIFY(store.setPin(QStringLiteral("864209")));
+
+    bool couldNotEvaluate = true;
+    QVERIFY(store.verifyPin(QStringLiteral("864209"), &couldNotEvaluate));
+    QVERIFY2(!couldNotEvaluate, "a correct pin claimed the verifier could not be computed");
+
+    couldNotEvaluate = true;
+    QVERIFY(!store.verifyPin(QStringLiteral("864208"), &couldNotEvaluate));
+    QVERIFY2(!couldNotEvaluate, "a wrong pin claimed the verifier could not be computed");
 }
 
 QTEST_APPLESS_MAIN(AppLockStoreTest)

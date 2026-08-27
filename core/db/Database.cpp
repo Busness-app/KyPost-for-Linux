@@ -228,6 +228,19 @@ bool Database::open(const QString& path, const QByteArray& rawKey)
         }
     }
 
+    // Reopening is a real path, not a hypothetical: LocalDataWipe::wipeEverything()
+    // unlinks this profile's database and then opens the replacement through
+    // the same Database. Without this the previous QSqlDatabase stayed
+    // registered and OPEN on the file that was just deleted, holding the
+    // inode alive for the rest of the process.
+    if (!m_connectionName.isEmpty()) {
+        if (m_db.isOpen())
+            m_db.close();
+        m_db = QSqlDatabase();
+        QSqlDatabase::removeDatabase(m_connectionName);
+        m_connectionName.clear();
+    }
+
     m_connectionName = QStringLiteral("kypost_db_%1").arg(g_connectionCounter.fetchAndAddRelaxed(1));
     m_db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), m_connectionName);
     m_db.setDatabaseName(path);

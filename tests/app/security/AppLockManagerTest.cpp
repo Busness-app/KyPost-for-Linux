@@ -153,6 +153,7 @@ private slots:
     void wrongPinCountsUpAndEventuallyLocksOut();
     void refusesAttemptsWhileLockedOut();
     void wipeRequestedAtThreshold();
+    void aVerifierThatCannotBeComputedNeverReachesTheWipe();
     void disableLockRequiresCurrentPin();
     void changingPinRequiresCurrentPin();
     void credentialGateRequiresPinAndSealsThroughSealer();
@@ -1138,6 +1139,51 @@ void AppLockManagerTest::changingTheGraceRequiresThePinAndIsClamped()
     QCOMPARE(manager.backgroundGraceSeconds(), LockoutPolicy::kMaxBackgroundGraceSeconds);
     QCOMPARE(manager.setBackgroundGraceSeconds(-5, kGoodPin), true);
     QCOMPARE(manager.backgroundGraceSeconds(), 0);
+}
+
+// THE CASE THIS EXISTS FOR. wipeRequestedAtThreshold() above proves the wipe
+// fires for ten wrong guesses; this proves it does NOT fire for ten failures
+// to compute the verifier at all.
+//
+// Argon2id wants 64 MiB. A cgroup MemoryMax, a low-RAM device or an already
+// swapping machine refuses that deterministically and repeatably, so the user
+// types the CORRECT pin, gets "wrong pin" every time, and on the tenth the app
+// erases their mail cache, their pairing credential and their lock. The KDF
+// this replaced could not fail that way, so nothing upstream was watching for
+// it.
+//
+// Staged with a salt argon2 refuses (minimum 8 bytes) rather than by starving
+// the test process -- same failure branch, no seam in the production type.
+void AppLockManagerTest::aVerifierThatCannotBeComputedNeverReachesTheWipe()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    SecureStoreFile secureStore(dir.path());
+    AppLockStore store(secureStore);
+    SettingsStore settingsStore(dir.filePath(QStringLiteral("settings.ini")));
+    NullCredentialSealer sealer;
+
+    const QString shortSalt = QString::fromLatin1(QByteArray(4, 'x').toBase64());
+    const QString hash = QString::fromLatin1(QByteArray(32, 'y').toBase64());
+    QVERIFY(secureStore.set(QStringLiteral("applock.enabled"), QStringLiteral("1")));
+    QVERIFY(secureStore.set(QStringLiteral("applock.pinRecord"),
+                             QStringLiteral("a2:") + shortSalt + QStringLiteral(":") + hash));
+    // One short of the threshold, so a single counted failure would fire it.
+    QVERIFY(store.setFailedAttemptCount(LockoutPolicy::kDefaultWipeThreshold - 1));
+    QVERIFY(store.setLockoutUntilEpochMs(0));
+
+    AppLockManager manager(store, settingsStore, sealer);
+    QSignalSpy wipeSpy(&manager, &AppLockManager::wipeRequested);
+
+    for (int attempt = 0; attempt < LockoutPolicy::kDefaultWipeThreshold + 1; ++attempt) {
+        QVERIFY2(!manager.tryUnlock(kGoodPin), "an unverifiable pin was accepted");
+        // The Settings door onto the same guard: disableLock() goes through
+        // verifyPinRateLimited(), which counts failures identically.
+        QVERIFY2(!manager.disableLock(kGoodPin), "an unverifiable pin was accepted");
+    }
+
+    QVERIFY2(wipeSpy.isEmpty(), "a verifier that could not be computed triggered the ten-failure wipe");
+    QCOMPARE(store.failedAttemptCount(), LockoutPolicy::kDefaultWipeThreshold - 1);
 }
 
 QTEST_GUILESS_MAIN(AppLockManagerTest)

@@ -12,6 +12,31 @@
 #include <QDebug>
 #include <algorithm>
 
+namespace {
+
+// Shared by BOTH doors onto the verifier -- tryUnlock() and the Settings
+// prompts -- rather than written twice. This file already paid for that once:
+// when the counting logic was two copies, one of them was missing the session
+// floor and turned the Settings prompts back into an unmetered oracle.
+//
+// True means the verifier could not be COMPUTED, which is not a wrong guess.
+// The caller must return before recordFailedAttempt(): argon2id's 64 MiB
+// working set is refused deterministically on a memory-capped session, so
+// counting it would let ten entries of the CORRECT pin reach shouldWipe() and
+// destroy the user's mail, pairing and lock. Not latched -- the pressure that
+// caused it is usually transient, and a permanent refusal would be its own
+// lockout.
+bool uncomputableVerifier(bool couldNotEvaluate)
+{
+    if (!couldNotEvaluate)
+        return false;
+    qCritical("App lock: the PIN verifier could not be computed (out of memory?); this attempt "
+               "is NOT being counted as a failed guess");
+    return true;
+}
+
+} // namespace
+
 AppLockManager::AppLockManager(AppLockStore& store, SettingsStore& settingsStore, CredentialSealer& sealer,
                                 QObject* parent)
     : QObject(parent)
@@ -172,7 +197,8 @@ bool AppLockManager::tryUnlock(const QString& pin)
         return false;
 
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
-    if (m_store.verifyPin(pin)) {
+    bool couldNotEvaluate = false;
+    if (m_store.verifyPin(pin, &couldNotEvaluate)) {
         // Both checked, for the same reason recordFailedAttempt() checks
         // them: a reset that silently fails leaves the persisted counter
         // stale-high, and failedAttempts() takes the MAX of persisted and
@@ -205,6 +231,11 @@ bool AppLockManager::tryUnlock(const QString& pin)
         return true;
     }
 
+    // BEFORE recordFailedAttempt(), so neither the persisted counter nor the
+    // session floor moves for a failure that was never a guess.
+    if (uncomputableVerifier(couldNotEvaluate))
+        return false;
+
     if (!recordFailedAttempt(now))
         return false;
 
@@ -231,13 +262,19 @@ bool AppLockManager::verifyPinRateLimited(const QString& pin)
         return false;
 
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
-    if (m_store.verifyPin(pin)) {
+    bool couldNotEvaluate = false;
+    if (m_store.verifyPin(pin, &couldNotEvaluate)) {
         if (!m_store.setFailedAttemptCount(0) || !m_store.setLockoutUntilEpochMs(0))
             m_attemptRecordingBroken = true;
         m_sessionFailedAttempts = 0;
         emit lockoutChanged();
         return true;
     }
+
+    // BEFORE recordFailedAttempt(), so neither the persisted counter nor the
+    // session floor moves for a failure that was never a guess.
+    if (uncomputableVerifier(couldNotEvaluate))
+        return false;
 
     if (!recordFailedAttempt(now))
         return false;

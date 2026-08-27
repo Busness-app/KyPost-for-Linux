@@ -125,6 +125,7 @@ Item {
         Text {
             Layout.fillWidth: true
             visible: root.errorText !== ""
+            textFormat: Text.PlainText
             text: root.errorText
             color: Theme.dangerColor
             font.family: Theme.fontUi
@@ -136,6 +137,7 @@ Item {
         Text {
             Layout.fillWidth: true
             visible: root.lockedOut
+            textFormat: Text.PlainText
             text: i18n("Too many attempts. Try again in %1 seconds.", root.secondsLeft)
             color: Theme.ink
             font.family: Theme.fontUi

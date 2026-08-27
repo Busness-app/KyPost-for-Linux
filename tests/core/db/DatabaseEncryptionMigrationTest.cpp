@@ -352,26 +352,30 @@ void DatabaseEncryptionMigrationTest::aPlaintextCopyThatCannotBeDeletedStillLeav
 // fell back to the untouched plaintext database, and that profile's mail was
 // silently never encrypted -- on that launch and on every later one, because
 // nothing about the path was going to change.
+//
+// TWO apostrophes, not one: a fix that escapes only the first occurrence
+// passes the single-apostrophe case and still loses the profile here.
 void DatabaseEncryptionMigrationTest::aProfilePathWithAnApostropheIsStillConverted()
 {
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
-    const QString profileDir = dir.filePath(QStringLiteral("o'brien's data"));
-    QVERIFY(QDir().mkpath(profileDir));
-    const QString path = profileDir + QStringLiteral("/kypost.db");
-    seedPlaintextProfile(path, 3);
-    QVERIFY(!databaseFileIsEncrypted(path));
+    const QString profile = dir.filePath(QStringLiteral("o'brien's data"));
+    QVERIFY(QDir().mkpath(profile));
+    const QString path = profile + QStringLiteral("/kypost.db");
+    seedPlaintextProfile(path, 5);
+    QVERIFY2(!databaseFileIsEncrypted(path), "the premise did not hold: the seed is already encrypted");
+    QVERIFY(anyFileUnder(profile, "SECRETSUBJECT0"));
 
     DatabaseEncryptionMigration migration(path);
     QCOMPARE(migration.run(testKey()), DatabaseEncryptionMigration::Status::Migrated);
 
     QVERIFY2(databaseFileIsEncrypted(path), "the profile database is still plaintext");
-    QVERIFY2(!anyFileUnder(profileDir, "SECRETSUBJECT0"),
+    QVERIFY2(!anyFileUnder(profile, "SECRETSUBJECT0"),
              "a readable copy of the mail is still on disk somewhere in the profile");
 
     Database reopened;
     QVERIFY(reopened.open(path, testKey()));
-    QCOMPARE(countEmails(reopened), 3);
+    QCOMPARE(countEmails(reopened), 5);
 }
 
 QTEST_GUILESS_MAIN(DatabaseEncryptionMigrationTest)

@@ -46,6 +46,41 @@ public:
         return true;
     }
 
+    // The layout that actually has a signing SUBKEY: a certify-only [C]
+    // primary with separate [S] and [E] subkeys.
+    //
+    // What build() makes is an [SC] primary that signs with itself, so a
+    // signature's fingerprint and the key's are the same string there and no
+    // test using it can tell the two apart. This one is what a hardware token
+    // holds, and what Sequoia and Proton generate by default.
+    bool buildWithSigningSubkey(const QString& uid)
+    {
+        if (!m_home.isValid())
+            return false;
+        QFile::setPermissions(m_home.path(), QFileDevice::ReadOwner | QFileDevice::WriteOwner
+                                   | QFileDevice::ExeOwner);
+        if (!run(QStringLiteral("gpg"),
+                  { QStringLiteral("--batch"), QStringLiteral("--pinentry-mode"),
+                    QStringLiteral("loopback"), QStringLiteral("--passphrase"), QString(),
+                    QStringLiteral("--quick-generate-key"), uid, QStringLiteral("default"),
+                    QStringLiteral("cert"), QStringLiteral("never") })) {
+            return false;
+        }
+        const QString primary = firstFingerprint(m_home.path(), uid);
+        if (primary.isEmpty())
+            return false;
+        for (const QString& usage : { QStringLiteral("sign"), QStringLiteral("encr") }) {
+            if (!run(QStringLiteral("gpg"),
+                      { QStringLiteral("--batch"), QStringLiteral("--pinentry-mode"),
+                        QStringLiteral("loopback"), QStringLiteral("--passphrase"), QString(),
+                        QStringLiteral("--quick-add-key"), primary, QStringLiteral("default"), usage,
+                        QStringLiteral("never") })) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     QByteArray encryptToTestKey(const QByteArray& plaintext) const
     {
         QProcess gpg;

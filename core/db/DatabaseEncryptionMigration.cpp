@@ -13,6 +13,18 @@
 
 namespace {
 
+// SQL quoting, for the two things here that cannot be bound: a database path
+// and a table name. Both escape their own delimiter by doubling it.
+QString quotedLiteral(QString value)
+{
+    return QLatin1Char('\'') + value.replace(QLatin1Char('\''), QLatin1String("''")) + QLatin1Char('\'');
+}
+
+QString quotedIdentifier(QString name)
+{
+    return QLatin1Char('"') + name.replace(QLatin1Char('"'), QLatin1String("\"\"")) + QLatin1Char('"');
+}
+
 // Row counts per user table, which is what "the copy matches" is checked
 // against. Returns nullopt when the database could not be read at all --
 // distinct from "an empty database", which is a legitimate answer.
@@ -34,7 +46,8 @@ std::optional<QMap<QString, int>> tableCounts(QSqlDatabase& db)
         QSqlQuery count(db);
         // Table names cannot be bound. These come from sqlite_master, not
         // from user input, and are quoted defensively.
-        if (!count.exec(QStringLiteral("SELECT count(*) FROM \"%1\"").arg(name)) || !count.next())
+        if (!count.exec(QStringLiteral("SELECT count(*) FROM %1").arg(quotedIdentifier(name)))
+            || !count.next())
             return std::nullopt;
         counts.insert(name, count.value(0).toInt());
     }
@@ -162,18 +175,17 @@ bool DatabaseEncryptionMigration::exportEncrypted(const QByteArray& key)
         return false;
 
     // The path goes into a SQL string literal and comes from AppDataLocation,
-    // i.e. from $HOME/$XDG_DATA_HOME. One apostrophe in it -- /mnt/o'brien/data
-    // -- ends the literal early and makes the whole statement a syntax error
+    // i.e. $HOME/$XDG_DATA_HOME. One apostrophe in it -- /mnt/o'brien/data --
+    // ends the literal early and makes the whole statement a syntax error
     // (measured: near "brien": syntax error), after which run() reports Failed
     // and openProfileDatabase() falls back to the plaintext database: that
-    // profile's mail is then silently never encrypted, on every launch.
-    // Doubling is the SQL escape for it. The hex key needs none by construction.
-    QString escapedCopyPath = m_workingCopyPath;
-    escapedCopyPath.replace(QLatin1Char('\''), QLatin1String("''"));
-
+    // profile's mail is then silently never encrypted, on every launch. So an
+    // apostrophe here is a user's account name, not an attack, and it still
+    // costs them their encryption. quotedLiteral() doubles it, which is the
+    // SQL escape. The key is hex and needs none by construction.
     QSqlQuery attach(source.handle());
-    if (!attach.exec(QStringLiteral("ATTACH DATABASE '%1' AS encrypted KEY \"x'%2'\"")
-                          .arg(escapedCopyPath, QString::fromLatin1(key.toHex())))) {
+    if (!attach.exec(QStringLiteral("ATTACH DATABASE %1 AS encrypted KEY \"x'%2'\"")
+                          .arg(quotedLiteral(m_workingCopyPath), QString::fromLatin1(key.toHex())))) {
         qWarning("DatabaseEncryptionMigration: ATTACH failed: %s",
                   qUtf8Printable(attach.lastError().text()));
         return false;
