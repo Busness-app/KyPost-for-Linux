@@ -1499,7 +1499,7 @@ int main(int argc, char* argv[])
             return; // not paired yet -- an ordinary state, not a failure
 
         // Phase 1: guards, sealing-key snapshot, pin suspension.
-        DeviceRegistrationService::PairAttempt attempt = deviceRegistrationService.beginPair();
+        DeviceRegistrationService::PairAttempt attempt = deviceRegistrationService.beginPair(*params);
         if (const std::optional<RegistrationOutcome> refused = attempt.refusedOutcome()) {
             // Refused before any network contact -- today only
             // CredentialsLocked, which the deferral below replays on unlock.

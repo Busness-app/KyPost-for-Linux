@@ -42,6 +42,9 @@ private slots:
     void pairFromDeepLinkRejectsPlaintextHttpServerUrl();
     void pairFromDeepLinkAllowsPlaintextHttpForLoopbackServerUrl();
     void pairFromDeepLinkRejectsRegOnDifferentOriginThanSrv();
+    void pairFromDeepLinkArmsTheServerPublishedPin();
+    void pairFromDeepLinkRefusesAMalformedPin_data();
+    void pairFromDeepLinkRefusesAMalformedPin();
     void pairFromDeepLinkNotifiesFreshPendingPairEvenWhenStateLabelUnchanged();
     void pairFromPastedLinkRejectsNonLinkTextWithNoNetworkCall();
     void refreshFromStoreReflectsPreSeededPairingStoreAndRemovePairingClears();
@@ -72,7 +75,20 @@ private:
     // Builds a kypost://native-pair?... link from a param map, letting
     // callers omit keys to exercise the missing-required-param path.
     static QUrl buildLink(const QMap<QString, QString>& params);
+    // 32 bytes whose base64 contains both '+' and '/'. Not arbitrary: a pin
+    // that happens to encode to the alphanumeric subset would sail through
+    // the percent-encoding these tests exist to exercise, and would make the
+    // "'+' arrived as a space" row a no-op rewrite of a valid pin.
+    static QByteArray samplePinBytes();
 };
+
+QByteArray PairingControllerTest::samplePinBytes()
+{
+    QByteArray raw(32, '\0');
+    for (int i = 0; i < raw.size(); ++i)
+        raw[i] = static_cast<char>((i * i + 251) % 256);
+    return raw; // base64: "+/z/BAsUHyw7TF90i6S/3PscP2SLtN8MO2yf1AtEf7w="
+}
 
 QUrl PairingControllerTest::buildLink(const QMap<QString, QString>& params)
 {
@@ -593,6 +609,128 @@ void PairingControllerTest::pairFromDeepLinkRejectsRegOnDifferentOriginThanSrv()
 
     QVERIFY(!controller.pairFromDeepLink(buildLink(params)));
 
+    QCOMPARE(controller.pairingState(), QStringLiteral("failed"));
+    QVERIFY(!controller.isPaired());
+    QVERIFY(fake.receivedRequest().isEmpty());
+    QVERIFY(!pairingStore.load().has_value());
+}
+
+// The `pin` parameter, end to end from the wire string the relay builds.
+//
+// Before this, parseNativePairLink read sub/srv/pt/reg and stopped, so a
+// server that published a pin got a client that ignored it and sent the
+// pairing token and push credentials inside a trust-on-first-use window
+// anyway.
+void PairingControllerTest::pairFromDeepLinkArmsTheServerPublishedPin()
+{
+    const QByteArray body = R"({"ok":true,"synced":true,"deviceId":"dev-1","deviceSecret":"fresh",)"
+                             R"("devices":1,"deliveryMode":"pull","transport":"unifiedpush"})";
+    FakeRelayServer fake(httpResponse(200, "OK", body));
+
+    QTemporaryDir secureDir;
+    QVERIFY(secureDir.isValid());
+    SecureStoreFile secureStore(secureDir.path());
+    PairingStore pairingStore(secureStore);
+
+    QTemporaryDir settingsDir;
+    QVERIFY(settingsDir.isValid());
+    SettingsStore settingsStore(settingsDir.filePath(QStringLiteral("settings.ini")));
+
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    NativeRegistrationClient client(http);
+    HttpClientPinSink pinSink(http);
+    NetworkExecutor executor(3000);
+    DeviceRegistrationService service(client, pairingStore, settingsStore, pinSink);
+
+    PairingController controller(service, pairingStore, settingsStore, pinSink, executor);
+
+    const QByteArray rawPin = samplePinBytes();
+    const QString serverBaseUrl = QStringLiteral("http://127.0.0.1:%1").arg(fake.port());
+
+    // Built as the relay builds it: "sha256/" prefix, and the base64
+    // alphabet's +, / and = percent-encoded the way URLSearchParams emits
+    // them. Going through the encoded wire form rather than QUrlQuery is the
+    // point -- a pin that only survives an in-process round trip proves
+    // nothing about the link a user actually clicks.
+    const QString wirePin = QStringLiteral("sha256/") + QString::fromLatin1(rawPin.toBase64());
+    const QString link = QStringLiteral("kypost://native-pair?sub=sub-1&pt=pair-tok&srv=%1&pin=%2")
+                             .arg(QString::fromLatin1(QUrl::toPercentEncoding(serverBaseUrl)),
+                                  QString::fromLatin1(QUrl::toPercentEncoding(wirePin)));
+
+    QVERIFY(controller.pairFromDeepLink(QUrl(link)));
+    QCOMPARE(controller.pairingState(), QStringLiteral("confirm"));
+
+    QVERIFY(controller.confirmPendingPair());
+    QTRY_COMPARE_WITH_TIMEOUT(controller.pairingState(), QStringLiteral("paired"), 5000);
+
+    // Enforcing in this process, scoped to the origin the confirm dialog
+    // showed...
+    QCOMPARE(pinSink.pinState().spkiSha256, rawPin);
+    QCOMPARE(pinSink.pinState().origin, QUrl(serverBaseUrl));
+    // ...and persisted, so the next launch enforces it too. The fake relay is
+    // plain http, so there was no handshake to capture a pin from: this value
+    // can only have come from the link.
+    const std::optional<DevicePairing> loaded = pairingStore.load();
+    QVERIFY(loaded.has_value());
+    QCOMPARE(loaded->certificateSpkiSha256, QString::fromLatin1(rawPin.toBase64()));
+}
+
+void PairingControllerTest::pairFromDeepLinkRefusesAMalformedPin_data()
+{
+    QTest::addColumn<QString>("pin");
+
+    const QByteArray raw = samplePinBytes();
+    const QString valid = QString::fromLatin1(raw.toBase64());
+
+    QTest::newRow("truncated") << valid.left(20);
+    QTest::newRow("one char short") << valid.mid(1);
+    // 33 bytes rather than 32 -- decodes cleanly, wrong digest length.
+    QTest::newRow("too long") << QString::fromLatin1(QByteArray(33, '\x2a').toBase64());
+    QTest::newRow("valid pin of the wrong digest") << QString::fromLatin1(QByteArray(31, '\x2a').toBase64());
+    QTest::newRow("not base64") << QStringLiteral("this is not a certificate pin at all!!!!!!!!");
+    // The corruption the relay's URLSearchParams encoding exists to prevent:
+    // a bare '+' arriving as a space. It must fail closed, not fall back to
+    // trust on first use.
+    QTest::newRow("plus decoded to space") << QString(valid).replace(QLatin1Char('+'), QLatin1Char(' '));
+    QTest::newRow("hex instead of base64") << QString::fromLatin1(raw.toHex());
+    QTest::newRow("prefix only") << QStringLiteral("sha256/");
+}
+
+// Refused, not ignored. Dropping an unreadable pin would hand an attacker who
+// can corrupt one character in transit a silent downgrade back to the
+// trust-on-first-use window this parameter exists to close.
+void PairingControllerTest::pairFromDeepLinkRefusesAMalformedPin()
+{
+    QFETCH(QString, pin);
+
+    FakeRelayServer fake(httpResponse(200, "OK", R"({"ok":true,"deviceId":"should-not-be-used"})"));
+
+    QTemporaryDir secureDir;
+    QVERIFY(secureDir.isValid());
+    SecureStoreFile secureStore(secureDir.path());
+    PairingStore pairingStore(secureStore);
+
+    QTemporaryDir settingsDir;
+    QVERIFY(settingsDir.isValid());
+    SettingsStore settingsStore(settingsDir.filePath(QStringLiteral("settings.ini")));
+
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    NativeRegistrationClient client(http);
+    HttpClientPinSink pinSink(http);
+    NetworkExecutor executor(3000);
+    DeviceRegistrationService service(client, pairingStore, settingsStore, pinSink);
+
+    PairingController controller(service, pairingStore, settingsStore, pinSink, executor);
+
+    QMap<QString, QString> params;
+    params[QStringLiteral("sub")] = QStringLiteral("sub-1");
+    params[QStringLiteral("srv")] = QStringLiteral("http://127.0.0.1:%1").arg(fake.port());
+    params[QStringLiteral("pt")] = QStringLiteral("pair-tok");
+    params[QStringLiteral("pin")] = pin;
+
+    QVERIFY(!controller.pairFromDeepLink(buildLink(params)));
     QCOMPARE(controller.pairingState(), QStringLiteral("failed"));
     QVERIFY(!controller.isPaired());
     QVERIFY(fake.receivedRequest().isEmpty());

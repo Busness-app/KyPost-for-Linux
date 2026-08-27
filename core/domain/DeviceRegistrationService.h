@@ -4,6 +4,7 @@
 #include "net/NativeRegistrationClient.h"
 #include "security/CredentialCipher.h"
 
+#include <QByteArray>
 #include <QString>
 #include <optional>
 
@@ -22,6 +23,20 @@ struct PairingParams
     QString registrationUrl;
     QString pairingToken;
     QString deviceName;
+    // Raw SHA-256 of the server's SubjectPublicKeyInfo, from the pairing
+    // link's `pin` parameter. Empty means the link published none, which is
+    // trust on first use -- what every pairing did before pins existed.
+    //
+    // When it is set, beginPair() arms it BEFORE the registration request
+    // instead of clearing the pin, so the one call that discloses the pairing
+    // token and the push credentials is already pinned. Capturing the key
+    // afterwards (which is all TOFU can do) is too late: on a network with a
+    // locally trusted CA the secrets have gone to the interceptor by then.
+    //
+    // Only the deep-link path fills this. Re-registration leaves it empty on
+    // purpose: that is a deliberate tradeoff with a written reason, not an
+    // omission -- see reregistrationParams().
+    QByteArray spkiPin;
 };
 
 // Wraps NativeRegistrationClient with the "persist on success, leave
@@ -73,7 +88,8 @@ public:
     // store in the chain, and PairingStore is one.
 
     // Phase 1, on the calling thread. Runs the pre-flight guards, snapshots
-    // the sealing key, and suspends the certificate pin for the registration.
+    // the sealing key, and either arms `params.spkiPin` or suspends the
+    // certificate pin for the registration.
     //
     // Move-only, and it RESTORES the pin on destruction. That matters more
     // here than in the synchronous form: an attempt abandoned because the
@@ -105,7 +121,7 @@ public:
         bool m_restorePin = false;
     };
 
-    PairAttempt beginPair();
+    PairAttempt beginPair(const PairingParams& params);
 
     // Phase 2. The only part that may run on another thread: it touches
     // nothing but the HttpClient it is handed. Static for that reason --

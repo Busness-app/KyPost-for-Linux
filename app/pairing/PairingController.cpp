@@ -21,19 +21,53 @@ namespace {
 // Deep-link wire format, confirmed against both this project's Android and
 // Swift sibling clients' real parsers:
 // kypost://native-pair?sub=<id>&srv=<serverBaseUrl>&pt=<pairingToken>&reg=<optional>
+//     &pin=<optional>
 //
 // sub/srv/pt must be present in the query AND non-empty. There is no `hash`
 // param at all -- the per-device pairing secret is no longer carried in the
 // deep link/QR; it's issued only via the registration response (see
 // DevicePairing::deviceSecret's doc comment). reg is optional;
-// empty/absent means "derive from srv".
+// empty/absent means "derive from srv". pin is optional; empty/absent means
+// trust on first use.
 struct ParsedPairingLink
 {
     QString subscriberId;
     QString serverBaseUrl;
     QString pairingToken;
     QString registrationUrl; // empty if reg was absent/empty in the link
+    QByteArray spkiPin;      // empty if pin was absent/empty in the link
 };
+
+// The link's `pin`: base64 of SHA-256 over the server's SubjectPublicKeyInfo,
+// with an optional "sha256/" prefix. That is the format the relay publishes
+// (backend/internal/api/pairing_pin.go's spkiPin, byte-identical to what
+// OkHttp's CertificatePinner.pin() emits) and the one Android's
+// normalizeSpkiPin accepts.
+//
+// std::nullopt means malformed, and every caller must treat that as a
+// refusal of the whole link rather than as "no pin". Dropping an unreadable
+// pin would silently reopen the trust-on-first-use window on the one request
+// that discloses the pairing token and the push credentials -- a downgrade an
+// attacker could trigger by corrupting a single character in transit. The
+// relay builds the parameter with URLSearchParams precisely so the base64
+// alphabet's `+`, `/` and `=` survive the query string intact.
+//
+// Qt decodes the base64 rather than a hand-rolled character check:
+// AbortOnBase64DecodingErrors rejects anything outside the alphabet -- notably
+// the space a bare `+` decodes to -- and the 32-byte length test is what
+// actually pins the value to a SHA-256.
+std::optional<QByteArray> parseSpkiPin(const QString& raw)
+{
+    QString body = raw.trimmed();
+    if (body.startsWith(QStringLiteral("sha256/")))
+        body = body.mid(QStringLiteral("sha256/").size());
+
+    const QByteArray::FromBase64Result decoded = QByteArray::fromBase64Encoding(
+        body.toLatin1(), QByteArray::Base64Encoding | QByteArray::AbortOnBase64DecodingErrors);
+    if (!decoded || decoded.decoded.size() != 32)
+        return std::nullopt;
+    return decoded.decoded;
+}
 
 // Mirrors Android's NativeRegistrationEndpointResolver.resolve: strips any
 // trailing slashes off srv, then appends the well-known native-register
@@ -170,6 +204,16 @@ std::optional<ParsedPairingLink> parseNativePairLink(const QUrl& url)
             || registrationUrl.path(QUrl::FullyEncoded) != QLatin1String(kNativeRegisterPath)) {
             return std::nullopt;
         }
+    }
+
+    // Refused, not ignored -- see parseSpkiPin. An absent pin is TOFU; an
+    // unreadable one is a link this client will not act on.
+    const QString rawPin = query.queryItemValue(QStringLiteral("pin"), QUrl::FullyDecoded).trimmed();
+    if (!rawPin.isEmpty()) {
+        const std::optional<QByteArray> pin = parseSpkiPin(rawPin);
+        if (!pin.has_value())
+            return std::nullopt;
+        parsed.spkiPin = *pin;
     }
 
     return parsed;
@@ -313,6 +357,7 @@ bool PairingController::pairFromDeepLink(const QUrl& url)
     params.registrationUrl = parsed->registrationUrl.isEmpty() ? deriveRegistrationUrl(parsed->serverBaseUrl)
                                                                  : parsed->registrationUrl;
     params.pairingToken = parsed->pairingToken;
+    params.spkiPin = parsed->spkiPin;
     m_pendingPair = params;
     // forceNotify=true: VibeSec fix -- m_pendingPair just changed even when
     // the state label ("confirm") didn't, e.g. a second link arriving while
@@ -354,8 +399,7 @@ bool PairingController::confirmPendingPair()
 
     const PairingParams pending = *m_pendingPair;
     m_pendingPair.reset();
-    pairFromParsedParams(pending.subscriberId, pending.serverBaseUrl, pending.pairingToken,
-                          pending.registrationUrl);
+    pairFromParsedParams(pending);
     // True means "started", not "paired". The answer arrives on
     // pairingState; no QML call site reads this return value (checked), and
     // it is kept only so the slot signature stays source-compatible.
@@ -611,7 +655,7 @@ void PairingController::reconnectToServer()
     // server presenting the NEW certificate at all. If this attempt is
     // abandoned or fails, PairAttempt's destructor puts the old pin back --
     // the reason a failed reconnect cannot silently disable pinning.
-    DeviceRegistrationService::PairAttempt attempt = m_service.beginPair();
+    DeviceRegistrationService::PairAttempt attempt = m_service.beginPair(params);
     if (const std::optional<RegistrationOutcome> refused = attempt.refusedOutcome()) {
         NativeRegistrationResult out;
         out.outcome = *refused;
@@ -647,16 +691,14 @@ void PairingController::reconnectToServer()
         });
 }
 
-void PairingController::pairFromParsedParams(const QString& sub, const QString& srv, const QString& pt,
-                                              const QString& reg)
+void PairingController::pairFromParsedParams(PairingParams params)
 {
     setPairingState(State::Working);
 
-    PairingParams params;
-    params.subscriberId = sub;
-    params.serverBaseUrl = srv;
-    params.registrationUrl = reg.isEmpty() ? deriveRegistrationUrl(srv) : reg;
-    params.pairingToken = pt;
+    // Everything else already arrived validated on `params` -- including
+    // spkiPin, which used to be dropped here when this took the four fields
+    // apart and rebuilt them, silently turning every pinned link back into a
+    // trust-on-first-use pairing.
     params.deviceName = linuxDeviceName();
 
     // m_deviceToken is set via setDeviceToken(), called from main.cpp
@@ -697,7 +739,7 @@ void PairingController::pairFromParsedParams(const QString& sub, const QString& 
     // Phase 1 on this thread: the guards, the sealing-key snapshot and the
     // certificate-pin suspension all touch PairingStore or the pin fan-out,
     // neither of which may leave this thread. Only the request itself moves.
-    DeviceRegistrationService::PairAttempt attempt = m_service.beginPair();
+    DeviceRegistrationService::PairAttempt attempt = m_service.beginPair(params);
     if (const std::optional<RegistrationOutcome> refused = attempt.refusedOutcome()) {
         NativeRegistrationResult out;
         out.outcome = *refused;

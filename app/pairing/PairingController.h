@@ -308,14 +308,16 @@ private:
     // the .cpp for why the purge deliberately happens in that order.
     bool purgePreviousAccountIfReplaced(const PairingParams& params);
 
-    // Builds a PairingParams from already-validated fields, sets
-    // pairingState="working", calls
-    // deviceRegistrationService.pair(params, m_deviceToken), maps
-    // RegistrationOutcome to pairingState/pairingError, calls
+    // Takes the already-validated params confirmPendingPair() held, fills in
+    // deviceName, sets pairingState="working", dispatches the registration,
+    // maps RegistrationOutcome to pairingState/pairingError, and calls
     // refreshFromStore() on success.
+    //
+    // The whole struct rather than field-by-field arguments: taking it apart
+    // and rebuilding it here is what dropped the link's certificate pin.
     // Returns nothing: the registration is dispatched and the answer arrives
     // on pairingState. See applyRegistrationResult below.
-    void pairFromParsedParams(const QString& sub, const QString& srv, const QString& pt, const QString& reg);
+    void pairFromParsedParams(PairingParams params);
     // The completion half, running back on this object's own thread.
     void applyRegistrationResult(const NativeRegistrationResult& result);
     // forceNotify: emit pairingStateChanged() even when (state, error) is
