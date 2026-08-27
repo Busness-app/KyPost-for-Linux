@@ -195,10 +195,10 @@ core/stores/ContactPhotoCache.cpp	    return persistent ? dataDir + QStringLiter
 # Content-addressed keys remove staleness, not growth. Every distinct photoRef
 # the user ever views deposits another file, and a relay handing out a fresh
 # reference per request turns the user's disk into the limit.
-core/stores/ContactPhotoCache.cpp	    evictToBudget();		ContactPhotoCacheTest:theCacheDoesNotGrowPastItsBudget
+core/stores/ContactPhotoCache.cpp	    evictToBudget(path);		ContactPhotoCacheTest:theCacheDoesNotGrowPastItsBudget
 
 # an avatar is not eight megabytes
-core/net/ContactPhotoClient.cpp	                                                            auth.headerItems(), {}, kMaxPhotoBytes);	                                                            auth.headerItems());	ContactPhotoClientTest:aPhotoLargerThanAnAvatarIsRefusedWellBeforeTheGenericCeiling
+core/net/ContactPhotoClient.cpp	        m_httpClient.get(*endpoint, {}, auth.headerItems(), {}, kMaxPhotoBytes);	        m_httpClient.get(*endpoint, {}, auth.headerItems());	ContactPhotoClientTest:aPhotoLargerThanAnAvatarIsRefusedWellBeforeTheGenericCeiling
 
 # --- a capability token goes to the route it was minted for -----------------
 #
