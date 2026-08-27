@@ -126,6 +126,7 @@ Item {
             }
             Text {
                 Layout.fillWidth: true
+                textFormat: Text.PlainText
                 text: i18np("We don't have a PGP key for %2. They'll get an email with a one-time link instead.",
                             "We don't have PGP keys for %2. They'll get an email with a one-time link instead.",
                             root.recipients.length, root.recipients.join(", "))

@@ -1,33 +1,69 @@
 #include "db/SecurityWipe.h"
 
+#include "db/DatabaseEncryptionMigration.h"
+
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
 
-namespace SecurityWipe {
+namespace {
 
-bool removeDatabaseFiles(const QString& dbPath)
+// Every path this one database stands for: the live file, and the three the
+// encryption migration puts beside it under names only it knows -- its two
+// copies, and the marker saying the profile is mid-conversion. Taken from
+// that class rather than restated here, so a suffix cannot be renamed out
+// from under the wipe.
+QStringList migrationCopies(const QString& dbPath)
 {
-    if (dbPath.isEmpty() || dbPath == QStringLiteral(":memory:"))
-        return true; // nothing on disk to remove
+    QStringList databases;
+    for (const QLatin1StringView suffix : { DatabaseEncryptionMigration::kMarkerSuffix,
+                                             DatabaseEncryptionMigration::kWorkingCopySuffix,
+                                             DatabaseEncryptionMigration::kSupersededSuffix })
+        databases.append(dbPath + suffix);
+    return databases;
+}
 
-    // All four candidates, unconditionally. See the header for why the
-    // sidecars are not optional.
-    const QStringList candidates = {
-        dbPath,
-        dbPath + QStringLiteral("-journal"),
-        dbPath + QStringLiteral("-wal"),
-        dbPath + QStringLiteral("-shm"),
-    };
-
+// All four candidates, unconditionally: the migration's copies are databases
+// in their own right and carry their own sidecars. See the header for why
+// neither set is optional.
+bool removeWithSidecars(const QString& database)
+{
     bool ok = true;
-    for (const QString& path : candidates) {
+    for (const QString& path : { database, database + QStringLiteral("-journal"),
+                                  database + QStringLiteral("-wal"),
+                                  database + QStringLiteral("-shm") }) {
         if (!QFile::exists(path))
             continue; // absent is fine, not a failure
         if (!QFile::remove(path))
             ok = false;
     }
     return ok;
+}
+
+} // namespace
+
+namespace SecurityWipe {
+
+bool removeMigrationCopies(const QString& dbPath)
+{
+    if (dbPath.isEmpty() || dbPath == QStringLiteral(":memory:"))
+        return true; // nothing on disk to remove
+
+    bool ok = true;
+    for (const QString& copy : migrationCopies(dbPath))
+        ok = removeWithSidecars(copy) && ok;
+    return ok;
+}
+
+bool removeDatabaseFiles(const QString& dbPath)
+{
+    if (dbPath.isEmpty() || dbPath == QStringLiteral(":memory:"))
+        return true; // nothing on disk to remove
+
+    // Both calls made, then aggregated: a live file that will not unlink must
+    // not leave the plaintext copy behind as well.
+    const bool liveRemoved = removeWithSidecars(dbPath);
+    return removeMigrationCopies(dbPath) && liveRemoved;
 }
 
 bool clearCacheDirectory(const QString& cacheDir)

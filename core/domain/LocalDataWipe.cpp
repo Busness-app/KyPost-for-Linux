@@ -41,6 +41,12 @@ LocalDataWipeResult LocalDataWipe::wipeCaches(bool removeCurrentDatabaseFile)
     if (removeCurrentDatabaseFile && !m_currentDatabasePath.isEmpty())
         result.currentDatabaseRemoved = SecurityWipe::removeDatabaseFiles(m_currentDatabasePath);
 
+    // The encryption migration's copies go on BOTH paths, including the one
+    // that keeps the live file. `<db>.plaintext-old` is a whole readable mail
+    // store in its own right, and wipeAllTables() cannot reach it.
+    result.currentDatabaseRemoved =
+        SecurityWipe::removeMigrationCopies(m_currentDatabasePath) && result.currentDatabaseRemoved;
+
     // The pre-rename profiles are separate FILES, which wipeAllTables()
     // cannot reach -- it scrubs one connection. They were missing from both
     // callers for months, so each reported a completed wipe while a

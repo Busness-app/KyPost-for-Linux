@@ -44,6 +44,43 @@ private:
     QHash<QString, QString> m_values;
 };
 
+// A store that refuses exactly one write -- the freshly-minted device
+// secret -- and accepts everything else, including the removals and the
+// gate-flag reset that PairingStore::clear() performs. That is the shape
+// that separates the two persist-failure outcomes: the save is refused, but
+// the half-written record can still be taken back.
+class SecretRejectingSecureStore : public SecureStore
+{
+public:
+    explicit SecretRejectingSecureStore(QString rejectedValue)
+        : m_rejectedValue(std::move(rejectedValue))
+    {
+    }
+
+    bool set(const QString& key, const QString& value) override
+    {
+        if (value == m_rejectedValue)
+            return false;
+        m_values.insert(key, value);
+        return true;
+    }
+    std::optional<QString> get(const QString& key) const override
+    {
+        const auto it = m_values.constFind(key);
+        return it == m_values.constEnd() ? std::nullopt : std::optional<QString>(*it);
+    }
+    bool remove(const QString& key) override
+    {
+        m_values.remove(key);
+        return true;
+    }
+    bool contains(const QString& key) const override { return m_values.contains(key); }
+
+private:
+    QString m_rejectedValue;
+    QHash<QString, QString> m_values;
+};
+
 } // namespace
 
 class DeviceRegistrationServiceTest : public QObject
@@ -60,6 +97,7 @@ private slots:
 
     // Review-finding regressions.
     void pairFailsWhenCredentialsCannotBePersisted();
+    void pairReportsARemovedHalfWrittenRecordSeparately();
     void reregisterIsDeferredWithoutContactingTheServerWhileCredentialsAreSealed();
     void failedReregistrationKeepsTheCertificatePinEnforced();
     void unpersistableRegistrationKeepsTheCertificatePinEnforced();
@@ -407,7 +445,7 @@ void DeviceRegistrationServiceTest::unpersistableRegistrationKeepsTheCertificate
     http.setCertificatePin(pin, pinnedOrigin);
 
     const NativeRegistrationResult result = service.pair(sampleParams(fake.port()), QStringLiteral("tok"));
-    QCOMPARE(result.outcome, RegistrationOutcome::Failure);
+    QCOMPARE(result.outcome, RegistrationOutcome::CredentialsNotSavedAndNotCleared);
 
     QCOMPARE(http.certificatePin(), pin);
     QCOMPARE(http.certificatePinState().origin, pinnedOrigin);
@@ -487,11 +525,45 @@ void DeviceRegistrationServiceTest::pairFailsWhenCredentialsCannotBePersisted()
     DeviceRegistrationService service(client, pairingStore, settingsStore, pinSink);
     const NativeRegistrationResult result = service.pair(sampleParams(fake.port()), QStringLiteral("tok"));
 
-    QCOMPARE(result.outcome, RegistrationOutcome::Failure);
-    QVERIFY2(!result.detail.isEmpty(), "the user needs to be told WHY, not just that it failed");
-    QVERIFY(result.detail.contains(QStringLiteral("secret store")));
+    // The user is still told WHY, but the outcome carries the fact and
+    // PairingController carries the sentence -- core/ cannot call i18n(), so
+    // an English `detail` here reached the UI untranslated (AGENTS.md 6c).
+    // This store also refuses the credential-gate reset inside clear(), so
+    // the half-written record could not be taken back either.
+    QCOMPARE(result.outcome, RegistrationOutcome::CredentialsNotSavedAndNotCleared);
+    QVERIFY2(result.detail.isEmpty(), "core/ must not hand the UI an untranslatable English sentence");
 
     // And nothing half-written is left behind claiming to be a pairing.
+    QVERIFY(!pairingStore.isPaired());
+}
+
+// The other half of the same failure: the store refused the secret, but the
+// partial record WAS removed. A single outcome for both would have to claim
+// one of the two, and telling a user their device still holds a broken
+// pairing record when it does not is the kind of wording that sends them
+// looking for something to delete.
+void DeviceRegistrationServiceTest::pairReportsARemovedHalfWrittenRecordSeparately()
+{
+    const QByteArray body = R"({"ok":true,"synced":true,"deviceId":"dev-1","deviceSecret":"fresh-device-secret",)"
+                             R"("devices":1,"deliveryMode":"pull","transport":"unifiedpush"})";
+    FakeRelayServer fake(httpResponse(200, "OK", body));
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    NativeRegistrationClient client(http);
+
+    SecretRejectingSecureStore secureStore(QStringLiteral("fresh-device-secret"));
+    PairingStore pairingStore(secureStore);
+
+    QTemporaryDir settingsDir;
+    QVERIFY(settingsDir.isValid());
+    SettingsStore settingsStore(settingsDir.filePath(QStringLiteral("settings.ini")));
+
+    HttpClientPinSink pinSink(http);
+    DeviceRegistrationService service(client, pairingStore, settingsStore, pinSink);
+    const NativeRegistrationResult result = service.pair(sampleParams(fake.port()), QStringLiteral("tok"));
+
+    QCOMPARE(result.outcome, RegistrationOutcome::CredentialsNotSaved);
+    QVERIFY2(result.detail.isEmpty(), "core/ must not hand the UI an untranslatable English sentence");
     QVERIFY(!pairingStore.isPaired());
 }
 

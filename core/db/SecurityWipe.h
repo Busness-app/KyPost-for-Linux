@@ -14,7 +14,8 @@
 // cannot be removed reliably while a connection has it open).
 namespace SecurityWipe {
 
-// Deletes `dbPath` plus every SQLite sidecar it may have left behind.
+// Deletes `dbPath`, every copy of it DatabaseEncryptionMigration can leave
+// beside it, and every SQLite sidecar any of those may have left behind.
 //
 // The sidecars matter: this repo sets no explicit `journal_mode` pragma, so
 // it must not assume rollback-journal-only. `-wal` and `-shm` under WAL mode
@@ -22,8 +23,23 @@ namespace SecurityWipe {
 // could leave readable mail behind -- the one outcome this function exists
 // to prevent. A file that does not exist is not an error.
 //
+// The migration's copies matter more bluntly still: `<db>.plaintext-old` IS
+// the user's whole mail store in the clear. The conversion tolerates failing
+// to delete it and survives being killed between its two renames, so it can
+// outlive the launch that made it -- and every wipe path here used to name
+// only the four SQLite paths and report success over the top of it.
+//
 // Returns false only if a file that DOES exist could not be removed.
 bool removeDatabaseFiles(const QString& dbPath);
+
+// Just the migration's copies beside `dbPath`, leaving `dbPath` itself alone.
+//
+// For the wipe paths that must keep the live database file: it relaunches
+// into the same file and needs it there, emptied. `wipeAllTables()` empties
+// it -- but it scrubs one open connection and cannot reach `.plaintext-old`,
+// a separate file holding the same mail in the clear. Those paths reported a
+// completed wipe over the top of it.
+bool removeMigrationCopies(const QString& dbPath);
 
 // Recursively empties `cacheDir` (contact photos, and anything a future
 // cache puts there) without removing the directory itself, so the app can

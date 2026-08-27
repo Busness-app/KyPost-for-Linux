@@ -377,6 +377,7 @@ Kirigami.ApplicationWindow {
 
             Text {
                 Layout.fillWidth: true
+                textFormat: Text.PlainText
                 text: folderPrompt.headingText
                 color: Theme.inkStrong
                 font.family: Theme.fontUi
@@ -465,6 +466,7 @@ Kirigami.ApplicationWindow {
 
             Text {
                 Layout.fillWidth: true
+                textFormat: Text.PlainText
                 text: i18n("Delete “%1”?", folderDeleteConfirm.displayName)
                 color: Theme.inkStrong
                 font.family: Theme.fontUi
@@ -558,6 +560,7 @@ Kirigami.ApplicationWindow {
             }
             Text {
                 Layout.fillWidth: true
+                textFormat: Text.PlainText
                 text: Pairing.pendingPairOrigin
                 color: Theme.inkStrong
                 font.family: Theme.fontMono
@@ -1192,6 +1195,7 @@ Kirigami.ApplicationWindow {
 
                         Text {
                             Layout.fillWidth: true
+                            textFormat: Text.PlainText
                             text: root.folderDisplayName(root.currentFolder)
                             color: Theme.inkStrong
                             font.family: Theme.fontUi

@@ -40,6 +40,7 @@ Rectangle {
     Text {
         id: label
         anchors.centerIn: parent
+        textFormat: Text.PlainText
         text: root.text
         color: Theme.inkStrong
         font.family: Theme.fontUi

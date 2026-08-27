@@ -691,6 +691,7 @@ Kirigami.ApplicationWindow {
                                     elide: Text.ElideRight
                                 }
                                 Text {
+                                    textFormat: Text.PlainText
                                     text: inboxPage.formatTimestamp(model.atUtc)
                                     color: Theme.ink
                                     font.family: Theme.fontUi

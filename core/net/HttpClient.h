@@ -286,6 +286,22 @@ public:
     // trust-on-first-use into trust-on-every-use.
     static QByteArray pinnedSpkiFromChain(const QList<QSslCertificate>& chain);
 
+    // The pin decision itself: nullopt when `chain` satisfies `pin`, and the
+    // SPKI to report to the mismatch handler when it does not (empty when the
+    // chain could not be anchored at all, which is a refusal, not a pass).
+    //
+    // An empty `pin` (enforcement off) and an empty `chain` are both a pass.
+    // The empty chain is the plaintext case: peerCertificateChain() is empty
+    // for an http:// reply and for a connection that never got as far as a
+    // handshake, and turning that into "impersonated" would raise the
+    // permanent re-pair banner every time the network is simply down.
+    //
+    // Its own function because waitForReply() runs it twice per request,
+    // from ::encrypted and again after the reply finishes -- see its
+    // comments for why one of those is not enough.
+    static std::optional<QByteArray> pinMismatchFor(const QByteArray& pin,
+                                                    const QList<QSslCertificate>& chain);
+
     // Drops the in-memory pin and its origin. Must be called wherever the
     // trust anchor is discarded or re-established -- unpairing, and before a
     // registration request, whose whole purpose is to establish a new one.

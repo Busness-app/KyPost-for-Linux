@@ -127,6 +127,38 @@ QByteArray HttpClient::pinnedSpkiFromChain(const QList<QSslCertificate>& chain)
     return spkiSha256(issuer);
 }
 
+std::optional<QByteArray> HttpClient::pinMismatchFor(const QByteArray& pin, const QList<QSslCertificate>& chain)
+{
+    // No pin, or no TLS chain to compare it against. See the header for why
+    // an empty chain is a pass and not a refusal.
+    if (pin.isEmpty() || chain.isEmpty())
+        return std::nullopt;
+
+    // What we pin now: the leaf's issuer. See pinnedSpkiFromChain() for why
+    // it is not the leaf. Empty means the chain could not be anchored at
+    // all, which is a refusal and not a pass.
+    const QByteArray issuerSpki = pinnedSpkiFromChain(chain);
+
+    // Devices paired before the anchor moved carry a LEAF pin, and that pin
+    // is still evidence this is the server they paired with -- so honour it
+    // rather than greeting every existing install with an impersonation
+    // banner on upgrade. It keeps working until the CDN next rolls the leaf;
+    // the mismatch that follows is re-anchored by the dialog's Reconnect,
+    // which re-registers and stores an ISSUER pin, and it never fires again.
+    // One alarm, once, per legacy device.
+    const QByteArray legacyLeafSpki = spkiSha256(chain.first());
+
+    if ((!issuerSpki.isEmpty() && issuerSpki == pin) || (!legacyLeafSpki.isEmpty() && legacyLeafSpki == pin))
+        return std::nullopt;
+
+    // Reported so the recovery UI can show what was actually presented --
+    // and it is the value that WOULD be pinned, so the fingerprint in the
+    // dialog is the one the user is agreeing to. Empty when the chain could
+    // not be anchored, which is a different situation and must not render as
+    // a fingerprint.
+    return issuerSpki;
+}
+
 HttpClient::CertificatePinState HttpClient::certificatePinState() const
 {
     assertOwningThread("HttpClient::certificatePinState");
@@ -302,11 +334,16 @@ HttpClient::HttpResult HttpClient::waitForReply(QNetworkReply* reply, const Redi
     QObject::connect(reply, &QNetworkReply::downloadProgress, reply,
                       [refuseIfOversized](qint64 received, qint64 /*total*/) { refuseIfOversized(received); });
 
-    // TOFU pinning. ::encrypted fires after the handshake completes but
-    // before any request body is written, so aborting here means a
-    // mismatched server never receives the device credentials -- which is
-    // the whole point, and is why this is not done by inspecting the reply
-    // afterwards.
+    // TOFU pinning, checked in two places on purpose.
+    //
+    // Here: ::encrypted fires after the handshake completes but before any
+    // request body is written, so aborting here means a mismatched server
+    // never receives the device credentials. That is worth keeping -- but it
+    // fires once per TLS *connection*, so it cannot be the only check. The
+    // post-loop check after loop.exec() is the one that covers a pooled
+    // keep-alive reuse, where this handler never runs at all. Whichever
+    // catches it first sets pinMismatch, and the other then does nothing, so
+    // a mismatch is reported exactly once.
     //
     // Enforcement is scoped to the pinned origin: the pin describes the
     // paired relay, and applying it to a deliberately cross-server PGP QR
@@ -320,38 +357,14 @@ HttpClient::HttpResult HttpClient::waitForReply(QNetworkReply* reply, const Redi
         if (!enforcePin)
             return;
 
-        const QSslConfiguration config = reply->sslConfiguration();
-        const QList<QSslCertificate> chain = config.peerCertificateChain();
-        if (chain.isEmpty())
+        const std::optional<QByteArray> observed =
+            pinMismatchFor(m_certificatePin, reply->sslConfiguration().peerCertificateChain());
+        if (!observed)
             return;
 
-        // What we pin now: the leaf's issuer. See
-        // HttpClient::pinnedSpkiFromChain() for why it is not the leaf.
-        // Empty means the chain could not be anchored at all, which is a
-        // refusal and not a pass.
-        const QByteArray issuerSpki = pinnedSpkiFromChain(chain);
-
-        // Devices paired before the anchor moved carry a LEAF pin, and that
-        // pin is still evidence this is the server they paired with -- so
-        // honour it rather than greeting every existing install with an
-        // impersonation banner on upgrade. It keeps working until the CDN
-        // next rolls the leaf; the mismatch that follows is re-anchored by
-        // the dialog's Reconnect, which re-registers and stores an ISSUER
-        // pin, and it never fires again. One alarm, once, per legacy device.
-        const QByteArray legacyLeafSpki = spkiSha256(chain.first());
-
-        const bool anchored = (!issuerSpki.isEmpty() && issuerSpki == m_certificatePin)
-            || (!legacyLeafSpki.isEmpty() && legacyLeafSpki == m_certificatePin);
-        if (!anchored) {
-            pinMismatch = true;
-            // Recorded so the recovery UI can show what was actually
-            // presented -- and it shows the value that WOULD be pinned, so
-            // the fingerprint in the dialog is the one the user is agreeing
-            // to. Stays empty when the chain could not be anchored, which is
-            // a different situation and must not render as a fingerprint.
-            observedSpki = issuerSpki;
-            reply->abort();
-        }
+        pinMismatch = true;
+        observedSpki = *observed;
+        reply->abort();
     });
     // UserVerifiedRedirectPolicy (set above in get(), only when
     // redirectValidator is non-empty -- NOT ManualRedirectPolicy, which
@@ -402,7 +415,9 @@ HttpClient::HttpResult HttpClient::waitForReply(QNetworkReply* reply, const Redi
     // keep-alive reuse it never fires and a shared "last SPKI seen" member
     // would still hold whatever host handshook most recently. peerCertificate()
     // is populated on reused connections, so this is the value the pairing
-    // flow can actually trust to describe the server that answered.
+    // flow can actually trust to describe the server that answered. The pin
+    // comparison below is here for exactly the same reason, and reads exactly
+    // the same chain.
     //
     // This is the value the pairing flow stores and pins, so it is the
     // ISSUER's SPKI, not the leaf's -- see pinnedSpkiFromChain(). Reading
@@ -410,6 +425,21 @@ HttpClient::HttpResult HttpClient::waitForReply(QNetworkReply* reply, const Redi
     // keep-alive reason as above, and peerCertificateChain() was confirmed
     // populated on pooled reuses too, not just fresh handshakes.
     result.peerSpkiSha256 = pinnedSpkiFromChain(reply->sslConfiguration().peerCertificateChain());
+    // The pin against THIS request rather than against the connection it
+    // happened to travel on. ::encrypted cannot do that: a connection opened
+    // while the pin was deliberately suspended (DeviceRegistrationService
+    // clears it for the duration of every registration) stays in Qt's pool,
+    // and every later request that reuses it skipped the check entirely.
+    // Already-set pinMismatch means the handshake path caught it first and
+    // aborted; re-running here would report the same mismatch twice.
+    if (enforcePin && !pinMismatch) {
+        if (const std::optional<QByteArray> observed =
+                pinMismatchFor(m_certificatePin, reply->sslConfiguration().peerCertificateChain())) {
+            pinMismatch = true;
+            observedSpki = *observed;
+        }
+    }
+
     const QList<QNetworkReply::RawHeaderPair> rawHeaders = reply->rawHeaderPairs();
     result.headers.reserve(rawHeaders.size());
     for (const auto& header : rawHeaders)
@@ -430,6 +460,15 @@ HttpClient::HttpResult HttpClient::waitForReply(QNetworkReply* reply, const Redi
         result.body.clear();
     } else if (pinMismatch) {
         result.error = NetworkError::CertificateMismatch;
+        // One failure mode for both places the pin is checked. The
+        // handshake-time abort has nothing to discard because no response
+        // ever arrived; the post-loop check does, and what it holds came
+        // from a server the pin says is not the paired one. A caller that
+        // reads statusCode or body before error (PgpQrRepository does) must
+        // not find an impostor's answer sitting there.
+        result.body.clear();
+        result.headers.clear();
+        result.statusCode = 0;
         // No `detail` string. This used to carry an English sentence, which
         // then travelled all the way to the UI as a user-facing message --
         // core/ cannot call i18n() (AGENTS.md section 5: KF6::I18n is an

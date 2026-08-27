@@ -91,6 +91,7 @@ Rectangle {
             // -- binding it to Column.width instead created a circular
             // binding that silently collapsed the text to zero size).
             width: root.width - 32
+            textFormat: Text.PlainText
             text: root.text
             color: Theme.ink
             font.family: Theme.fontUi

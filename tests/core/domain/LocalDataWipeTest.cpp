@@ -3,6 +3,7 @@
 #include "stores/CursorStore.h"
 
 #include "db/Database.h"
+#include "db/DatabaseEncryptionMigration.h"
 #include "domain/DevicePairing.h"
 #include "domain/PairingStore.h"
 #include "security/AppLockStore.h"
@@ -71,6 +72,7 @@ private slots:
     void wipeEverythingErasesTheSyncCursors();
     void wipeEverythingTakesThePreRenameDatabasesToo();
     void wipeEverythingKeepsTheLiveDatabaseFileUsable();
+    void wipeEverythingTakesTheEncryptionMigrationsPlaintextCopy();
     void wipeEverythingReportsAnUnremovablePairingCredential();
     void hostileLocationWipeUnlinksTheLiveDatabaseButKeepsThePairing();
 };
@@ -183,6 +185,39 @@ void LocalDataWipeTest::wipeEverythingKeepsTheLiveDatabaseFileUsable()
     QVERIFY(QFile::exists(dbPath));
     QSqlQuery stillWorks(database.handle());
     QVERIFY(stillWorks.exec(QStringLiteral("SELECT COUNT(*) FROM emails")));
+}
+
+// Keeping the live file is not licence to keep a second copy of it. The
+// encryption migration leaves `<db>.plaintext-old` -- the same mail, in the
+// clear -- and tolerates failing to delete it, so it can outlive the launch
+// that made it. wipeAllTables() scrubs one open connection and cannot reach
+// a separate file, so this path reported a completed wipe over the top of it.
+void LocalDataWipeTest::wipeEverythingTakesTheEncryptionMigrationsPlaintextCopy()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString dbPath = dir.filePath(QStringLiteral("kypost.db"));
+
+    Database database;
+    QVERIFY(database.open(dbPath));
+
+    const QString supersededPath = dbPath + DatabaseEncryptionMigration::kSupersededSuffix;
+    QFile superseded(supersededPath);
+    QVERIFY(superseded.open(QIODevice::WriteOnly));
+    QVERIFY(superseded.write("plaintext mail") > 0);
+    superseded.close();
+
+    SecureStoreFile secureStore(dir.path());
+    PairingStore pairingStore(secureStore);
+    AppLockStore appLockStore(secureStore);
+    SettingsStore settingsStore(dir.filePath(QStringLiteral("settings.ini")));
+    CursorStore cursorStore(dir.filePath(QStringLiteral("cursors.ini")));
+
+    LocalDataWipe wipe(database, pairingStore, appLockStore, settingsStore, cursorStore, dir.path(), dbPath, {});
+    QVERIFY(wipe.wipeEverything().complete());
+
+    QVERIFY(!QFile::exists(supersededPath));
+    QVERIFY(QFile::exists(dbPath)); // the live file still survives this path
 }
 
 // "Wiped" while the device secret is still in the keychain is a materially

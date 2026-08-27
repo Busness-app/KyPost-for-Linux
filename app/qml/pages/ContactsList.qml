@@ -172,6 +172,7 @@ Item {
 
                         Text {
                             Layout.fillWidth: true
+                            textFormat: Text.PlainText
                             text: (model.fn && model.fn.length > 0 ? model.fn : i18n("Unnamed"))
                                 + (model.isSelf ? " · " + i18n("You") : "")
                             color: Theme.inkStrong
