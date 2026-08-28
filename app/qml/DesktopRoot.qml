@@ -183,7 +183,7 @@ Kirigami.ApplicationWindow {
     // would be invisible; pop out a standalone window instead.
     function openCompose(to, subject, body) {
         if (root.detailCollapsed) {
-            root.popOutCompose(to || "", subject || "", body || "")
+            root.popOutCompose(to || "", subject || "", body || "", false)
             return
         }
         root.composeSeed = { to: to || "", subject: subject || "", body: body || "" }
@@ -725,7 +725,9 @@ Kirigami.ApplicationWindow {
             initialSubject: root.composeSeed.subject
             initialBody: root.composeSeed.body
             onSendSucceeded: root.closeDetail()
-            onPopOutRequested: function (to, subject, body) { root.popOutCompose(to, subject, body) }
+            onPopOutRequested: function (to, subject, body, bodyIsHtml) {
+                root.popOutCompose(to, subject, body, bodyIsHtml)
+            }
         }
     }
 
@@ -809,13 +811,14 @@ Kirigami.ApplicationWindow {
             property string popInitialTo: ""
             property string popInitialSubject: ""
             property string popInitialBody: ""
+            property bool popInitialBodyIsHtml: false
 
             Compose {
                 anchors.fill: parent
                 initialTo: composeWindow.popInitialTo
                 initialSubject: composeWindow.popInitialSubject
                 initialBody: composeWindow.popInitialBody
-                initialBodyIsHtml: true
+                initialBodyIsHtml: composeWindow.popInitialBodyIsHtml
                 isPoppedOut: true
                 onSendSucceeded: composeWindow.close()
                 // No MailApp.sendWarning sink here: this Window closes on
@@ -902,9 +905,10 @@ Kirigami.ApplicationWindow {
         root.closeDetail()
     }
 
-    function popOutCompose(to, subject, body) {
+    function popOutCompose(to, subject, body, bodyIsHtml) {
         const win = composeWindowComponent.createObject(
-            null, { popInitialTo: to, popInitialSubject: subject, popInitialBody: body })
+            null, { popInitialTo: to, popInitialSubject: subject, popInitialBody: body,
+                    popInitialBodyIsHtml: bodyIsHtml === true })
         win.show()
         win.raise()
         win.requestActivate()

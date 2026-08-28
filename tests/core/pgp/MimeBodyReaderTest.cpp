@@ -32,6 +32,7 @@ private slots:
     void aLaterNonBlankSiblingWins();
     void nestingIsBounded();
     void partCountIsBounded();
+    void walkedBytesAreBounded();
     void emptyInputIsEmpty();
 };
 
@@ -422,6 +423,15 @@ void MimeBodyReaderTest::partCountIsBounded()
     const MimeBody body = readMimeBody(message);
     QVERIFY2(!body.plain.contains(QStringLiteral("past the budget")),
              "the part-count bound did not stop the walk");
+}
+
+void MimeBodyReaderTest::walkedBytesAreBounded()
+{
+    QByteArray message = "Content-Type: text/plain\r\n\r\n";
+    message.append(9 * 1024 * 1024, 'x');
+
+    const MimeBody body = readMimeBody(message);
+    QVERIFY2(body.plain.isEmpty(), "the MIME walk exceeded its cumulative byte budget");
 }
 
 void MimeBodyReaderTest::emptyInputIsEmpty()

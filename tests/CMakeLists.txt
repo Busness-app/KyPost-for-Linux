@@ -387,7 +387,8 @@ target_compile_definitions(QmlTests PRIVATE
 # offscreen: CI has no display, and these tests only assert on bindings and
 # item state, never on rendered pixels.
 add_test(NAME QmlTests COMMAND QmlTests)
-set_tests_properties(QmlTests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+set_tests_properties(QmlTests PROPERTIES
+  ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QML_XHR_ALLOW_FILE_READ=1")
 
 # QmlTests above instantiates a handful of leaf components. It cannot load
 # DesktopRoot or MobileRoot -- those need every C++ singleton -- so a property
