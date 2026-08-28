@@ -36,7 +36,7 @@ struct MimeBody
 //
 // INPUT IS ATTACKER-CONTROLLED -- it is whatever the sender encrypted, and
 // the relay never saw it, so nothing upstream has sanity-checked its shape.
-// Nesting depth, part count and header size are all bounded; see the
+// Nesting depth, part count, header size and cumulative walked bytes are all bounded; see the
 // constants in the .cpp. Exceeding a bound stops the walk and returns
 // whatever was already found, never a partial part.
 //

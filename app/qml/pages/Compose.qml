@@ -48,7 +48,7 @@ Item {
     // EmailDetail.composeRequested -- doesn't carry those either). The host
     // is expected to close this embedded copy in response, same "host
     // decides what to do" shape as sendSucceeded() above.
-    signal popOutRequested(string to, string subject, string body)
+    signal popOutRequested(string to, string subject, string body, bool bodyIsHtml)
 
     implicitWidth: 360
     implicitHeight: 640
@@ -314,7 +314,7 @@ Item {
                 tooltip: i18n("Open in New Window")
                 onClicked: {
                     root.currentDraftForPopOut(function(draft) {
-                        root.popOutRequested(draft.to, draft.subject, draft.body)
+                        root.popOutRequested(draft.to, draft.subject, draft.body, true)
                     })
                 }
             }

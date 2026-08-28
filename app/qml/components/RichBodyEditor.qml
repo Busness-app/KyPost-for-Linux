@@ -3,6 +3,7 @@ import QtQuick.Controls 2.15
 import QtQuick.Layouts 1.15
 import QtWebEngine
 import com.kysecurity.mail 1.0
+import "../utils/format.js" as Format
 
 // Compose's rich HTML body editor (supersedes the earlier plain-TextArea-
 // only constraint). The editing surface is a contenteditable WebEngineView.
@@ -42,7 +43,8 @@ Item {
         // it (only visible live, not in a full-frame screenshot). padding
         // replaces the old margin so body still keeps its inset now that
         // it's stretched to 100% height.
-        return "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><style>"
+        return "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><meta http-equiv=\"Content-Security-Policy\" content=\""
+            + Format.emailContentSecurityPolicy(false) + "\"><style>"
             + "html, body { height: 100%; margin: 0; background: " + Theme.panel + "; }"
             + "body { font-family: sans-serif; font-size: 14px; padding: 8px; "
             + "box-sizing: border-box; color: " + Theme.inkStrong + "; }"

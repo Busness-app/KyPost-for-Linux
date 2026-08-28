@@ -90,6 +90,11 @@ core/net/PgpResolveClient.cpp	    key.usable = object.value(QStringLiteral("usab
 # --- a MIME boundary is not a prefix of another --------------------------
 core/pgp/MimeBodyReader.cpp	        if (!terminated) {	        if (false) {	MimeBodyReaderTest:nestedBoundariesThatPrefixEachOtherDoNotTruncate
 
+# --- sender text is never treated as trusted compose HTML ----------------
+app/qml/DesktopRoot.qml	                initialBodyIsHtml: composeWindow.popInitialBodyIsHtml	                initialBodyIsHtml: true	ComposeSeeding:test_popout_compose_preserves_body_trust
+# A decrypted MIME entity cannot make the recursive walker copy arbitrary bytes.
+core/pgp/MimeBodyReader.cpp	    if (depth > kMaxDepth || partBudget <= 0 || raw.size() > byteBudget)	if (false)	MimeBodyReaderTest:walkedBytesAreBounded
+
 # --- a header value cannot inject another header -------------------------
 core/pgp/PgpMimeWriter.cpp	    value.remove(QLatin1Char('"'));		PgpMimeWriterTest:aFilenameCannotEscapeItsQuotedString
 

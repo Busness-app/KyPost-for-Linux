@@ -18,6 +18,7 @@ namespace {
 constexpr int kMaxDepth = 8;
 constexpr int kMaxParts = 64;
 constexpr qsizetype kMaxHeaderBytes = 64 * 1024;
+constexpr qsizetype kMaxWalkBytes = 8 * 1024 * 1024;
 
 struct Entity
 {
@@ -307,11 +308,12 @@ QList<QByteArray> splitOnBoundary(const QByteArray& body, const QByteArray& boun
     return parts;
 }
 
-void walk(const QByteArray& raw, int depth, int& partBudget, MimeBody& out)
+void walk(const QByteArray& raw, int depth, int& partBudget, qsizetype& byteBudget, MimeBody& out)
 {
-    if (depth > kMaxDepth || partBudget <= 0)
+    if (depth > kMaxDepth || partBudget <= 0 || raw.size() > byteBudget)
         return;
     --partBudget;
+    byteBudget -= raw.size();
 
     const Entity entity = parseEntity(raw);
     const QByteArray contentType = headerOf(entity, "content-type");
@@ -322,7 +324,7 @@ void walk(const QByteArray& raw, int depth, int& partBudget, MimeBody& out)
         for (const QByteArray& part : parts) {
             if (partBudget <= 0)
                 return;
-            walk(part, depth + 1, partBudget, out);
+            walk(part, depth + 1, partBudget, byteBudget, out);
         }
         return;
     }
@@ -363,7 +365,8 @@ MimeBody readMimeBody(const QByteArray& entity)
     }
 
     int partBudget = kMaxParts;
-    walk(entity, 0, partBudget, out);
+    qsizetype byteBudget = kMaxWalkBytes;
+    walk(entity, 0, partBudget, byteBudget, out);
 
     // Structure said MIME and the walk found no readable text: an entity
     // whose only parts are attachments, or one whose boundary this parser
