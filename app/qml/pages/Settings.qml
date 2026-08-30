@@ -365,7 +365,10 @@ Item {
                         width: keywordListView.width
                         height: keywordRowContent.implicitHeight + 16
                         radius: Theme.shapeButton
-                        color: keywordHover.hovered ? Theme.panel : "transparent"
+                        color: keywordDrag.active || keywordDrop.containsDrag || keywordHover.hovered
+                               ? Theme.panel : "transparent"
+                        border.width: keywordDrop.containsDrag && !keywordDrag.active ? 1 : 0
+                        border.color: Theme.accent
                         Drag.active: keywordDrag.active
                         Drag.source: keywordDelegate
                         Drag.hotSpot.x: width / 2
@@ -390,15 +393,6 @@ Item {
                                 font.family: Theme.fontUi
                                 font.pixelSize: 18
                                 Accessible.name: i18n("Drag to reorder")
-
-                                DragHandler {
-                                    id: keywordDrag
-                                    target: null
-                                    onActiveChanged: {
-                                        if (!active)
-                                            root.persistKeywordOrder()
-                                    }
-                                }
                             }
 
                             Text {
@@ -423,7 +417,18 @@ Item {
                             id: keywordHover
                         }
 
+                        DragHandler {
+                            id: keywordDrag
+                            target: null
+                            cursorShape: active ? Qt.ClosedHandCursor : Qt.OpenHandCursor
+                            onActiveChanged: {
+                                if (!active)
+                                    root.persistKeywordOrder()
+                            }
+                        }
+
                         DropArea {
+                            id: keywordDrop
                             anchors.fill: parent
                             onEntered: function (drag) {
                                 const from = drag.source ? drag.source.visualIndex : -1
