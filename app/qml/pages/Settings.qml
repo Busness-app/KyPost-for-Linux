@@ -55,13 +55,13 @@ Item {
 
     property int currentPane: 0 // 0 Connection, 1 Appearance, 2 Keywords, 3 Contacts, 4 Notifications, 5 General, 6 Security
     readonly property var paneTabs: [
-        { "name": i18n("Connection"), "pane": 0 },
         { "name": i18n("General"), "pane": 5 },
         { "name": i18n("Appearance"), "pane": 1 },
         { "name": i18n("Notifications"), "pane": 4 },
         { "name": i18n("Contacts"), "pane": 3 },
         { "name": i18n("Keywords"), "pane": 2 },
-        { "name": i18n("Security"), "pane": 6 }
+        { "name": i18n("Security"), "pane": 6 },
+        { "name": i18n("Connection"), "pane": 0 }
     ]
 
     // MailApp.allKeywordSettings() is a Q_INVOKABLE snapshot, not a
@@ -121,21 +121,17 @@ Item {
                 font.weight: Font.Bold
             }
             GhostButton {
-                text: i18n("Support KyPost")
-                onClicked: Qt.openUrlExternally("https://buymeacoffee.com/yoshiofthewire")
-            }
-            GhostButton {
                 text: i18n("Done")
                 onClicked: root.closed()
             }
         }
 
         // ---- pane selector -------------------------------------------------
-        Flow {
-            id: paneTabFlow
+        GridLayout {
             Layout.fillWidth: true
-            Layout.preferredHeight: childrenRect.height
-            spacing: 8
+            columns: width >= 600 ? 4 : 3
+            columnSpacing: 8
+            rowSpacing: 8
 
             Repeater {
                 model: root.paneTabs
@@ -143,6 +139,7 @@ Item {
                     // No textFormat here: PillTab is not a Text, and its
                     // own label already pins Text.PlainText.
                     text: modelData.name
+                    Layout.fillWidth: true
                     selected: root.currentPane === modelData.pane
                     onClicked: root.currentPane = modelData.pane
                 }
@@ -545,12 +542,6 @@ Item {
                         }
                     }
 
-                    MutedHint {
-                        Layout.fillWidth: true
-                        wrapMode: Text.WordWrap
-                        text: i18n("Restart KyPost for interface mode changes to take effect.")
-                    }
-
                     // Desktop-only: gated on the mode THIS process actually
                     // resolved to at startup, not the pending preference above --
                     // never shown mid-session in a Mobile launch even if the
@@ -600,6 +591,12 @@ Item {
                     }
 
                     SectionLabel { text: i18n("About") }
+
+                    GhostButton {
+                        Layout.alignment: Qt.AlignLeft
+                        text: i18n("Support KyPost")
+                        onClicked: Qt.openUrlExternally("https://buymeacoffee.com/yoshiofthewire")
+                    }
 
                     UpdateNotice {
                         Layout.fillWidth: true

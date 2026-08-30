@@ -39,9 +39,11 @@ QString SettingsStore::preferredMode() const
     return m_settings.value(kPreferredModeKey, kDefaultPreferredMode).toString();
 }
 
-void SettingsStore::setPreferredMode(const QString& mode)
+bool SettingsStore::setPreferredMode(const QString& mode)
 {
     m_settings.setValue(kPreferredModeKey, mode);
+    m_settings.sync();
+    return m_settings.status() == QSettings::NoError;
 }
 
 bool SettingsStore::trayIconEnabled() const

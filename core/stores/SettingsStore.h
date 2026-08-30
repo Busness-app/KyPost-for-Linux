@@ -21,9 +21,9 @@ public:
     // Interface mode: "auto" (defer to QT_QUICK_CONTROLS_MOBILE), "desktop",
     // or "mobile" -- an explicit value here overrides the env var. Read once
     // at startup (see main.cpp's convergent root selection); changing it
-    // takes effect on next launch, not live.
+    // triggers a relaunch through GeneralController.
     QString preferredMode() const;
-    void setPreferredMode(const QString& mode);
+    [[nodiscard]] bool setPreferredMode(const QString& mode);
 
     // System tray (desktop mode only -- see GeneralController::isDesktopMode).
     bool trayIconEnabled() const;

@@ -18,8 +18,10 @@ void GeneralController::setPreferredMode(const QString& mode)
 {
     if (mode == preferredMode())
         return;
-    m_settingsStore.setPreferredMode(mode);
+    if (!m_settingsStore.setPreferredMode(mode))
+        return;
     emit preferredModeChanged();
+    emit relaunchRequired();
 }
 
 bool GeneralController::isDesktopMode() const

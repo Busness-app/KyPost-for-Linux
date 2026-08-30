@@ -179,6 +179,12 @@ kypost_add_app_test(AppLockManagerTest
     KF6::I18n
 )
 
+kypost_add_app_test(GeneralControllerTest
+  SOURCES
+    ${CMAKE_SOURCE_DIR}/app/general/GeneralControllerTest.cpp
+    ${CMAKE_SOURCE_DIR}/app/general/GeneralController.cpp
+)
+
 kypost_add_app_test(PgpMessagePresentationTest
   SOURCES
     app/mail/PgpMessagePresentationTest.cpp

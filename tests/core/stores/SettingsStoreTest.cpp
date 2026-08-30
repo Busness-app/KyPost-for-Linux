@@ -11,6 +11,7 @@ class SettingsStoreTest : public QObject
 private slots:
     void defaultsAreUnset();
     void themeIdRoundTrips();
+    void preferredModeRoundTrips();
     void pushDeliveryFieldsRoundTrip();
     void keywordVisibleDefaultsTrueUntilExplicitlyToggled();
     void aHostileLocationFlagThatCannotReachTheDiskIsReportedAsFailed();
@@ -41,6 +42,16 @@ void SettingsStoreTest::themeIdRoundTrips()
 
     store.setThemeId(QStringLiteral("Solar Flare"));
     QCOMPARE(store.themeId(), QStringLiteral("Solar Flare"));
+}
+
+void SettingsStoreTest::preferredModeRoundTrips()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    SettingsStore store(tempFilePath(dir, QStringLiteral("settings.ini")));
+
+    QVERIFY(store.setPreferredMode(QStringLiteral("mobile")));
+    QCOMPARE(store.preferredMode(), QStringLiteral("mobile"));
 }
 
 void SettingsStoreTest::pushDeliveryFieldsRoundTrip()

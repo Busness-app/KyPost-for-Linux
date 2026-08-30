@@ -386,6 +386,8 @@ int main(int argc, char* argv[])
     GeneralController generalController(settingsStore, !isMobile);
     qmlRegisterSingletonInstance<GeneralController>(
         "com.kysecurity.mail", 1, 0, "General", &generalController);
+    QObject::connect(&generalController, &GeneralController::relaunchRequired,
+                     &generalController, []() { AppRelauncher::requestRelaunch(); });
 
     // The startup window, up BEFORE anything that can block.
     //
