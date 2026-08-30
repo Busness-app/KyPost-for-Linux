@@ -30,7 +30,7 @@ import "." as PagesDir
 // it needs no second top-level window/event-loop lifetime to manage, unlike
 // a real separate ApplicationWindow.
 //
-// 5 panes selected via a PillTab strip, not QtQuick.Controls
+// Settings panes selected via PillTabs, not QtQuick.Controls
 // TabBar/TabButton -- keeps this screen themed via the same "PillTab as a
 // segmented selector" convention MobileRoot.qml's keyword pill row already
 // established, rather than introducing a second, unthemed tab-chrome
@@ -54,7 +54,15 @@ Item {
     implicitHeight: 560
 
     property int currentPane: 0 // 0 Connection, 1 Appearance, 2 Keywords, 3 Contacts, 4 Notifications, 5 General, 6 Security
-    readonly property var paneNames: [i18n("Connection"), i18n("Appearance"), i18n("Keywords"), i18n("Contacts"), i18n("Notifications"), i18n("General"), i18n("Security")]
+    readonly property var paneTabs: [
+        { "name": i18n("Connection"), "pane": 0 },
+        { "name": i18n("General"), "pane": 5 },
+        { "name": i18n("Appearance"), "pane": 1 },
+        { "name": i18n("Notifications"), "pane": 4 },
+        { "name": i18n("Contacts"), "pane": 3 },
+        { "name": i18n("Keywords"), "pane": 2 },
+        { "name": i18n("Security"), "pane": 6 }
+    ]
 
     // MailApp.allKeywordSettings() is a Q_INVOKABLE snapshot, not a
     // NOTIFY-bound property (see MailController.h's doc comment on why) --
@@ -119,34 +127,21 @@ Item {
         }
 
         // ---- pane selector -------------------------------------------------
-        Flickable {
+        Flow {
+            id: paneTabFlow
             Layout.fillWidth: true
-            // +10 reserves dedicated space below the pills for the
-            // horizontal scrollbar thumb, so it doesn't sit on top of the
-            // pane-selector pills themselves.
-            implicitHeight: paneTabRow.implicitHeight + 10
-            contentWidth: paneTabRow.implicitWidth
-            contentHeight: paneTabRow.implicitHeight
-            clip: true
-            boundsBehavior: Flickable.StopAtBounds
-            flickableDirection: Flickable.HorizontalFlick
-            ScrollBar.horizontal: ThemedScrollBar {}
+            Layout.preferredHeight: implicitHeight
+            spacing: 8
+            implicitHeight: childrenRect.height
 
-            Row {
-                id: paneTabRow
-                spacing: 8
-
-                Repeater {
-                    model: root.paneNames
-                    delegate: PillTab {
-                        // No textFormat here: PillTab is not a Text, and its
-                        // own label already pins Text.PlainText. Assigning it
-                        // from outside made the whole component fail to load,
-                        // which took DesktopRoot down with it.
-                        text: modelData
-                        selected: root.currentPane === index
-                        onClicked: root.currentPane = index
-                    }
+            Repeater {
+                model: root.paneTabs
+                delegate: PillTab {
+                    // No textFormat here: PillTab is not a Text, and its
+                    // own label already pins Text.PlainText.
+                    text: modelData.name
+                    selected: root.currentPane === modelData.pane
+                    onClicked: root.currentPane = modelData.pane
                 }
             }
         }
