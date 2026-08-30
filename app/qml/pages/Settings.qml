@@ -135,8 +135,10 @@ Item {
             // the conventional desktop layout. The old chip Flow/Grid sized
             // itself wider than the OverlaySheet and clipped both ends.
             ColumnLayout {
+                Layout.fillWidth: false
+                Layout.minimumWidth: General.isDesktopMode ? 140 : 112
                 Layout.preferredWidth: General.isDesktopMode ? 140 : 112
-                Layout.minimumWidth: Layout.preferredWidth
+                Layout.maximumWidth: General.isDesktopMode ? 140 : 112
                 Layout.alignment: Qt.AlignTop
                 spacing: 4
 
@@ -171,6 +173,7 @@ Item {
 
             StackLayout {
                 Layout.fillWidth: true
+                Layout.minimumWidth: 0
                 Layout.fillHeight: true
                 currentIndex: root.currentPane
 
