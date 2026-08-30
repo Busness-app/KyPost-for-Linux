@@ -96,6 +96,9 @@ public:
         // peerCertificate() is populated on reused connections too, so this
         // is both correct and per-request.
         QByteArray peerSpkiSha256;
+        // True only when this request was scoped to a configured pin and the
+        // reply's verified TLS chain satisfied it.
+        bool certificatePinVerified = false;
     };
 
     // Byte ceilings for a response body. A relay is inside this app's threat

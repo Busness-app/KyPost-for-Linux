@@ -569,6 +569,7 @@ void HttpClientTest::aRequestOnAPooledConnectionIsStillPinChecked()
     // the handshake that puts the connection in the pool.
     const HttpClient::HttpResult first = client.get(url, {});
     QVERIFY2(!first.error.has_value(), qUtf8Printable(first.detail));
+    QVERIFY(!first.certificatePinVerified);
     QCOMPARE(first.statusCode, 200);
     QCOMPARE(server.connectionCount(), 1);
 
@@ -583,6 +584,7 @@ void HttpClientTest::aRequestOnAPooledConnectionIsStillPinChecked()
 
     QVERIFY(second.error.has_value());
     QCOMPARE(*second.error, NetworkError::CertificateMismatch);
+    QVERIFY(!second.certificatePinVerified);
     // Same failure shape as an aborted handshake: nothing the unpinned
     // server said is handed back.
     QVERIFY(second.body.isEmpty());
@@ -599,6 +601,7 @@ void HttpClientTest::aRequestOnAPooledConnectionIsStillPinChecked()
     client.setCertificatePin(honestPin, url);
     const HttpClient::HttpResult third = client.get(url, {});
     QVERIFY2(!third.error.has_value(), qUtf8Printable(third.detail));
+    QVERIFY(third.certificatePinVerified);
     QCOMPARE(third.statusCode, 200);
     QCOMPARE(server.connectionCount(), 1);
     QCOMPARE(reported.size(), 1);

@@ -145,17 +145,16 @@ NativeRegistrationResult DeviceRegistrationService::finishPair(PairAttempt attem
     if (result.outcome != RegistrationOutcome::Success)
         return result; // ~PairAttempt restores the pin
 
-    // A link-supplied pin was armed on the sink before the request, and
-    // HttpClient aborts a handshake that does not match one, so reaching here
-    // with a disagreement would mean enforcement did not actually cover this
-    // request. Unreachable by construction -- and therefore exactly the kind
-    // of assumption worth failing closed on rather than persisting.
-    if (!params.spkiPin.isEmpty() && !result.peerSpkiSha256.isEmpty()
-        && params.spkiPin != result.peerSpkiSha256) {
+    // Do not reinterpret Qt's exported chain here. HttpClient already checked
+    // the configured pin against the reply's verified chain; carry that fact
+    // across the async boundary. A supplied HTTPS pin that was not enforced
+    // is still a fail-closed condition.
+    if (!params.spkiPin.isEmpty() && QUrl(params.serverBaseUrl).scheme() == QLatin1String("https")
+        && !result.certificatePinVerified) {
         NativeRegistrationResult mismatch = result;
         mismatch.outcome = RegistrationOutcome::Failure;
-        qWarning("DeviceRegistrationService: the server presented a key other than the one the "
-                 "pairing link pinned; refusing to save this pairing");
+        qWarning("DeviceRegistrationService: the registration did not verify the pairing link's "
+                 "certificate pin; refusing to save this pairing");
         return mismatch; // ~PairAttempt restores the pin
     }
 
@@ -164,7 +163,7 @@ NativeRegistrationResult DeviceRegistrationService::finishPair(PairAttempt attem
     // means the peer matched it, and taking it from here keeps a pooled
     // connection that produced no fresh handshake evidence
     // (peerSpkiSha256 empty) from downgrading a pinned pairing to none.
-    const QByteArray anchorPin = params.spkiPin.isEmpty() ? result.peerSpkiSha256 : params.spkiPin;
+    const QByteArray anchorPin = !result.peerSpkiSha256.isEmpty() ? result.peerSpkiSha256 : params.spkiPin;
 
     DevicePairing pairing;
     pairing.subscriberId = params.subscriberId;
