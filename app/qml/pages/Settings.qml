@@ -53,7 +53,7 @@ Item {
     implicitWidth: 480
     implicitHeight: 560
 
-    property int currentPane: 0 // 0 Connection, 1 Appearance, 2 Keywords, 3 Contacts, 4 Notifications, 5 General, 6 Security
+    property int currentPane: 5 // 0 Connection, 1 Appearance, 2 Keywords, 3 Contacts, 4 Notifications, 5 General, 6 Security
     readonly property var paneTabs: [
         { "name": i18n("General"), "pane": 5 },
         { "name": i18n("Appearance"), "pane": 1 },
