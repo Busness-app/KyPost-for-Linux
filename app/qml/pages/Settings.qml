@@ -126,30 +126,53 @@ Item {
             }
         }
 
-        // ---- pane selector -------------------------------------------------
-        GridLayout {
-            Layout.fillWidth: true
-            columns: width >= 600 ? 4 : 3
-            columnSpacing: 8
-            rowSpacing: 8
-
-            Repeater {
-                model: root.paneTabs
-                delegate: PillTab {
-                    // No textFormat here: PillTab is not a Text, and its
-                    // own label already pins Text.PlainText.
-                    text: modelData.name
-                    Layout.fillWidth: true
-                    selected: root.currentPane === modelData.pane
-                    onClicked: root.currentPane = modelData.pane
-                }
-            }
-        }
-
-        StackLayout {
+        RowLayout {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            currentIndex: root.currentPane
+            spacing: 16
+
+            // A settings sidebar is predictable at every sheet width and is
+            // the conventional desktop layout. The old chip Flow/Grid sized
+            // itself wider than the OverlaySheet and clipped both ends.
+            ColumnLayout {
+                Layout.preferredWidth: General.isDesktopMode ? 140 : 112
+                Layout.minimumWidth: Layout.preferredWidth
+                Layout.alignment: Qt.AlignTop
+                spacing: 4
+
+                Repeater {
+                    model: root.paneTabs
+                    delegate: Rectangle {
+                        Layout.fillWidth: true
+                        implicitHeight: 38
+                        radius: Theme.shapeControl
+                        color: root.currentPane === modelData.pane ? Theme.accentSoft : "transparent"
+
+                        Text {
+                            anchors.fill: parent
+                            anchors.leftMargin: 12
+                            anchors.rightMargin: 12
+                            verticalAlignment: Text.AlignVCenter
+                            textFormat: Text.PlainText
+                            text: modelData.name
+                            elide: Text.ElideRight
+                            color: root.currentPane === modelData.pane ? Theme.accent : Theme.ink
+                            font.family: Theme.fontUi
+                            font.pixelSize: 13
+                            font.weight: root.currentPane === modelData.pane ? Font.DemiBold : Font.Normal
+                        }
+
+                        TapHandler {
+                            onTapped: root.currentPane = modelData.pane
+                        }
+                    }
+                }
+            }
+
+            StackLayout {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                currentIndex: root.currentPane
 
             // ---- 1. Connection ----------------------------------------
             // Wrapped in a Flickable (same reasoning as EmailDetail.qml/
@@ -931,6 +954,7 @@ Item {
                         }
                     }
                 }
+            }
             }
         }
     }
