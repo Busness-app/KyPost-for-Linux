@@ -5,7 +5,7 @@ cmake_minimum_required(VERSION 3.21)
 # core/net/HttpClient.cpp. Keep it in step with the <release> entries in
 # packaging/flatpak/com.kysecurity.mail.metainfo.xml and with the release
 # tag -- scripts/verify-version.sh enforces this in CI.
-project(KyPost VERSION 0.2.0 LANGUAGES CXX)
+project(KyPost VERSION 0.4.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
@@ -115,5 +115,7 @@ find_package(KF6I18n REQUIRED)
 add_subdirectory(core)
 add_subdirectory(app)
 add_subdirectory(po)
-enable_testing()
-add_subdirectory(tests)
+include(CTest)
+if(BUILD_TESTING)
+  add_subdirectory(tests)
+endif()

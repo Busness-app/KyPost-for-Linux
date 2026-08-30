@@ -206,7 +206,7 @@ HttpClient::HttpResult HttpClient::get(const QUrl& url, const QList<QPair<QStrin
     assertOwningThread("HttpClient::get");
     const QUrl requestUrl = urlWithQuery(url, query);
     if (!requestUrl.isValid())
-        return HttpResult{ NetworkError::InvalidUrl, 0, {}, QStringLiteral("Invalid URL"), {}, {} };
+        return HttpResult{ NetworkError::InvalidUrl, 0, {}, QStringLiteral("Invalid URL"), {}, {}, {} };
 
     QNetworkRequest request(requestUrl);
     applyDefaultHeaders(request, headers);
@@ -232,7 +232,7 @@ HttpClient::HttpResult HttpClient::post(const QUrl& url, const QList<QPair<QStri
     assertOwningThread("HttpClient::post");
     const QUrl requestUrl = urlWithQuery(url, query);
     if (!requestUrl.isValid())
-        return HttpResult{ NetworkError::InvalidUrl, 0, {}, QStringLiteral("Invalid URL"), {}, {} };
+        return HttpResult{ NetworkError::InvalidUrl, 0, {}, QStringLiteral("Invalid URL"), {}, {}, {} };
 
     QNetworkRequest request(requestUrl);
     request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
@@ -250,7 +250,7 @@ HttpClient::HttpResult HttpClient::put(const QUrl& url, const QList<QPair<QStrin
     assertOwningThread("HttpClient::put");
     const QUrl requestUrl = urlWithQuery(url, query);
     if (!requestUrl.isValid())
-        return HttpResult{ NetworkError::InvalidUrl, 0, {}, QStringLiteral("Invalid URL"), {}, {} };
+        return HttpResult{ NetworkError::InvalidUrl, 0, {}, QStringLiteral("Invalid URL"), {}, {}, {} };
 
     QNetworkRequest request(requestUrl);
     request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
@@ -268,7 +268,7 @@ HttpClient::HttpResult HttpClient::del(const QUrl& url, const QList<QPair<QStrin
     assertOwningThread("HttpClient::del");
     const QUrl requestUrl = urlWithQuery(url, query);
     if (!requestUrl.isValid())
-        return HttpResult{ NetworkError::InvalidUrl, 0, {}, QStringLiteral("Invalid URL"), {}, {} };
+        return HttpResult{ NetworkError::InvalidUrl, 0, {}, QStringLiteral("Invalid URL"), {}, {}, {} };
 
     QNetworkRequest request(requestUrl);
     applyDefaultHeaders(request, headers);
@@ -424,7 +424,8 @@ HttpClient::HttpResult HttpClient::waitForReply(QNetworkReply* reply, const Redi
     // the chain here rather than in ::encrypted matters for the same
     // keep-alive reason as above, and peerCertificateChain() was confirmed
     // populated on pooled reuses too, not just fresh handshakes.
-    result.peerSpkiSha256 = pinnedSpkiFromChain(reply->sslConfiguration().peerCertificateChain());
+    const QList<QSslCertificate> peerChain = reply->sslConfiguration().peerCertificateChain();
+    result.peerSpkiSha256 = pinnedSpkiFromChain(peerChain);
     // The pin against THIS request rather than against the connection it
     // happened to travel on. ::encrypted cannot do that: a connection opened
     // while the pin was deliberately suspended (DeviceRegistrationService
@@ -439,6 +440,7 @@ HttpClient::HttpResult HttpClient::waitForReply(QNetworkReply* reply, const Redi
             observedSpki = *observed;
         }
     }
+    result.certificatePinVerified = enforcePin && !pinMismatch;
 
     const QList<QNetworkReply::RawHeaderPair> rawHeaders = reply->rawHeaderPairs();
     result.headers.reserve(rawHeaders.size());

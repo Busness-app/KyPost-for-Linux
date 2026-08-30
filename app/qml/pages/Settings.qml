@@ -30,7 +30,7 @@ import "." as PagesDir
 // it needs no second top-level window/event-loop lifetime to manage, unlike
 // a real separate ApplicationWindow.
 //
-// 5 panes selected via a PillTab strip, not QtQuick.Controls
+// Settings panes selected via PillTabs, not QtQuick.Controls
 // TabBar/TabButton -- keeps this screen themed via the same "PillTab as a
 // segmented selector" convention MobileRoot.qml's keyword pill row already
 // established, rather than introducing a second, unthemed tab-chrome
@@ -53,15 +53,20 @@ Item {
     implicitWidth: 480
     implicitHeight: 560
 
-    property int currentPane: 0 // 0 Connection, 1 Appearance, 2 Keywords, 3 Contacts, 4 Notifications, 5 General, 6 Security
-    readonly property var paneNames: [i18n("Connection"), i18n("Appearance"), i18n("Keywords"), i18n("Contacts"), i18n("Notifications"), i18n("General"), i18n("Security")]
+    property int currentPane: 5 // 0 Connection, 1 Appearance, 2 Keywords, 3 Contacts, 4 Notifications, 5 General, 6 Security
+    readonly property var paneTabs: [
+        { "name": i18n("General"), "pane": 5 },
+        { "name": i18n("Appearance"), "pane": 1 },
+        { "name": i18n("Notifications"), "pane": 4 },
+        { "name": i18n("Contacts"), "pane": 3 },
+        { "name": i18n("Keywords"), "pane": 2 },
+        { "name": i18n("Security"), "pane": 6 },
+        { "name": i18n("Connection"), "pane": 0 }
+    ]
 
-    // MailApp.allKeywordSettings() is a Q_INVOKABLE snapshot, not a
-    // NOTIFY-bound property (see MailController.h's doc comment on why) --
-    // cached here as a plain JS array and re-pulled on load and after every
-    // toggle so the Keywords pane's row list stays in sync with whatever
-    // setKeywordVisible() just wrote.
-    property var keywordSettings: []
+    ListModel {
+        id: keywordSettingsModel
+    }
 
     // Which erase-after value the PIN prompt is about to apply. Held here
     // rather than passed through securityPrompt.begin() because that helper
@@ -75,7 +80,17 @@ Item {
     property int graceSecondsChoice: 0
 
     function refreshKeywordSettings() {
-        root.keywordSettings = MailApp.allKeywordSettings()
+        const settings = MailApp.allKeywordSettings()
+        keywordSettingsModel.clear()
+        for (let i = 0; i < settings.length; ++i)
+            keywordSettingsModel.append(settings[i])
+    }
+
+    function persistKeywordOrder() {
+        const keywords = []
+        for (let i = 0; i < keywordSettingsModel.count; ++i)
+            keywords.push(keywordSettingsModel.get(i).keyword)
+        MailApp.setKeywordOrder(keywords)
     }
 
     Component.onCompleted: refreshKeywordSettings()
@@ -102,6 +117,7 @@ Item {
         // ---- header ------------------------------------------------------
         RowLayout {
             Layout.fillWidth: true
+            visible: General.isDesktopMode
             spacing: 8
 
             Text {
@@ -118,43 +134,57 @@ Item {
             }
         }
 
-        // ---- pane selector -------------------------------------------------
-        Flickable {
+        RowLayout {
             Layout.fillWidth: true
-            // +10 reserves dedicated space below the pills for the
-            // horizontal scrollbar thumb, so it doesn't sit on top of the
-            // pane-selector pills themselves.
-            implicitHeight: paneTabRow.implicitHeight + 10
-            contentWidth: paneTabRow.implicitWidth
-            contentHeight: paneTabRow.implicitHeight
-            clip: true
-            boundsBehavior: Flickable.StopAtBounds
-            flickableDirection: Flickable.HorizontalFlick
-            ScrollBar.horizontal: ThemedScrollBar {}
+            Layout.fillHeight: true
+            spacing: 16
 
-            Row {
-                id: paneTabRow
-                spacing: 8
+            // A settings sidebar is predictable at every sheet width and is
+            // the conventional desktop layout. The old chip Flow/Grid sized
+            // itself wider than the OverlaySheet and clipped both ends.
+            ColumnLayout {
+                visible: General.isDesktopMode
+                Layout.fillWidth: false
+                Layout.minimumWidth: 140
+                Layout.preferredWidth: 140
+                Layout.maximumWidth: 140
+                Layout.alignment: Qt.AlignTop
+                spacing: 4
 
                 Repeater {
-                    model: root.paneNames
-                    delegate: PillTab {
-                        // No textFormat here: PillTab is not a Text, and its
-                        // own label already pins Text.PlainText. Assigning it
-                        // from outside made the whole component fail to load,
-                        // which took DesktopRoot down with it.
-                        text: modelData
-                        selected: root.currentPane === index
-                        onClicked: root.currentPane = index
+                    model: root.paneTabs
+                    delegate: Rectangle {
+                        Layout.fillWidth: true
+                        implicitHeight: 38
+                        radius: Theme.shapeButton
+                        color: root.currentPane === modelData.pane ? Theme.accentSoft : "transparent"
+
+                        Text {
+                            anchors.fill: parent
+                            anchors.leftMargin: 12
+                            anchors.rightMargin: 12
+                            verticalAlignment: Text.AlignVCenter
+                            textFormat: Text.PlainText
+                            text: modelData.name
+                            elide: Text.ElideRight
+                            color: root.currentPane === modelData.pane ? Theme.accent : Theme.ink
+                            font.family: Theme.fontUi
+                            font.pixelSize: 13
+                            font.weight: root.currentPane === modelData.pane ? Font.DemiBold : Font.Normal
+                        }
+
+                        TapHandler {
+                            onTapped: root.currentPane = modelData.pane
+                        }
                     }
                 }
             }
-        }
 
-        StackLayout {
-            Layout.fillWidth: true
-            Layout.fillHeight: true
-            currentIndex: root.currentPane
+            StackLayout {
+                Layout.fillWidth: true
+                Layout.minimumWidth: 0
+                Layout.fillHeight: true
+                currentIndex: root.currentPane
 
             // ---- 1. Connection ----------------------------------------
             // Wrapped in a Flickable (same reasoning as EmailDetail.qml/
@@ -324,18 +354,55 @@ Item {
 
                 ListView {
                     id: keywordListView
+                    property bool reorderActive: false
+                    property var dragSource: null
+                    property real dragY: -1
+                    property int dropIndex: -1
                     anchors.fill: parent
                     visible: count > 0
                     clip: true
                     spacing: 4
-                    model: root.keywordSettings
+                    model: keywordSettingsModel
                     ScrollBar.vertical: ThemedScrollBar {}
 
+                    Timer {
+                        interval: 30
+                        repeat: true
+                        running: keywordListView.reorderActive
+                        onTriggered: {
+                            if (keywordListView.dragSource) {
+                                keywordListView.dragY = keywordListView.mapFromItem(
+                                    keywordListView.dragSource,
+                                    keywordListView.dragSource.width / 2,
+                                    keywordListView.dragSource.height / 2).y
+                            }
+                            const edge = 48
+                            const maximum = Math.max(0, keywordListView.contentHeight - keywordListView.height)
+                            if (keywordListView.dragY < edge)
+                                keywordListView.contentY = Math.max(0, keywordListView.contentY - 12)
+                            else if (keywordListView.dragY > keywordListView.height - edge)
+                                keywordListView.contentY = Math.min(maximum, keywordListView.contentY + 12)
+                        }
+                    }
+
                     delegate: Rectangle {
+                        id: keywordDelegate
+                        property int visualIndex: index
                         width: keywordListView.width
                         height: keywordRowContent.implicitHeight + 16
                         radius: Theme.shapeButton
-                        color: keywordHover.hovered ? Theme.panel : "transparent"
+                        color: keywordDrag.active || keywordListView.dropIndex === index || keywordHover.hovered
+                               ? Theme.panel : "transparent"
+                        border.width: keywordListView.dropIndex === index && !keywordDrag.active ? 2 : 0
+                        border.color: Theme.accent
+                        Drag.active: keywordDrag.active
+                        Drag.source: keywordDelegate
+                        Drag.hotSpot.x: width / 2
+                        Drag.hotSpot.y: height / 2
+                        z: keywordDrag.active ? 1 : 0
+                        transform: Translate {
+                            y: keywordDrag.active ? keywordDrag.activeTranslation.y : 0
+                        }
 
                         Behavior on color {
                             ColorAnimation { duration: 120 }
@@ -350,18 +417,26 @@ Item {
                             spacing: 8
 
                             Text {
+                                text: "☰"
+                                color: Theme.inkMuted
+                                font.family: Theme.fontUi
+                                font.pixelSize: 18
+                                Accessible.name: i18n("Drag to reorder")
+                            }
+
+                            Text {
                                 Layout.fillWidth: true
                                 textFormat: Text.PlainText
-                                text: modelData.keyword
+                                text: keyword
                                 color: Theme.inkStrong
                                 font.family: Theme.fontUi
                                 font.pixelSize: 14
                             }
                             PillTab {
-                                text: modelData.visible ? i18n("Visible") : i18n("Hidden")
-                                selected: modelData.visible
+                                text: model.visible ? i18n("Visible") : i18n("Hidden")
+                                selected: model.visible
                                 onClicked: {
-                                    MailApp.setKeywordVisible(modelData.keyword, !modelData.visible)
+                                    MailApp.setKeywordVisible(keyword, !model.visible)
                                     root.refreshKeywordSettings()
                                 }
                             }
@@ -369,6 +444,32 @@ Item {
 
                         HoverHandler {
                             id: keywordHover
+                        }
+
+                        DragHandler {
+                            id: keywordDrag
+                            target: null
+                            cursorShape: active ? Qt.ClosedHandCursor : Qt.OpenHandCursor
+                            onActiveChanged: {
+                                keywordListView.reorderActive = active
+                                keywordListView.dragSource = active ? keywordDelegate : null
+                                if (!active) {
+                                    keywordListView.dropIndex = -1
+                                    root.persistKeywordOrder()
+                                }
+                            }
+                        }
+
+                        DropArea {
+                            id: keywordDrop
+                            anchors.fill: parent
+                            onEntered: function (drag) {
+                                const from = drag.source ? drag.source.visualIndex : -1
+                                keywordListView.dropIndex = index
+                                if (from >= 0 && from !== index) {
+                                    keywordSettingsModel.move(from, index, 1)
+                                }
+                            }
                         }
                     }
                 }
@@ -547,12 +648,6 @@ Item {
                         }
                     }
 
-                    MutedHint {
-                        Layout.fillWidth: true
-                        wrapMode: Text.WordWrap
-                        text: i18n("Restart KyPost for interface mode changes to take effect.")
-                    }
-
                     // Desktop-only: gated on the mode THIS process actually
                     // resolved to at startup, not the pending preference above --
                     // never shown mid-session in a Mobile launch even if the
@@ -602,6 +697,12 @@ Item {
                     }
 
                     SectionLabel { text: i18n("About") }
+
+                    GhostButton {
+                        Layout.alignment: Qt.AlignLeft
+                        text: i18n("Support KyPost")
+                        onClicked: Qt.openUrlExternally("https://buymeacoffee.com/yoshiofthewire")
+                    }
 
                     UpdateNotice {
                         Layout.fillWidth: true
@@ -936,6 +1037,7 @@ Item {
                         }
                     }
                 }
+            }
             }
         }
     }

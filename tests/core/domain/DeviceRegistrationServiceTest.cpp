@@ -110,7 +110,8 @@ private slots:
     // The pairing link's server-published `pin`.
     void aLinkSuppliedPinIsArmedBeforeTheRegistrationRequest();
     void aLinkSuppliedPinSurvivesARegistrationThatSawNoHandshake();
-    void aPeerKeyDisagreeingWithTheLinkPinIsRefused();
+    void aLeafPinFromThePairingLinkAcceptsAndStoresTheIssuer();
+    void anUnverifiedLinkPinIsRefused();
 
 private:
     static PairingParams sampleParams(quint16 port);
@@ -811,11 +812,44 @@ void DeviceRegistrationServiceTest::aLinkSuppliedPinSurvivesARegistrationThatSaw
     QCOMPARE(pinSink.pinState().spkiSha256, params.spkiPin);
 }
 
-// Unreachable by construction -- HttpClient aborts a handshake that does not
-// match an armed pin, so a success cannot carry a different key. Asserted
-// anyway: the alternative to failing closed here is persisting a pairing
-// anchored to a key the link never named.
-void DeviceRegistrationServiceTest::aPeerKeyDisagreeingWithTheLinkPinIsRefused()
+void DeviceRegistrationServiceTest::aLeafPinFromThePairingLinkAcceptsAndStoresTheIssuer()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    SecureStoreFile secureStore(dir.path());
+    PairingStore pairingStore(secureStore);
+    SettingsStore settingsStore(dir.filePath(QStringLiteral("settings.ini")));
+
+    QNetworkAccessManager manager;
+    HttpClient http(manager);
+    NativeRegistrationClient client(http);
+    HttpClientPinSink pinSink(http);
+    DeviceRegistrationService service(client, pairingStore, settingsStore, pinSink);
+
+    const QByteArray leafPin(32, 'L');
+    const QByteArray issuerPin(32, 'I');
+    PairingParams params;
+    params.serverBaseUrl = QStringLiteral("https://relay.example");
+    params.spkiPin = leafPin;
+
+    NativeRegistrationResult served;
+    served.outcome = RegistrationOutcome::Success;
+    served.response.deviceId = QStringLiteral("dev-1");
+    served.response.deviceSecret = QStringLiteral("fresh");
+    served.peerSpkiSha256 = issuerPin;
+    served.certificatePinVerified = true;
+
+    const NativeRegistrationResult applied = service.finishPair(service.beginPair(params), params, served);
+
+    QCOMPARE(applied.outcome, RegistrationOutcome::Success);
+    QCOMPARE(pinSink.pinState().spkiSha256, issuerPin);
+    QCOMPARE(pairingStore.load()->certificateSpkiSha256, QString::fromLatin1(issuerPin.toBase64()));
+}
+
+// A link pin is useful only if the transport actually enforced it. Preserve
+// that fail-closed boundary even if a future caller manufactures a nominally
+// successful registration result without going through the pinned client.
+void DeviceRegistrationServiceTest::anUnverifiedLinkPinIsRefused()
 {
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
@@ -839,7 +873,8 @@ void DeviceRegistrationServiceTest::aPeerKeyDisagreeingWithTheLinkPinIsRefused()
     served.outcome = RegistrationOutcome::Success;
     served.response.deviceId = QStringLiteral("dev-1");
     served.response.deviceSecret = QStringLiteral("fresh");
-    served.peerSpkiSha256 = QByteArray(32, 'X'); // not the pinned key
+    served.peerSpkiSha256 = QByteArray(32, 'X');
+    served.certificatePinVerified = false;
 
     DeviceRegistrationService::PairAttempt attempt = service.beginPair(params);
     QVERIFY(!attempt.refusedOutcome().has_value());

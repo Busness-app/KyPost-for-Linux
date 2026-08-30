@@ -11,8 +11,10 @@ class SettingsStoreTest : public QObject
 private slots:
     void defaultsAreUnset();
     void themeIdRoundTrips();
+    void preferredModeRoundTrips();
     void pushDeliveryFieldsRoundTrip();
     void keywordVisibleDefaultsTrueUntilExplicitlyToggled();
+    void keywordOrderRoundTrips();
     void aHostileLocationFlagThatCannotReachTheDiskIsReportedAsFailed();
 
 private:
@@ -41,6 +43,16 @@ void SettingsStoreTest::themeIdRoundTrips()
 
     store.setThemeId(QStringLiteral("Solar Flare"));
     QCOMPARE(store.themeId(), QStringLiteral("Solar Flare"));
+}
+
+void SettingsStoreTest::preferredModeRoundTrips()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    SettingsStore store(tempFilePath(dir, QStringLiteral("settings.ini")));
+
+    QVERIFY(store.setPreferredMode(QStringLiteral("mobile")));
+    QCOMPARE(store.preferredMode(), QStringLiteral("mobile"));
 }
 
 void SettingsStoreTest::pushDeliveryFieldsRoundTrip()
@@ -77,6 +89,20 @@ void SettingsStoreTest::keywordVisibleDefaultsTrueUntilExplicitlyToggled()
 
     store.setKeywordVisible(QStringLiteral("Work"), true);
     QCOMPARE(store.keywordVisible(QStringLiteral("Work")), true);
+}
+
+void SettingsStoreTest::keywordOrderRoundTrips()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = tempFilePath(dir, QStringLiteral("settings.ini"));
+
+    SettingsStore store(path);
+    QVERIFY(store.keywordOrder().isEmpty());
+    store.setKeywordOrder({ QStringLiteral("Urgent"), QStringLiteral("Work") });
+
+    SettingsStore reloaded(path);
+    QCOMPARE(reloaded.keywordOrder(), QStringList({ QStringLiteral("Urgent"), QStringLiteral("Work") }));
 }
 
 // The flag decides, on the NEXT launch, whether the database opens ":memory:"

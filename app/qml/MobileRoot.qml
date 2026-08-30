@@ -1,7 +1,7 @@
-import QtQuick 2.15
-import QtQuick.Controls 2.15
-import QtQuick.Layouts 1.15
-import org.kde.kirigami 2.20 as Kirigami
+import QtQuick
+import QtQuick.Controls
+import QtQuick.Layouts
+import org.kde.kirigami as Kirigami
 import com.kysecurity.mail 1.0
 import "components"
 import "pages"
@@ -404,15 +404,21 @@ Kirigami.ApplicationWindow {
         id: settingsPageComponent
         Kirigami.Page {
             id: settingsPage
+            property int initialPane: 5
             objectName: "settingsPage"
             title: i18n("Settings")
 
             Settings {
                 anchors.fill: parent
+                currentPane: settingsPage.initialPane
                 onClosed: root.safePop()
                 onMyPgpQrCodeRequested: root.pageStack.push(pgpMyQrCodePageComponent)
             }
         }
+    }
+
+    function openSettingsPane(pane) {
+        root.pageStack.push(settingsPageComponent, { "initialPane": pane })
     }
 
     // ---- global drawer (hamburger menu): Settings + Pair Device --------
@@ -425,8 +431,15 @@ Kirigami.ApplicationWindow {
             },
             Kirigami.Action {
                 text: i18n("Settings")
-                onTriggered: root.pageStack.push(settingsPageComponent)
-            }
+                enabled: false
+            },
+            Kirigami.Action { text: i18n("General"); onTriggered: root.openSettingsPane(5) },
+            Kirigami.Action { text: i18n("Appearance"); onTriggered: root.openSettingsPane(1) },
+            Kirigami.Action { text: i18n("Notifications"); onTriggered: root.openSettingsPane(4) },
+            Kirigami.Action { text: i18n("Contacts"); onTriggered: root.openSettingsPane(3) },
+            Kirigami.Action { text: i18n("Keywords"); onTriggered: root.openSettingsPane(2) },
+            Kirigami.Action { text: i18n("Security"); onTriggered: root.openSettingsPane(6) },
+            Kirigami.Action { text: i18n("Connection"); onTriggered: root.openSettingsPane(0) }
         ]
     }
 

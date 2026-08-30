@@ -23,8 +23,8 @@ class GeneralController : public QObject
 public:
     // isDesktopMode reflects the mode THIS process already resolved to at
     // startup (see main.cpp's convergent root selection) -- fixed for the
-    // life of the process, unlike preferredMode below, which is the pending
-    // choice that only takes effect on next launch.
+    // life of the process. Changing preferredMode requests a relaunch so the
+    // replacement process can select the other root component.
     explicit GeneralController(SettingsStore& settingsStore, bool isDesktopMode, QObject* parent = nullptr);
 
     QString preferredMode() const;
@@ -40,6 +40,7 @@ public:
 
 signals:
     void preferredModeChanged();
+    void relaunchRequired();
     void trayIconEnabledChanged(bool enabled);
     void minimizeToTrayOnCloseChanged(bool enabled);
 

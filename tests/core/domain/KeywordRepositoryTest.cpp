@@ -13,6 +13,7 @@ class KeywordRepositoryTest : public QObject
 private slots:
     void computeTabsOrdersAlphabeticallyCaseInsensitiveWithPerKeywordCounts();
     void visibleTabsExcludesExplicitlyHiddenKeywordButKeepsNeverToggledOnes();
+    void allSettingsUsesSavedOrderAndAppendsNewKeywords();
 
 private:
     static Email emailWithKeywords(const QString& messageId, const QStringList& keywords);
@@ -73,6 +74,32 @@ void KeywordRepositoryTest::visibleTabsExcludesExplicitlyHiddenKeywordButKeepsNe
         else
             QCOMPARE(setting.visible, true);
     }
+}
+
+void KeywordRepositoryTest::allSettingsUsesSavedOrderAndAppendsNewKeywords()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    SettingsStore settingsStore(dir.filePath(QStringLiteral("settings.ini")));
+    KeywordRepository repository(settingsStore);
+    repository.setOrder({ QStringLiteral("Work"), QStringLiteral("Missing"),
+                          QStringLiteral("Work"), QStringLiteral("Personal") });
+
+    const QVector<Email> emails = {
+        emailWithKeywords(QStringLiteral("m1"), { QStringLiteral("Urgent"), QStringLiteral("Personal") }),
+        emailWithKeywords(QStringLiteral("m2"), { QStringLiteral("Work") }),
+    };
+    const QVector<KeywordSettings> settings = repository.allSettings(emails);
+
+    QCOMPARE(settings.size(), 3);
+    QCOMPARE(settings.at(0).keyword, QStringLiteral("Work"));
+    QCOMPARE(settings.at(1).keyword, QStringLiteral("Personal"));
+    QCOMPARE(settings.at(2).keyword, QStringLiteral("Urgent"));
+
+    const QVector<KeywordTab> visible = repository.visibleTabs(emails);
+    QCOMPARE(visible.at(0).name, QStringLiteral("Work"));
+    QCOMPARE(visible.at(1).name, QStringLiteral("Personal"));
+    QCOMPARE(visible.at(2).name, QStringLiteral("Urgent"));
 }
 
 QTEST_GUILESS_MAIN(KeywordRepositoryTest)

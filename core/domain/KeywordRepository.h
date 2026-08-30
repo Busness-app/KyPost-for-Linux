@@ -4,6 +4,7 @@
 #include "models/KeywordSettings.h"
 
 #include <QString>
+#include <QStringList>
 #include <QVector>
 
 class SettingsStore;
@@ -35,6 +36,7 @@ public:
     QVector<KeywordSettings> allSettings(const QVector<Email>& emails) const;
 
     void setVisible(const QString& keyword, bool visible);
+    void setOrder(const QStringList& keywords);
 
 private:
     SettingsStore& m_settingsStore;

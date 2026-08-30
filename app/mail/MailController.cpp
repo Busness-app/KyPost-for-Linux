@@ -1885,6 +1885,12 @@ void MailController::setKeywordVisible(const QString& keyword, bool visible)
     emit keywordTabsChanged();
 }
 
+void MailController::setKeywordOrder(const QStringList& keywords)
+{
+    m_keywordRepository.setOrder(keywords);
+    emit keywordTabsChanged();
+}
+
 QVariantList MailController::standardFolders() const
 {
     static constexpr StandardFolder kFolders[] = {

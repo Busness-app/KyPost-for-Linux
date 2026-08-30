@@ -79,6 +79,7 @@ struct NativeRegistrationResult
     // handshake evidence; the caller must not overwrite an existing pin with
     // an empty value.
     QByteArray peerSpkiSha256;
+    bool certificatePinVerified = false;
 };
 
 // Registers this device for native push with the Relay backend. Verified
