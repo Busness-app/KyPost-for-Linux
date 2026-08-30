@@ -145,7 +145,7 @@ Item {
                     delegate: Rectangle {
                         Layout.fillWidth: true
                         implicitHeight: 38
-                        radius: Theme.shapeControl
+                        radius: Theme.shapeButton
                         color: root.currentPane === modelData.pane ? Theme.accentSoft : "transparent"
 
                         Text {
