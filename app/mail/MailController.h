@@ -334,6 +334,7 @@ public slots:
     // whether it appears in the currently-filtered folder's keyword tab row
     // (see keywordTabs()'s own doc comment).
     Q_INVOKABLE void setKeywordVisible(const QString& keyword, bool visible);
+    Q_INVOKABLE void setKeywordOrder(const QStringList& keywords);
 
     // Called when Compose opens. Sets pgpCanEncrypt/pgpCanSign/
     // pgpHandoffToWebmail from GET /api/pgp/bootstrap. A failed or

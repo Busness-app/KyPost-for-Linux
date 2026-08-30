@@ -64,12 +64,9 @@ Item {
         { "name": i18n("Connection"), "pane": 0 }
     ]
 
-    // MailApp.allKeywordSettings() is a Q_INVOKABLE snapshot, not a
-    // NOTIFY-bound property (see MailController.h's doc comment on why) --
-    // cached here as a plain JS array and re-pulled on load and after every
-    // toggle so the Keywords pane's row list stays in sync with whatever
-    // setKeywordVisible() just wrote.
-    property var keywordSettings: []
+    ListModel {
+        id: keywordSettingsModel
+    }
 
     // Which erase-after value the PIN prompt is about to apply. Held here
     // rather than passed through securityPrompt.begin() because that helper
@@ -83,7 +80,17 @@ Item {
     property int graceSecondsChoice: 0
 
     function refreshKeywordSettings() {
-        root.keywordSettings = MailApp.allKeywordSettings()
+        const settings = MailApp.allKeywordSettings()
+        keywordSettingsModel.clear()
+        for (let i = 0; i < settings.length; ++i)
+            keywordSettingsModel.append(settings[i])
+    }
+
+    function persistKeywordOrder() {
+        const keywords = []
+        for (let i = 0; i < keywordSettingsModel.count; ++i)
+            keywords.push(keywordSettingsModel.get(i).keyword)
+        MailApp.setKeywordOrder(keywords)
     }
 
     Component.onCompleted: refreshKeywordSettings()
@@ -349,14 +356,21 @@ Item {
                     visible: count > 0
                     clip: true
                     spacing: 4
-                    model: root.keywordSettings
+                    model: keywordSettingsModel
                     ScrollBar.vertical: ThemedScrollBar {}
 
                     delegate: Rectangle {
+                        id: keywordDelegate
+                        property int visualIndex: index
                         width: keywordListView.width
                         height: keywordRowContent.implicitHeight + 16
                         radius: Theme.shapeButton
                         color: keywordHover.hovered ? Theme.panel : "transparent"
+                        Drag.active: keywordDrag.active
+                        Drag.source: keywordDelegate
+                        Drag.hotSpot.x: width / 2
+                        Drag.hotSpot.y: height / 2
+                        z: keywordDrag.active ? 1 : 0
 
                         Behavior on color {
                             ColorAnimation { duration: 120 }
@@ -371,18 +385,35 @@ Item {
                             spacing: 8
 
                             Text {
+                                text: "☰"
+                                color: Theme.inkMuted
+                                font.family: Theme.fontUi
+                                font.pixelSize: 18
+                                Accessible.name: i18n("Drag to reorder")
+
+                                DragHandler {
+                                    id: keywordDrag
+                                    target: null
+                                    onActiveChanged: {
+                                        if (!active)
+                                            root.persistKeywordOrder()
+                                    }
+                                }
+                            }
+
+                            Text {
                                 Layout.fillWidth: true
                                 textFormat: Text.PlainText
-                                text: modelData.keyword
+                                text: keyword
                                 color: Theme.inkStrong
                                 font.family: Theme.fontUi
                                 font.pixelSize: 14
                             }
                             PillTab {
-                                text: modelData.visible ? i18n("Visible") : i18n("Hidden")
-                                selected: modelData.visible
+                                text: model.visible ? i18n("Visible") : i18n("Hidden")
+                                selected: model.visible
                                 onClicked: {
-                                    MailApp.setKeywordVisible(modelData.keyword, !modelData.visible)
+                                    MailApp.setKeywordVisible(keyword, !model.visible)
                                     root.refreshKeywordSettings()
                                 }
                             }
@@ -390,6 +421,16 @@ Item {
 
                         HoverHandler {
                             id: keywordHover
+                        }
+
+                        DropArea {
+                            anchors.fill: parent
+                            onEntered: function (drag) {
+                                const from = drag.source ? drag.source.visualIndex : -1
+                                if (from >= 0 && from !== index) {
+                                    keywordSettingsModel.move(from, index, 1)
+                                }
+                            }
                         }
                     }
                 }

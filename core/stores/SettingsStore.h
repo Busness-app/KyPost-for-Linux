@@ -2,6 +2,7 @@
 
 #include <QSettings>
 #include <QString>
+#include <QStringList>
 #include <optional>
 
 // Thin typed wrapper around QSettings for app-wide preferences. The
@@ -74,6 +75,8 @@ public:
     // this store's default-visible policy).
     bool keywordVisible(const QString& keyword) const; // true if never toggled
     void setKeywordVisible(const QString& keyword, bool visible);
+    QStringList keywordOrder() const;
+    void setKeywordOrder(const QStringList& keywords);
 
 private:
     QSettings m_settings;

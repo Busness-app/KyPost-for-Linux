@@ -9,6 +9,9 @@ constexpr auto kHostileLocationKey = "security/hostileLocationProtection";
 constexpr auto kDeliveryModeKey = "push/deliveryMode";
 constexpr auto kPullEndpointKey = "push/pullEndpoint";
 constexpr auto kTransportKey = "push/transport";
+// Keep the order outside keywords/<name>: "order" is itself a valid
+// keyword and must retain an independent visibility value.
+constexpr auto kKeywordOrderKey = "keywordSettings/order";
 
 const QString kDefaultThemeId = QStringLiteral("Patina Ky");
 const QString kDefaultPreferredMode = QStringLiteral("auto");
@@ -122,4 +125,14 @@ bool SettingsStore::keywordVisible(const QString& keyword) const
 void SettingsStore::setKeywordVisible(const QString& keyword, bool visible)
 {
     m_settings.setValue(keywordVisibleKey(keyword), visible);
+}
+
+QStringList SettingsStore::keywordOrder() const
+{
+    return m_settings.value(kKeywordOrderKey).toStringList();
+}
+
+void SettingsStore::setKeywordOrder(const QStringList& keywords)
+{
+    m_settings.setValue(kKeywordOrderKey, keywords);
 }

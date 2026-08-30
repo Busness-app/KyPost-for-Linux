@@ -35,18 +35,42 @@ QVector<KeywordTab> KeywordRepository::computeTabs(const QVector<Email>& emails)
 
 QVector<KeywordTab> KeywordRepository::visibleTabs(const QVector<Email>& emails) const
 {
+    const QVector<KeywordTab> tabs = computeTabs(emails);
+    QMap<QString, int> counts;
+    for (const KeywordTab& tab : tabs)
+        counts.insert(tab.name, tab.count);
+
     QVector<KeywordTab> visible;
-    for (const KeywordTab& tab : computeTabs(emails)) {
-        if (m_settingsStore.keywordVisible(tab.name))
-            visible.append(tab);
+    for (const KeywordSettings& setting : allSettings(emails)) {
+        if (setting.visible)
+            visible.append({ setting.keyword, counts.value(setting.keyword) });
     }
     return visible;
 }
 
 QVector<KeywordSettings> KeywordRepository::allSettings(const QVector<Email>& emails) const
 {
+    const QVector<KeywordTab> tabs = computeTabs(emails);
+    QMap<QString, KeywordTab> tabsByName;
+    for (const KeywordTab& tab : tabs)
+        tabsByName.insert(tab.name, tab);
+
+    QVector<KeywordTab> orderedTabs;
+    orderedTabs.reserve(tabs.size());
+    for (const QString& keyword : m_settingsStore.keywordOrder()) {
+        const auto it = tabsByName.find(keyword);
+        if (it == tabsByName.end())
+            continue;
+        orderedTabs.append(it.value());
+        tabsByName.erase(it);
+    }
+    for (const KeywordTab& tab : tabs) {
+        if (tabsByName.contains(tab.name))
+            orderedTabs.append(tab);
+    }
+
     QVector<KeywordSettings> settings;
-    for (const KeywordTab& tab : computeTabs(emails)) {
+    for (const KeywordTab& tab : orderedTabs) {
         KeywordSettings entry;
         entry.keyword = tab.name;
         entry.visible = m_settingsStore.keywordVisible(tab.name);
@@ -58,4 +82,14 @@ QVector<KeywordSettings> KeywordRepository::allSettings(const QVector<Email>& em
 void KeywordRepository::setVisible(const QString& keyword, bool visible)
 {
     m_settingsStore.setKeywordVisible(keyword, visible);
+}
+
+void KeywordRepository::setOrder(const QStringList& keywords)
+{
+    QStringList uniqueKeywords;
+    for (const QString& keyword : keywords) {
+        if (!keyword.isEmpty() && !uniqueKeywords.contains(keyword))
+            uniqueKeywords.append(keyword);
+    }
+    m_settingsStore.setKeywordOrder(uniqueKeywords);
 }
