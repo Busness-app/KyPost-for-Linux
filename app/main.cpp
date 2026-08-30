@@ -72,10 +72,9 @@
 #include <QFontDatabase>
 #include <QJsonObject>
 #include <QNetworkAccessManager>
+#include <QIcon>
 #include <QQmlApplicationEngine>
 #include <QStandardPaths>
-#include <memory>
-
 #include <QPointer>
 #include <QTimer>
 #include <QUrl>
@@ -189,6 +188,8 @@ int main(int argc, char* argv[])
     // advertises to the D-Bus daemon for on-demand activation.
     app.setApplicationName(QStringLiteral("mail"));
     app.setOrganizationDomain(QStringLiteral("kysecurity.com"));
+    app.setDesktopFileName(QStringLiteral("com.kysecurity.mail"));
+    app.setWindowIcon(QIcon::fromTheme(QStringLiteral("com.kysecurity.mail")));
 
     // Task 48: KI18n translation domain. Per KLocalizedString::
     // setApplicationDomain()'s own doc comment ("This function should be
@@ -404,12 +405,16 @@ int main(int argc, char* argv[])
     // Held back for 400 ms rather than shown immediately. A healthy keyring
     // answers in milliseconds, and flashing a window that says "Starting..."
     // on every launch would be a worse experience than the one being fixed.
-    auto startupWindowEngine = std::make_unique<QQmlApplicationEngine>();
-    startupWindowEngine->load(QUrl(QStringLiteral("qrc:/qml/Startup.qml")));
-    QPointer<QObject> startupWindow = startupWindowEngine->rootObjects().isEmpty()
+    // qmlRegisterSingletonInstance() is deliberately used for the controller
+    // objects above and below. Qt permits those instances to be accessed from
+    // exactly one QML engine, so the startup and real windows must share it.
+    QQmlApplicationEngine engine;
+    KLocalization::setupLocalizedContext(&engine);
+    engine.load(QUrl(QStringLiteral("qrc:/qml/Startup.qml")));
+    QPointer<QObject> startupWindow = engine.rootObjects().isEmpty()
         ? nullptr
-        : startupWindowEngine->rootObjects().constFirst();
-    // QPointer, because the engine below is torn down as soon as the real root
+        : engine.rootObjects().constFirst();
+    // QPointer, because the startup root is deleted as soon as the real root
     // window exists -- which on a healthy machine happens well inside these
     // 400 ms, leaving this timer to fire at a window that is already gone.
     QTimer::singleShot(400, qApp, [startupWindow]() {
@@ -1328,10 +1333,9 @@ int main(int argc, char* argv[])
     // a public broker without ever learning why it was unplugged. Git has the
     // implementation if the transport ever gains RFC 8291 payload encryption.
 
-    QQmlApplicationEngine engine;
-
-    // Task 48: makes i18n()/i18nc()/i18np()/i18ncp() (and their xi18n* KUIT
-    // counterparts) callable from every QML file loaded by this engine, with
+    // Task 48: KLocalization::setupLocalizedContext() above makes i18n()/
+    // i18nc()/i18np()/i18ncp() (and their xi18n* KUIT counterparts) callable
+    // from every QML file loaded by this engine, with
     // no `import` statement needed -- KLocalization::setupLocalizedContext()
     // (KF6::I18nQml) constructs a KLocalizedQmlContext and installs it as
     // engine.rootContext()'s context object, then also sets it as that
@@ -1343,8 +1347,6 @@ int main(int argc, char* argv[])
     // MobileRoot.qml's very first frame. Deliberately not the older
     // KLocalizedContext class (see app/CMakeLists.txt's KF6::I18nQml comment
     // for why: deprecated since 6.8, this is its replacement).
-    KLocalization::setupLocalizedContext(&engine);
-
     // Convergent root selection: picks MobileRoot.qml vs DesktopRoot.qml
     // (Tasks 38/39) directly, rather than loading a QML-side Loader-based
     // dispatcher -- a Loader-wrapped root was tried first and reproducibly
@@ -1363,10 +1365,10 @@ int main(int argc, char* argv[])
                                : QStringLiteral("qrc:/qml/DesktopRoot.qml")));
 
     // The real root window exists, so the startup window has done its job.
-    // Destroying the engine takes the window with it; leaving it alive would
-    // put a second, permanently "Starting..." window in the user's task
+    // Destroying the startup root takes its window with it; leaving it alive
+    // would put a second, permanently "Starting..." window in the user's task
     // switcher for the rest of the session.
-    startupWindowEngine.reset();
+    delete startupWindow.data();
     if (engine.rootObjects().isEmpty())
         return -1;
 
