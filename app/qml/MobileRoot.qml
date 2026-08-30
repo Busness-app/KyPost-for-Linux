@@ -431,16 +431,15 @@ Kirigami.ApplicationWindow {
             },
             Kirigami.Action {
                 text: i18n("Settings")
-                children: [
-                    Kirigami.Action { text: i18n("General"); onTriggered: root.openSettingsPane(5) },
-                    Kirigami.Action { text: i18n("Appearance"); onTriggered: root.openSettingsPane(1) },
-                    Kirigami.Action { text: i18n("Notifications"); onTriggered: root.openSettingsPane(4) },
-                    Kirigami.Action { text: i18n("Contacts"); onTriggered: root.openSettingsPane(3) },
-                    Kirigami.Action { text: i18n("Keywords"); onTriggered: root.openSettingsPane(2) },
-                    Kirigami.Action { text: i18n("Security"); onTriggered: root.openSettingsPane(6) },
-                    Kirigami.Action { text: i18n("Connection"); onTriggered: root.openSettingsPane(0) }
-                ]
-            }
+                enabled: false
+            },
+            Kirigami.Action { text: i18n("General"); onTriggered: root.openSettingsPane(5) },
+            Kirigami.Action { text: i18n("Appearance"); onTriggered: root.openSettingsPane(1) },
+            Kirigami.Action { text: i18n("Notifications"); onTriggered: root.openSettingsPane(4) },
+            Kirigami.Action { text: i18n("Contacts"); onTriggered: root.openSettingsPane(3) },
+            Kirigami.Action { text: i18n("Keywords"); onTriggered: root.openSettingsPane(2) },
+            Kirigami.Action { text: i18n("Security"); onTriggered: root.openSettingsPane(6) },
+            Kirigami.Action { text: i18n("Connection"); onTriggered: root.openSettingsPane(0) }
         ]
     }
 
