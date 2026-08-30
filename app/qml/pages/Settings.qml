@@ -134,9 +134,8 @@ Item {
         Flow {
             id: paneTabFlow
             Layout.fillWidth: true
-            Layout.preferredHeight: implicitHeight
+            Layout.preferredHeight: childrenRect.height
             spacing: 8
-            implicitHeight: childrenRect.height
 
             Repeater {
                 model: root.paneTabs
