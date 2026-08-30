@@ -353,6 +353,7 @@ Item {
                 ListView {
                     id: keywordListView
                     property bool reorderActive: false
+                    property var dragSource: null
                     property real dragY: -1
                     property int dropIndex: -1
                     anchors.fill: parent
@@ -367,6 +368,12 @@ Item {
                         repeat: true
                         running: keywordListView.reorderActive
                         onTriggered: {
+                            if (keywordListView.dragSource) {
+                                keywordListView.dragY = keywordListView.mapFromItem(
+                                    keywordListView.dragSource,
+                                    keywordListView.dragSource.width / 2,
+                                    keywordListView.dragSource.height / 2).y
+                            }
                             const edge = 48
                             const maximum = Math.max(0, keywordListView.contentHeight - keywordListView.height)
                             if (keywordListView.dragY < edge)
@@ -441,13 +448,9 @@ Item {
                             id: keywordDrag
                             target: null
                             cursorShape: active ? Qt.ClosedHandCursor : Qt.OpenHandCursor
-                            onActiveTranslationChanged: {
-                                const point = keywordListView.mapFromItem(
-                                    keywordDelegate, centroid.position.x, centroid.position.y)
-                                keywordListView.dragY = point.y
-                            }
                             onActiveChanged: {
                                 keywordListView.reorderActive = active
+                                keywordListView.dragSource = active ? keywordDelegate : null
                                 if (!active) {
                                     keywordListView.dropIndex = -1
                                     root.persistKeywordOrder()
