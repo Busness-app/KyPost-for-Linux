@@ -117,6 +117,7 @@ Item {
         // ---- header ------------------------------------------------------
         RowLayout {
             Layout.fillWidth: true
+            visible: General.isDesktopMode
             spacing: 8
 
             Text {
@@ -142,10 +143,11 @@ Item {
             // the conventional desktop layout. The old chip Flow/Grid sized
             // itself wider than the OverlaySheet and clipped both ends.
             ColumnLayout {
+                visible: General.isDesktopMode
                 Layout.fillWidth: false
-                Layout.minimumWidth: General.isDesktopMode ? 140 : 112
-                Layout.preferredWidth: General.isDesktopMode ? 140 : 112
-                Layout.maximumWidth: General.isDesktopMode ? 140 : 112
+                Layout.minimumWidth: 140
+                Layout.preferredWidth: 140
+                Layout.maximumWidth: 140
                 Layout.alignment: Qt.AlignTop
                 spacing: 4
 
