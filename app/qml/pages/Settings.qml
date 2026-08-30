@@ -352,6 +352,9 @@ Item {
 
                 ListView {
                     id: keywordListView
+                    property bool reorderActive: false
+                    property real dragY: -1
+                    property int dropIndex: -1
                     anchors.fill: parent
                     visible: count > 0
                     clip: true
@@ -359,21 +362,38 @@ Item {
                     model: keywordSettingsModel
                     ScrollBar.vertical: ThemedScrollBar {}
 
+                    Timer {
+                        interval: 30
+                        repeat: true
+                        running: keywordListView.reorderActive
+                        onTriggered: {
+                            const edge = 48
+                            const maximum = Math.max(0, keywordListView.contentHeight - keywordListView.height)
+                            if (keywordListView.dragY < edge)
+                                keywordListView.contentY = Math.max(0, keywordListView.contentY - 12)
+                            else if (keywordListView.dragY > keywordListView.height - edge)
+                                keywordListView.contentY = Math.min(maximum, keywordListView.contentY + 12)
+                        }
+                    }
+
                     delegate: Rectangle {
                         id: keywordDelegate
                         property int visualIndex: index
                         width: keywordListView.width
                         height: keywordRowContent.implicitHeight + 16
                         radius: Theme.shapeButton
-                        color: keywordDrag.active || keywordDrop.containsDrag || keywordHover.hovered
+                        color: keywordDrag.active || keywordListView.dropIndex === index || keywordHover.hovered
                                ? Theme.panel : "transparent"
-                        border.width: keywordDrop.containsDrag && !keywordDrag.active ? 1 : 0
+                        border.width: keywordListView.dropIndex === index && !keywordDrag.active ? 2 : 0
                         border.color: Theme.accent
                         Drag.active: keywordDrag.active
                         Drag.source: keywordDelegate
                         Drag.hotSpot.x: width / 2
                         Drag.hotSpot.y: height / 2
                         z: keywordDrag.active ? 1 : 0
+                        transform: Translate {
+                            y: keywordDrag.active ? keywordDrag.activeTranslation.y : 0
+                        }
 
                         Behavior on color {
                             ColorAnimation { duration: 120 }
@@ -421,9 +441,17 @@ Item {
                             id: keywordDrag
                             target: null
                             cursorShape: active ? Qt.ClosedHandCursor : Qt.OpenHandCursor
+                            onActiveTranslationChanged: {
+                                const point = keywordListView.mapFromItem(
+                                    keywordDelegate, centroid.position.x, centroid.position.y)
+                                keywordListView.dragY = point.y
+                            }
                             onActiveChanged: {
-                                if (!active)
+                                keywordListView.reorderActive = active
+                                if (!active) {
+                                    keywordListView.dropIndex = -1
                                     root.persistKeywordOrder()
+                                }
                             }
                         }
 
@@ -432,6 +460,7 @@ Item {
                             anchors.fill: parent
                             onEntered: function (drag) {
                                 const from = drag.source ? drag.source.visualIndex : -1
+                                keywordListView.dropIndex = index
                                 if (from >= 0 && from !== index) {
                                     keywordSettingsModel.move(from, index, 1)
                                 }
