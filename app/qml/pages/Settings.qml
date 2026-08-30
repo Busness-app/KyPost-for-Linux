@@ -121,6 +121,10 @@ Item {
                 font.weight: Font.Bold
             }
             GhostButton {
+                text: i18n("Support KyPost")
+                onClicked: Qt.openUrlExternally("https://buymeacoffee.com/yoshiofthewire")
+            }
+            GhostButton {
                 text: i18n("Done")
                 onClicked: root.closed()
             }
