@@ -1552,9 +1552,14 @@ int main(int argc, char* argv[])
                           });
                       });
 
+    QString observedPushEndpoint = pushConnector.endpoint();
     QObject::connect(&pushConnector, &UnifiedPushConnector::endpointChanged, &pushConnector,
-                      [&pairingController, reregisterAndReport](const QString& endpoint) {
-                          reregisterAndReport(endpoint);
+                      [&pairingController, &observedPushEndpoint, reregisterAndReport](const QString& endpoint) {
+                          const bool endpointRotated = !observedPushEndpoint.isEmpty()
+                              && endpoint != observedPushEndpoint;
+                          observedPushEndpoint = endpoint;
+                          if (endpointRotated)
+                              reregisterAndReport(endpoint);
                           pairingController.setDeviceToken(endpoint);
                       });
     // Apply whatever endpoint is already known (if any) immediately, same
@@ -1628,10 +1633,9 @@ int main(int argc, char* argv[])
     // once the distributor returns, and deviceToken has no meaningful "unset"
     // wire value to fall back to.
     QObject::connect(&transportStateMachine, &TransportStateMachine::tierChanged, &transportStateMachine,
-                      [&pairingController, &pushConnector, reregisterAndReport](TransportTier tier) {
+                      [&pairingController, &pushConnector](TransportTier tier) {
                           switch (tier) {
                           case TransportTier::Distributor:
-                              reregisterAndReport(pushConnector.endpoint());
                               pairingController.setDeviceToken(pushConnector.endpoint());
                               break;
                           case TransportTier::Polling:
